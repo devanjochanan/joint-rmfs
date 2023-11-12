@@ -81,6 +81,7 @@ class Robot(Object):
     _friction = 0.3
     _inertia = 0.4
     energy_consumption = 0
+    turning = 0
 
     def __init__(self):
         super().__init__()
@@ -114,6 +115,14 @@ class Robot(Object):
             
     def moveNew(self):
         if len(self.movement) < 1 and self.order != None:
+            self.pos_x = int(self.pos_x)
+            self.pos_y = int(self.pos_y)
+            self.coor = NetLogoCoordinate(self.pos_x, self.pos_y)
+            self.velocity = 0
+            self.acceleration = 0
+            get_path = self.aStar(self.order)
+            self.movement = self.routeToMovement(get_path)
+            return
             raise Exception("weird")
             return
 
@@ -143,6 +152,7 @@ class Robot(Object):
             next = self.movement.pop(0)
             if isinstance(next, Heading):
                 print("Update heading")
+                self.turning += 1
                 self.heading = next.getHeading()
                 self.energy_consumption += 1
             elif isinstance(next, Movement):

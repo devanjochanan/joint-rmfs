@@ -11,11 +11,13 @@ class Inventory(Universe):
     map = []
     landscape = None
     stations = []
+    stop_and_go = 0
     total_energy = 0
+    total_turning = 0
 
     def __init__(self):
         self._tick = 0
-        self.ignored_types = ["pod", "station"]
+        self.ignored_types = ["pod", "station", "way-direction"]
         self.tick_to_second = 0.5
         self.order_queue = []
         self.landscape = Landscape(self.dimension)
@@ -49,12 +51,17 @@ class Inventory(Universe):
                             o.setOrder(order)
 
         total_energy = 0
+        total_turning = 0
         for o in self.moveableObjects():
             o.move()
             if isinstance(o, Robot):
                 total_energy += o.energy_consumption
+                total_turning += o.turning
+                if o.velocity == 0:
+                    self.stop_and_go += 1
         
         self.total_energy = total_energy
+        self.total_turning = total_turning
         self._tick += self.tick_to_second
 
     def addOrder(self, order: Order):

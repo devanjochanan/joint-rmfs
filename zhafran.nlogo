@@ -11,6 +11,10 @@ globals [
   _DIMENSION
   order_count
   total_energy
+  average_total_energy
+  robot_count
+  _stop
+  total_turning
 ]
 
 to setup
@@ -40,6 +44,7 @@ to setup
       set ycor pos_y
       set heading _heading
     ]
+    if _shape = "turtle" [set robot_count robot_count + 1]
   ]
   show count objects
 end
@@ -68,6 +73,9 @@ to go
   print item 2 result
   set order_count item 2 result
   set total_energy item 1 result
+  set _stop item 3 result
+  set total_turning item 4 result
+  set average_total_energy total_energy / robot_count
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -152,7 +160,7 @@ MONITOR
 1225
 212
 1388
-270
+269
 Order
 order_count
 17
@@ -163,9 +171,42 @@ MONITOR
 1225
 298
 1387
-356
+355
 Total Energy
 total_energy
+17
+1
+14
+
+MONITOR
+1225
+375
+1390
+431
+Average Energy
+average_total_energy
+17
+1
+14
+
+MONITOR
+1225
+450
+1390
+506
+Stop and Go
+_stop
+17
+1
+14
+
+MONITOR
+1225
+525
+1390
+581
+Total Turning
+total_turning
 17
 1
 14
@@ -221,6 +262,30 @@ arrow
 true
 0
 Polygon -7500403 true true 150 0 0 150 105 150 105 293 195 293 195 150 300 150
+
+arrow-down
+true
+0
+Line -16777216 false 75 150 150 225
+Line -16777216 false 150 225 225 150
+
+arrow-left
+true
+0
+Line -16777216 false 150 225 75 150
+Line -16777216 false 75 150 150 75
+
+arrow-right
+true
+0
+Line -16777216 false 150 75 225 150
+Line -16777216 false 225 150 150 225
+
+arrow-up
+true
+0
+Line -16777216 false 75 150 150 75
+Line -16777216 false 225 150 150 75
 
 box
 false
@@ -290,6 +355,10 @@ dot
 false
 0
 Circle -7500403 true true 90 90 120
+
+empty-space
+true
+0
 
 face happy
 false
