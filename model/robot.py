@@ -115,16 +115,7 @@ class Robot(Object):
             
     def moveNew(self):
         if len(self.movement) < 1 and self.order != None:
-            self.pos_x = int(self.pos_x)
-            self.pos_y = int(self.pos_y)
-            self.coor = NetLogoCoordinate(self.pos_x, self.pos_y)
-            self.velocity = 0
-            self.acceleration = 0
-            get_path = self.aStar(self.order)
-            self.movement = self.routeToMovement(get_path)
-            return
             raise Exception("weird")
-            return
 
         initial_velocity = self.velocity
         initial_acceleration = self.acceleration
@@ -148,16 +139,17 @@ class Robot(Object):
                 self.velocity = self.maximum_speed
         
         # print("masuk next-tick: {} tick {} heading {} x {} y {} velocity {} acceleration {}".format(self.movement[0], self.universe._tick, self.heading, self.pos_x, self.pos_y, self.velocity, self.acceleration))
-        while len(self.movement) > 0 and (isinstance(self.movement[0], Heading) or self.movement[0].tick <= self.universe._tick):
-            next = self.movement.pop(0)
-            if isinstance(next, Heading):
-                print("Update heading")
-                self.turning += 1
-                self.heading = next.getHeading()
-                self.energy_consumption += 1
-            elif isinstance(next, Movement):
-                print("Update speed")
-                self.acceleration = next.acceleration
+        self.acceleration = 1
+        # while len(self.movement) > 0 and (isinstance(self.movement[0], Heading) or self.movement[0].tick <= self.universe._tick):
+        #     next = self.movement.pop(0)
+        #     if isinstance(next, Heading):
+        #         print("Update heading")
+        #         self.turning += 1
+        #         self.heading = next.getHeading()
+        #         self.energy_consumption += 1
+        #     elif isinstance(next, Movement):
+        #         print("Update speed")
+        #         self.acceleration = next.acceleration
         
         # if len(self.movement) > 0:
         #     print("out next-tick: {} tick {} heading {} x {} y {} velocity {} acceleration {}".format(self.movement[0].tick, self.universe._tick, self.heading, self.pos_x, self.pos_y, self.velocity, self.acceleration))
@@ -192,47 +184,7 @@ class Robot(Object):
                 self.patches = []
 
     def move(self):
-        # return self.movePatches()
         return self.moveNew()
-        self.universe.total_energy += 1
-        if len(self.routes) < 1:
-            return
-        
-        next = self.routes.pop(0)
-        if isinstance(next, Heading):
-            if self.heading == next.getHeading():
-                self.universe.total_energy -= 1
-                self.move()
-                return
-            self.heading = next.getHeading()
-        else:
-            if(self.velocity != 0 or self.acceleration != 0):
-                if self.acceleration != 0:
-                    self.velocity = self.velocity + (self.acceleration*self.universe.tick_to_second)
-                    
-                if(self.heading == 0):
-                    self.pos_y += self.velocity
-                elif(self.heading == 180):
-                    self.pos_y -= self.velocity
-                elif(self.heading == 90):
-                    self.pos_x += self.velocity
-                elif(self.heading == 270):
-                    self.pos_x -= self.velocity
-            if self.pos_y == next.y and self.pos_x == next.x:
-                self.universe.total_energy -= 1
-                self.move()
-                return
-            self.pos_x = next.x
-            self.pos_y = next.y
-            if isinstance(next.x, int) and isinstance(next.y, int):
-                self.coor = NetLogoCoordinate(int(next.x), int(next.y))
-
-        if self.order != None:
-            station_number = self.order.station_number
-            station = self.universe.stations[station_number]
-            if self.pos_x == station.pos_x and self.pos_y == station.pos_y:
-                self.order = None
-                self.routes = []
 
     def setOrder(self, order):
         self.order = order

@@ -433,6 +433,11 @@ Rectangle -16777216 true false 120 210 180 285
 Polygon -7500403 true true 15 120 150 15 285 120
 Line -16777216 false 30 120 270 120
 
+intersection
+true
+0
+Rectangle -2674135 true false 0 0 390 360
+
 leaf
 false
 0

@@ -102,9 +102,9 @@ def initOrders(universe: Inventory):
     
 def initRobots(universe: Inventory):
     robots = [
-        {'velocity': 0, 'heading': 0, 'x': 12, 'y': 13},
-        {'velocity': 0, 'heading': 180, 'x': 24, 'y': 21},
-        {'velocity': 0, 'heading': 180, 'x': 36, 'y': 21},
+        {'velocity': 0, 'heading': 0, 'x': 9, 'y': 13},
+        # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
+        # {'velocity': 0, 'heading': 0, 'x': 45, 'y': 26},
         # {'velocity': 1, 'heading': 180, 'x': 50, 'y': 50},
         # {'velocity': 1, 'heading': 180, 'x': 51, 'y': 2},
     ]
@@ -134,31 +134,33 @@ def initWays(universe):
                     obj.shape = 'arrow-right'
                     shape_modification += 1
 
-            if j % 6 == 0 and j > 9:
-                obj.shape = 'arrow-up'
-                shape_modification += 1
-            if j % 12 == 0 and j >= 9:
+            if (j-9) % 6 == 0 and j > 9:
                 obj.shape = 'arrow-down'
+                shape_modification += 1
+            if (j-9) % 12 == 0 and j > 9:
+                obj.shape = 'arrow-up'
                 shape_modification += 1
             
             # draw hallway
-            if j < 12:
+            if j < 10:
                 if j % 2 == 1:
-                    obj.shape = 'arrow-down'
+                    obj.shape = 'arrow-up'
                     shape_modification += 1
                 else:
-                    obj.shape = 'arrow-up'
+                    obj.shape = 'arrow-down'
                     shape_modification += 1
                     
             if j < 5:
                 obj.shape = 'empty-space'
-            if j == 12:
+            if j == 9:
                 obj.shape = 'arrow-up'
             
             if shape_modification:
-                if j > 9 and ((j % 6  == 0) == False):
+                if j > 9 and (((j-9) % 6  == 0) == False):
                     shape_modification = 1
-            if shape_modification > 2 or (j < 13 and i%3 == 0):
+                if j >9 and ((i%3 != 0)):
+                    shape_modification =1
+            if shape_modification > 1 or (j < 10 and i%3 == 0):
                 # obj.shape = 'intersection'
                 intersections.append([obj.pos_x, obj.pos_y])
             
