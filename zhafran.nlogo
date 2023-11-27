@@ -44,7 +44,7 @@ to setup
       set ycor pos_y
       set heading _heading
     ]
-    if _shape = "turtle" [set robot_count robot_count + 1]
+    if _shape = "turtle-2" [set robot_count robot_count + 1]
   ]
   show count objects
 end
@@ -82,7 +82,7 @@ GRAPHICS-WINDOW
 15
 10
 818
-814
+559
 -1
 -1
 15.0
@@ -98,7 +98,7 @@ GRAPHICS-WINDOW
 0
 52
 0
-52
+35
 0
 0
 1
@@ -459,14 +459,15 @@ false
 0
 Polygon -7500403 true true 150 15 15 120 60 285 240 285 285 120
 
-person
+person-red
 false
 0
-Circle -7500403 true true 110 5 80
-Polygon -7500403 true true 105 90 120 195 90 285 105 300 135 300 150 225 165 300 195 300 210 285 180 195 195 90
-Rectangle -7500403 true true 127 79 172 94
-Polygon -7500403 true true 195 90 240 150 225 180 165 105
-Polygon -7500403 true true 105 90 60 150 75 180 135 105
+Circle -8630108 false false 120 60 60
+Line -8630108 false 150 120 150 225
+Line -8630108 false 150 135 105 180
+Line -8630108 false 150 135 195 180
+Line -8630108 false 150 225 195 285
+Line -8630108 false 150 225 105 285
 
 plant
 false
@@ -479,6 +480,17 @@ Polygon -7500403 true true 165 180 165 210 225 180 255 120 210 135
 Polygon -7500403 true true 135 105 90 60 45 45 75 105 135 135
 Polygon -7500403 true true 165 105 165 135 225 105 255 45 210 60
 Polygon -7500403 true true 135 90 120 45 150 15 180 45 165 90
+
+rail
+true
+0
+Rectangle -16777216 true false 0 135 315 165
+
+rail-corner
+true
+0
+Rectangle -16777216 true false 135 135 315 165
+Rectangle -16777216 true false 135 135 165 330
 
 sheep
 false
@@ -566,6 +578,22 @@ Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 10
 Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
 Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
 Polygon -7500403 true true 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
+
+turtle-2
+true
+0
+Rectangle -955883 true false 45 60 255 255
+Circle -1 true false 45 45 210
+
+turtle-occupied
+true
+0
+Polygon -10899396 true false 215 204 240 233 246 254 228 266 215 252 193 210
+Polygon -10899396 true false 195 90 225 75 245 75 260 89 269 108 261 124 240 105 225 105 210 105
+Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 105 90 105
+Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
+Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
+Polygon -2674135 true false 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
 
 wall
 true

@@ -25,6 +25,7 @@ def createPod(p1, p2):
     return res
 
 stations = [
+    [5, 33],
     [5, 27],
     [5, 21],
     [5, 15],
@@ -59,8 +60,8 @@ def initStation(universe: Inventory):
     
 def initOrders(universe: Inventory):
     dest = [
-        [27, 28, 0],
-        [21, 31, 2],
+        [25, 28, 4],
+        [24, 31, 2],
         [26, 11, 3],
         [14, 25, 0],
         [27, 28, 0],
@@ -102,9 +103,9 @@ def initOrders(universe: Inventory):
     
 def initRobots(universe: Inventory):
     robots = [
-        {'velocity': 0, 'heading': 0, 'x': 9, 'y': 13},
-        # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
-        # {'velocity': 0, 'heading': 0, 'x': 45, 'y': 26},
+        {'velocity': 0, 'heading': 180, 'x': 9, 'y': 13},
+        {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
+        {'velocity': 0, 'heading': 180, 'x': 45, 'y': 26},
         # {'velocity': 1, 'heading': 180, 'x': 50, 'y': 50},
         # {'velocity': 1, 'heading': 180, 'x': 51, 'y': 2},
     ]
@@ -135,40 +136,59 @@ def initWays(universe):
                     shape_modification += 1
 
             if (j-9) % 6 == 0 and j > 9:
-                obj.shape = 'arrow-down'
+                obj.shape = 'arrow-up'
                 shape_modification += 1
             if (j-9) % 12 == 0 and j > 9:
-                obj.shape = 'arrow-up'
+                obj.shape = 'arrow-down'
                 shape_modification += 1
             
             # draw hallway
             if j < 10:
                 if j % 2 == 1:
-                    obj.shape = 'arrow-up'
+                    obj.shape = 'arrow-down'
                     shape_modification += 1
                 else:
-                    obj.shape = 'arrow-down'
+                    obj.shape = 'arrow-up'
                     shape_modification += 1
                     
             if j < 5:
                 obj.shape = 'empty-space'
             if j == 9:
-                obj.shape = 'arrow-up'
+                obj.shape = 'arrow-down'
             
             if shape_modification:
                 if j > 9 and (((j-9) % 6  == 0) == False):
                     shape_modification = 1
-                if j >9 and ((i%3 != 0)):
+                if j > 9 and ((i%3 != 0)):
                     shape_modification =1
-            if shape_modification > 1 or (j < 10 and i%3 == 0):
+            if shape_modification > 1 or (j < 10 and i%3 == 0) or (j == 5):
                 # obj.shape = 'intersection'
                 intersections.append([obj.pos_x, obj.pos_y])
             
-            if j < 5:
-                obj.shape = 'wall'
-            
-            if i > 34:
-                obj.shape = 'wall'
+            if j < 5 and j >= 2 and i < 34:
+                if i % 3 == 0:
+                    obj.shape = 'rail'
+                    if j == 2:
+                        if i % 6 == 0:
+                            obj.heading = 270
+                        obj.shape = 'rail-corner'
+                else:
+                    if j == 2 and i not in [4, 5, 10, 11, 16, 17, 22, 23, 28, 29, 34, 35]:
+                        obj.shape = 'rail'
+                        obj.heading = 90
+                    else:
+                        obj.shape = 'empty-space'
+
+            if j == 1:
+                if i % 3 == 0:
+                    if i % 6 != 0:
+                        obj.pos_y -= 1
+                        obj.shape = 'person-red'
+
+            if i == 35:
+                obj.shape = "empty-space"
+                if j % 5 == 0:
+                    obj.shape = 'wall'
             universe.addObject(obj)
 def setup():
     initWays(universe)
@@ -178,6 +198,7 @@ def setup():
     initOrders(universe)
 
     universe.tick_to_second = 0.25
+    universe.intersections = intersections
     
     next = universe.generateResult()
 
