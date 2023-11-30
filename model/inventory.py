@@ -7,30 +7,46 @@ from .order import Order
 from .robot import Robot
 
 class Inventory(Universe):
-    dimension = 52
+    dimension = 60
     map = []
     landscape = None
     stations = []
     stop_and_go = 0
     total_energy = 0
+    total_pod = 0
     total_turning = 0
+    movement_channel = {}
 
     def __init__(self):
         self._tick = 0
         self.ignored_types = ["pod", "station", "way-direction"]
-        self.tick_to_second = 0.5
+        self.tick_to_second = 0.25
         self.order_queue = []
         self.landscape = Landscape(self.dimension)
 
         super().__init__()
 
     def addObject(self, object):
-        if object.object_type == "pod":
-            self.landscape.setObject(NetLogoCoordinate(object.pos_x, object.pos_y), 1)
+        if object.object_type == "robot":
+            object._id = self.total_pod+1
+            self.total_pod += 1
         
         super().addObject(object)
 
+    def addTrafficPolicyHistory(self, sender, target):
+        if target not in self.movement_channel:
+            self.movement_channel[target] = []
+        
+        self.movement_channel[target].append(sender)
+
+    def getTrafficPolicyHistory(self, target):
+        if target not in self.movement_channel:
+            return []
+        
+        return self.movement_channel[target]
+
     def tick(self):
+        self.movement_channel = {}
         if len(self.order_queue) > 0:
             current_distance = 1000000
             current_id = -1

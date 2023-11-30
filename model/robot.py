@@ -13,6 +13,7 @@ class Robot(Object):
     # netlogo related
     shape = 'turtle-2'
     object_type = 'robot'
+    _id = 0
 
     # movement related
     coor = None
@@ -21,6 +22,7 @@ class Robot(Object):
     energy_consumption = 0
     turning = 0
     heading = 0
+    suspend_movement = 0
 
     # routing related
     latest_rotation = ''
@@ -64,11 +66,90 @@ class Robot(Object):
         return 0
 
     def move(self):
+        print("Move", self.robotName())
+        self.shape = 'turtle-2'
         current_state = self.current_state
 
-        if self.destination is not None:
+        collision_radius = 4
+        collide_distance = 2
+        neighboors = self.universe.landscape.getNeighboorObject(int(self.pos_x), int(self.pos_y), collision_radius)
+        traffic_policy = False
+        if len(neighboors) > 0:
+            will_collide = False
+            selected_label = ""
+            object_heading = 0
+            for o in neighboors:
+                if o['label'] in self.universe.getTrafficPolicyHistory(self.robotName()):
+                    continue
+                if self.heading == 270:
+                    # care robot at left
+                    if o['x'] < self.pos_x:
+                        if (o['heading'] == 0 and o['y'] <= self.pos_y and o['velocity'] != 100) or (o['heading'] == 180 and o['y'] >= self.pos_y and o['velocity'] != 100) or (o['heading'] == 270 and o['y'] == self.pos_y):
+                            # calculate distance with hypotenuse
+                            distance = math.sqrt((o['x'] - self.pos_x)**2 + (o['y'] - self.pos_y)**2)
+                            if distance < collide_distance:
+                                will_collide = True
+                                selected_label = o['label']
+                                object_heading = o['heading']
+                                break
+
+                elif self.heading == 90:
+                    # care robot at right
+                    if o['x'] > self.pos_x:
+                        if (o['heading'] == 0 and o['y']-1 <= self.pos_y and o['velocity'] != 100) or (o['heading'] == 180 and o['y'] >= self.pos_y and o['velocity'] != 100) or (o['heading'] == 90 and o['y'] == self.pos_y):
+                            # calculate distance with hypotenuse
+                            distance = math.sqrt((o['x'] - self.pos_x)**2 + (o['y'] - self.pos_y)**2)
+                            if distance < collide_distance:
+                                will_collide = True
+                                selected_label = o['label']
+                                object_heading = o['heading']
+                                break
+                    
+                elif self.heading == 0:
+                    # care robot at top
+                    print("Heading 0", self.robotName())
+                    if o['y'] > self.pos_y:
+                        print(o, self.pos_x)
+                        print("Robot:", self.robotName(), (o['heading'] == 90 and o['x'] <= self.pos_x), (o['heading'] == 270 and o['x'] >= self.pos_x-1), (o['heading'] == 0 and o['x'] == self.pos_x))
+                        if (o['heading'] == 90 and o['x'] <= self.pos_x+1 and o['velocity'] != 100) or (o['heading'] == 270 and o['x'] >= self.pos_x-1 and o['velocity'] != 100) or (o['heading'] == 0 and o['x'] == self.pos_x):
+                            distance = math.sqrt((o['x'] - self.pos_x)**2 + (o['y'] - self.pos_y)**2)
+                            print("Distance from", self.robotName(), "to", o['label'], "is", distance)
+                            if distance < collide_distance:
+                                will_collide = True
+                                selected_label = o['label']
+                                object_heading = o['heading']
+                                break
+
+                elif self.heading == 180:
+                    # care robot at bottom
+                    if o['y'] < self.pos_y:
+                        if (o['heading'] == 90 and o['x'] <= self.pos_x and o['velocity'] != 100) or (o['heading'] == 270 and o['x'] >= self.pos_x and o['velocity'] != 100) or (o['heading'] == 180 and o['x'] == self.pos_x):
+                            distance = math.sqrt((o['x'] - self.pos_x)**2 + (o['y'] - self.pos_y)**2)
+                            if distance < collide_distance:
+                                will_collide = True
+                                selected_label = o['label']
+                                object_heading = o['heading']
+                                break
+
+            if will_collide:
+                self.velocity = 0
+                self.acceleration = 0
+                self.suspend_movement = 8
+                traffic_policy = True
+
+                if object_heading != self.heading:
+                    self.universe.addTrafficPolicyHistory(self.robotName(), selected_label)
+
+        if self.robotName() == 'robot-1':
+            print("Robot:", traffic_policy)
+        if self.suspend_movement > 0 and traffic_policy == False:
+            self.suspend_movement = 0
+            if self.suspend_movement == 0:
+                self.acceleration = 1
+
+        if self.destination is not None and traffic_policy == False:
             if current_state == 'aligning_x':
-                if self.close_enough(self.pos_x, self.destination.x, 1):
+                if self.close_enough(self.pos_x, self.destination.x, 0.5):
                     self.velocity = 0
                     self.acceleration = 0
                     self.current_state = 'aligning_y'
@@ -87,9 +168,11 @@ class Robot(Object):
                                     self.heading = 90
                                     self.pos_y = int(self.pos_y)
                         else:
-                            if (round(self.pos_y) % 2 == 1):
-                                self.velocity = 0
-                                self.heading = 270
+                            if self.close_enough(self.pos_y, int(self.pos_y)):
+                                if (int(self.pos_y) % 2 == 1):
+                                    self.velocity = 0
+                                    self.heading = 270
+                                    self.pos_y = int(self.pos_y)
                     else:
                         self.acceleration = 1
             if current_state == 'aligning_y':
@@ -105,7 +188,7 @@ class Robot(Object):
                         self.pos_y -= 1
 
                     # set offset
-                    self.destination = NetLogoCoordinate(5, 27-(self.order.station_number)*6)
+                    self.destination = NetLogoCoordinate(2, 27-(self.order.station_number)*6)
                     if self.pos_y < self.destination.y:
                         self.y_offset = 'up'
                     else:
@@ -123,13 +206,12 @@ class Robot(Object):
                 down_directed = [9, 21, 33]
                 if self.heading == 90 or self.heading == 270:
                     if self.pos_x > 9:
-                        if self.y_offset == 'up' and (int(self.pos_x)-3 ) % 12 == 0:
+                        if self.y_offset == 'up' and ((self.pos_x >= 45 and int(self.pos_x) % 2 == 0) or (int(self.pos_x)-3 ) % 12 == 0):
                             self.heading = 0
                             self.pos_x = int(self.pos_x)
-                        elif self.y_offset == 'down' and (int(self.pos_x)+3 ) % 12 == 0:
+                        elif self.y_offset == 'down' and ((self.pos_x >= 45 and int(self.pos_x) % 2 != 0) or (int(self.pos_x)+3 ) % 12 == 0):
                             self.heading = 180
                             self.pos_x = int(self.pos_x)
-                
                 if self.close_enough(self.pos_y, self.destination.y, 0.5):
                     self.velocity = 0
                     self.acceleration = 1
@@ -138,12 +220,31 @@ class Robot(Object):
                     self.pos_y = int(self.destination.y)
             if current_state == 'delivery_aligning_x':
                 if self.close_enough(self.pos_x, self.destination.x, 0.5):
-                    self.velocity = 0
+                    self.pos_x = int(self.destination.x)
                     self.acceleration = 0
+                    self.heading = 180
+                    self.velocity = 1
+                    self.destination = NetLogoCoordinate(self.destination.x, self.destination.y-1)
+                    self.current_state = 'delivery_on_station'
+                    self.idle_tick = 16
+            if current_state == 'delivery_on_station':
+                if self.close_enough(self.pos_y, self.destination.y, 0.5):
+                    self.velocity = 0
+                    if self.idle_tick == 0:
+                        self.current_state = 'delivery_on_exit_station'
+                        self.velocity = 1
+                        self.destination = NetLogoCoordinate(self.destination.x, self.destination.y-2)
+                    self.idle_tick -= 1
+            if current_state == 'delivery_on_exit_station':
+                if self.close_enough(self.pos_y, self.destination.y, 0.5):
+                    self.velocity = 0
+                    self.heading = 270
+                    self.current_state = 'idle'
+                    self.heading = 90
+                    self.pos_x = int(self.destination.x)
+                    self.pos_y = int(self.destination.y)
                     self.order = None
                     self.destination = None
-                    self.pos_y -= 3
-                    self.heading = 90
         return self.moveNew()
 
     def moveNew(self):
@@ -167,6 +268,8 @@ class Robot(Object):
             self.velocity = self.velocity + (self.acceleration * self.universe.tick_to_second)
             if self.velocity > self.maximum_speed:
                 self.velocity = self.maximum_speed
+
+        self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration, self.heading)
 
     def setOrder(self, order):
         self.order = order
@@ -200,3 +303,9 @@ class Robot(Object):
     def get_decimal(self, number):
         subtractor = int(number)
         return number - subtractor
+    
+    def robotName(self):
+        return f"robot-{self._id}"
+    
+    def robotID(self, robotName):
+        return int(robotName.split('-')[1])

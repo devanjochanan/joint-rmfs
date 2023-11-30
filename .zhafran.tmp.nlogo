@@ -67,10 +67,6 @@ to go
       set heading _heading
     ]
   ]
-  print "Total Energy"
-  print item 1 result
-  print "Order Left"
-  print item 2 result
   set order_count item 2 result
   set total_energy item 1 result
   set _stop item 3 result
@@ -81,7 +77,7 @@ end
 GRAPHICS-WINDOW
 15
 10
-818
+848
 559
 -1
 -1
@@ -96,7 +92,7 @@ GRAPHICS-WINDOW
 1
 1
 0
-52
+54
 0
 35
 0
@@ -569,7 +565,17 @@ Circle -7500403 false true 24 174 42
 Circle -7500403 false true 144 174 42
 Circle -7500403 false true 234 174 42
 
-truck cab top
+turtle
+true
+0
+Polygon -10899396 true false 215 204 240 233 246 254 228 266 215 252 193 210
+Polygon -10899396 true false 195 90 225 75 245 75 260 89 269 108 261 124 240 105 225 105 210 105
+Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 105 90 105
+Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
+Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
+Polygon -7500403 true true 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
+
+turtle-2
 true
 0
 Rectangle -7500403 true true 70 45 227 120
@@ -602,22 +608,6 @@ Rectangle -16777216 false false 107 149 192 210
 Rectangle -1 true false 180 9 203 17
 Rectangle -1 true false 97 9 120 17
 
-turtle
-true
-0
-Polygon -10899396 true false 215 204 240 233 246 254 228 266 215 252 193 210
-Polygon -10899396 true false 195 90 225 75 245 75 260 89 269 108 261 124 240 105 225 105 210 105
-Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 105 90 105
-Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
-Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
-Polygon -7500403 true true 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
-
-turtle-2
-true
-0
-Rectangle -955883 true false 45 60 255 255
-Circle -1 true false 45 45 210
-
 turtle-occupied
 true
 0
@@ -627,6 +617,43 @@ Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 10
 Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
 Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
 Polygon -2674135 true false 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
+
+turtle-tp
+true
+0
+Rectangle -7500403 true true 70 45 227 120
+Polygon -7500403 true true 150 8 118 10 96 17 90 30 75 135 75 195 90 210 150 210 210 210 225 195 225 135 209 30 201 17 179 10
+Polygon -16777216 true false 94 135 118 119 184 119 204 134 193 141 110 141
+Line -16777216 false 130 14 168 14
+Line -16777216 false 130 18 168 18
+Line -16777216 false 130 11 168 11
+Line -16777216 false 185 29 194 112
+Line -16777216 false 115 29 106 112
+Line -16777216 false 195 225 210 240
+Line -16777216 false 105 225 90 240
+Polygon -16777216 true false 210 195 195 195 195 150 210 143
+Polygon -16777216 false false 90 143 90 195 105 195 105 150 90 143
+Polygon -16777216 true false 90 195 105 195 105 150 90 143
+Line -7500403 true 210 180 195 180
+Line -7500403 true 90 180 105 180
+Line -16777216 false 212 44 213 124
+Line -16777216 false 88 44 87 124
+Line -16777216 false 223 130 193 112
+Rectangle -7500403 true true 225 133 244 139
+Rectangle -7500403 true true 56 133 75 139
+Rectangle -7500403 true true 120 210 180 240
+Rectangle -7500403 true true 93 238 210 270
+Rectangle -16777216 true false 200 217 224 278
+Rectangle -16777216 true false 76 217 100 278
+Circle -16777216 false false 135 240 30
+Line -16777216 false 77 130 107 112
+Rectangle -16777216 false false 107 149 192 210
+Rectangle -1 true false 180 9 203 17
+Rectangle -1 true false 97 9 120 17
+Polygon -13345367 true false 105 105 120 30 105 105
+Polygon -13345367 true false 120 105 135 30 165 30 180 105 120 105
+Polygon -13345367 true false 90 120 105 105 105 30 90 120
+Polygon -13345367 true false 210 120 195 105 195 30 210 120
 
 wall
 true

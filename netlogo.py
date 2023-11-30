@@ -8,7 +8,6 @@ from model.pod import Pod
 import pickle
 import csv
 
-universe = Inventory()
 intersections = []
 
 def createPod(p1, p2):
@@ -25,12 +24,12 @@ def createPod(p1, p2):
     return res
 
 stations = [
-    [5, 33],
-    [5, 27],
-    [5, 21],
-    [5, 15],
-    [5, 9],
-    [5, 3],
+    [2, 33],
+    [2, 27],
+    [2, 21],
+    [2, 15],
+    [2, 9],
+    [2, 3],
 ]
 
 def initPod(universe: Inventory):
@@ -64,14 +63,30 @@ def initOrders(universe: Inventory):
         [24, 31, 2],
         [26, 11, 3],
         [14, 25, 0],
-        [27, 28, 0],
-        [21, 31, 2],
+        [42, 28, 1],
+        [43, 11, 2],
+        [30, 16, 4],
+        [24, 22, 1],
         [26, 11, 3],
         [14, 25, 0],
-        [27, 28, 0],
-        [21, 31, 2],
-        [26, 11, 3],
+        [42, 28, 1],
+        [44, 31, 2],
+        [26, 11, 1],
         [14, 25, 0],
+        [25, 28, 4],
+        [24, 31, 2],
+        [26, 11, 1],
+        [14, 25, 0],
+        [42, 28, 2],
+        [43, 11, 2],
+        [30, 16, 4],
+        [24, 22, 4],
+        [26, 11, 3],
+        [14, 25, 1],
+        [42, 28, 0],
+        [44, 31, 2],
+        [26, 11, 3],
+        [14, 25, 3],
 
         # [27, 28, 1],
         
@@ -99,15 +114,30 @@ def initOrders(universe: Inventory):
         order.station_number = d[2]
     
         universe.addOrder(order)
+        obj = Object()
+        obj.pos_x = d[0]
+        obj.pos_y = d[1]
+        obj.shape = 'box'
+        obj.object_type = 'order'
+        universe.addObject(obj)
         
     
 def initRobots(universe: Inventory):
     robots = [
-        {'velocity': 0, 'heading': 180, 'x': 9, 'y': 13},
+        {'velocity': 0, 'heading': 0, 'x': 15, 'y': 11},
+        {'velocity': 0, 'heading': 90, 'x': 14, 'y': 12},
+        {'velocity': 0, 'heading': 180, 'x': 7, 'y': 5},
         {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
         {'velocity': 0, 'heading': 180, 'x': 45, 'y': 26},
-        # {'velocity': 1, 'heading': 180, 'x': 50, 'y': 50},
-        # {'velocity': 1, 'heading': 180, 'x': 51, 'y': 2},
+        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 10},
+        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 2},
+        {'velocity': 0, 'heading': 180, 'x': 9, 'y': 14},
+        {'velocity': 0, 'heading': 180, 'x': 7, 'y': 14},
+        {'velocity': 0, 'heading': 180, 'x': 7, 'y': 6},
+        {'velocity': 0, 'heading': 270, 'x': 28, 'y': 22},
+        {'velocity': 0, 'heading': 180, 'x': 45, 'y': 27},
+        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 11},
+        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 3},
     ]
     
     for r in robots:
@@ -187,17 +217,28 @@ def initWays(universe):
 
             if i == 35:
                 obj.shape = "empty-space"
-                if j % 5 == 0:
-                    obj.shape = 'wall'
+                # if j % 5 == 0:
+                #     obj.shape = 'wall'
+            
+            if j > 44:
+                if j % 2 == 0:
+                    obj.shape = 'arrow-up'
+                else:
+                    obj.shape = 'arrow-down'
+            
+            if j > 49:
+                obj.shape = 'empty-space'
             universe.addObject(obj)
+
 def setup():
+    universe = Inventory()
     initWays(universe)
     initStation(universe)
     initRobots(universe)
     initPod(universe)
     initOrders(universe)
 
-    universe.tick_to_second = 0.25
+    universe.tick_to_second = 0.10
     universe.intersections = intersections
     
     next = universe.generateResult()
@@ -208,6 +249,7 @@ def setup():
     return next
 
 def tick():
+    print("========tick========")
     universe = None
     
     # open a file, where you stored the pickled data
