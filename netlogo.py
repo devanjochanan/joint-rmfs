@@ -59,6 +59,8 @@ def initStation(universe: Inventory):
     
 def initOrders(universe: Inventory):
     dest = [
+        [25, 28, 2],
+        [24, 28, 2],
         [25, 28, 4],
         [24, 31, 2],
         [26, 11, 3],
@@ -125,7 +127,7 @@ def initOrders(universe: Inventory):
 def initRobots(universe: Inventory):
     robots = [
         {'velocity': 0, 'heading': 0, 'x': 15, 'y': 11},
-        {'velocity': 0, 'heading': 90, 'x': 14, 'y': 12},
+        {'velocity': 0, 'heading': 0, 'x': 15, 'y': 10},
         {'velocity': 0, 'heading': 180, 'x': 7, 'y': 5},
         {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
         {'velocity': 0, 'heading': 180, 'x': 45, 'y': 26},
@@ -212,7 +214,7 @@ def initWays(universe):
             if j == 1:
                 if i % 3 == 0:
                     if i % 6 != 0:
-                        obj.pos_y -= 1
+                        obj.pos_y -= 2
                         obj.shape = 'person-red'
 
             if i == 35:
