@@ -16,6 +16,7 @@ class Inventory(Universe):
     total_pod = 0
     total_turning = 0
     movement_channel = {}
+    graph = None
 
     def __init__(self):
         self._tick = 0
@@ -52,7 +53,22 @@ class Inventory(Universe):
             current_id = -1
 
             for o in self.moveableObjects():
-                if o.object_type == "robot" and o.order is None:
+                if o.object_type == "robot" and o.current_state == 'returning_pod':
+                    order = self.order_queue[0]
+                    if order.has_to_take_pod == False:
+                        dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
+                        if dist < current_distance:
+                            current_id = o.id
+                            current_distance = dist
+
+                        if current_id != -1:
+                            self.order_queue.pop(0)
+
+                        for o in self.moveableObjects():
+                            if o.id == current_id:
+                                o.setOrder2(order)
+
+                if o.object_type == "robot" and o.order is None and o.current_state == 'idle' and o.has_to_take_pod == True:
                     order = self.order_queue[0]
                     dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
                     if dist < current_distance:
@@ -85,7 +101,7 @@ class Inventory(Universe):
         current_id = -1
 
         for o in self.moveableObjects():
-            if o.object_type == "robot" and o.order is None:
+            if o.object_type == "robot" and o.order is None and o.current_state == 'idle':
                 dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
                 if dist < current_distance:
                     current_id = o.id

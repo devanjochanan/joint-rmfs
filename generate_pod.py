@@ -2,14 +2,14 @@ to_print = ""
 for i in range(53):
     one_row = []
     for j in range(53):
-        if j > 12 and j < 49:
+        if j > 9 and j < 49:
             if i % 3 == 0:
                 one_row.append('0')
             else:
-                if i > 51:
+                if j > 44:
                     one_row.append('0')
                 else:
-                    if j % 6 == 0:
+                    if j % 5 == 0:
                         one_row.append('0')
                     else:
                         one_row.append('1')

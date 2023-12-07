@@ -35,6 +35,7 @@ to setup
     let _shape item 1 (item 2 x)
     let pos_x item 1 (item 5 x)
     let pos_y item 1 (item 6 x)
+    let _color item 1 (item 7 x)
     create-objects 1
     [
       set _id id
@@ -50,7 +51,7 @@ to setup
 end
 
 to go
- (py:run
+ (
     "import netlogo"
     "item = netlogo.tick()")
   let result py:runresult "item"
@@ -62,9 +63,13 @@ to go
     let pos_y item 1 (item 6 x)
     let h 0
     let v 0
+    let _shape item 1 (item 2 x)
+    let _color item 1 (item 7 x)
     ask objects with [_id = id] [
      setxy pos_x pos_y
       set heading _heading
+      set shape _shape
+      set color _color
     ]
   ]
   set order_count item 2 result
@@ -73,12 +78,18 @@ to go
   set total_turning item 4 result
   set average_total_energy total_energy / robot_count
 end
+
+to setup-py
+  (py:run
+    "import netlogo"
+    "item = netlogo.setup_py()")
+end
 @#$#@#$#@
 GRAPHICS-WINDOW
 15
 10
-848
-559
+773
+529
 -1
 -1
 15.0
@@ -92,9 +103,9 @@ GRAPHICS-WINDOW
 1
 1
 0
-54
+49
 0
-35
+33
 0
 0
 1
@@ -206,6 +217,23 @@ total_turning
 17
 1
 14
+
+BUTTON
+975
+185
+1057
+218
+Setup Py
+setup-py
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
 
 @#$#@#$#@
 ## WHAT IS IT?
@@ -607,6 +635,42 @@ Line -16777216 false 77 130 107 112
 Rectangle -16777216 false false 107 149 192 210
 Rectangle -1 true false 180 9 203 17
 Rectangle -1 true false 97 9 120 17
+
+turtle-3
+true
+0
+Rectangle -7500403 true true 70 45 227 120
+Polygon -7500403 true true 150 8 118 10 96 17 90 30 75 135 75 195 90 210 150 210 210 210 225 195 225 135 209 30 201 17 179 10
+Polygon -16777216 true false 94 135 118 119 184 119 204 134 193 141 110 141
+Line -16777216 false 130 14 168 14
+Line -16777216 false 130 18 168 18
+Line -16777216 false 130 11 168 11
+Line -16777216 false 185 29 194 112
+Line -16777216 false 115 29 106 112
+Line -16777216 false 195 225 210 240
+Line -16777216 false 105 225 90 240
+Polygon -16777216 true false 210 195 195 195 195 150 210 143
+Polygon -16777216 false false 90 143 90 195 105 195 105 150 90 143
+Polygon -16777216 true false 90 195 105 195 105 150 90 143
+Line -7500403 true 210 180 195 180
+Line -7500403 true 90 180 105 180
+Line -16777216 false 212 44 213 124
+Line -16777216 false 88 44 87 124
+Line -16777216 false 223 130 193 112
+Rectangle -7500403 true true 225 133 244 139
+Rectangle -7500403 true true 56 133 75 139
+Rectangle -7500403 true true 120 210 180 240
+Rectangle -7500403 true true 93 238 210 270
+Rectangle -16777216 true false 200 217 224 278
+Rectangle -16777216 true false 76 217 100 278
+Circle -16777216 false false 135 240 30
+Line -16777216 false 77 130 107 112
+Rectangle -16777216 false false 107 149 192 210
+Rectangle -1 true false 180 9 203 17
+Rectangle -1 true false 97 9 120 17
+Polygon -13840069 true false 135 15 135 15 120 75 180 15 180 90 120 75 135 15 180 15
+Polygon -13840069 true false 90 30 90 45 75 60 75 120 225 105 225 60 195 30 90 30 90 30
+Rectangle -13840069 true false 120 150 180 210
 
 turtle-occupied
 true

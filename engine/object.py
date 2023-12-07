@@ -7,6 +7,7 @@ class Object:
         self.acceleration = 0
         self.pos_x = 0
         self.pos_y = 0
+        self.color = 15 # red
 
     def setUniverse(self, universe: Universe):
         self.universe = universe

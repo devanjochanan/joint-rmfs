@@ -27,7 +27,8 @@ class Universe:
                 'velocity': o.velocity,
                 'acceleration': o.acceleration,
                 'pos_x': o.pos_x,
-                'pos_y': o.pos_y
+                'pos_y': o.pos_y,
+                'color': o.color,
             })
 
         return result
