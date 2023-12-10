@@ -91,17 +91,18 @@ def initStation(universe: Inventory):
     
 def initOrders(universe: Inventory):
     dest = [
-        [25, 28, 2],
+        [12, 13, 2],
+        [11, 13, 2],
         [30, 14, 2],
-        [12, 25, 4],
+        [12, 25, 2],
         [25, 31, 2],
-        [26, 11, 1],
-        [15, 25, 0],
-        [42, 28, 1],
+        [26, 11, 2],
+        [15, 25, 2],
+        [42, 28, 2],
         [43, 11, 2],
-        [30, 16, 4],
-        [26, 22, 1],
-        [26, 11, 3],
+        [30, 16, 2],
+        [26, 22, 2],
+        [26, 11, 2],
         [15, 25, 0],
         # [42, 28, 1],
         # [44, 31, 2],
@@ -146,9 +147,6 @@ def initOrders(universe: Inventory):
         order = Order([d[0], d[1]])
         order.coor = NetLogoCoordinate(order.designated_pod[0], order.designated_pod[1])
         order.station_number = d[2]
-
-        if order.station_number % 2 == 0:
-            order.has_to_take_pod = False
     
         universe.addOrder(order)
         obj = Object()
@@ -161,7 +159,8 @@ def initOrders(universe: Inventory):
     
 def initRobots(universe: Inventory):
     robots = [
-        {'velocity': 0, 'heading': 90, 'x': 29, 'y': 11},
+        {'velocity': 0, 'heading': 180, 'x': 7, 'y': 11},
+        {'velocity': 0, 'heading': 180, 'x': 7, 'y': 12},
         {'velocity': 0, 'heading': 0, 'x': 14, 'y': 10},
         {'velocity': 0, 'heading': 180, 'x': 7, 'y': 5},
         {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},

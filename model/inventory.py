@@ -53,9 +53,24 @@ class Inventory(Universe):
             current_id = -1
 
             for o in self.moveableObjects():
-                if o.object_type == "robot" and o.current_state == 'returning_pod':
-                    order = self.order_queue[0]
-                    if order.has_to_take_pod == False:
+                if len(self.order_queue) > 0:
+                    order: Robot = self.order_queue[0]
+                    if o.object_type == "robot" and o.current_state == 'returning_pod':
+                        o: Robot = o
+                        if order.has_to_take_pod == False:
+                            dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
+                            if dist < current_distance:
+                                current_id = o.id
+                                current_distance = dist
+
+                            if current_id != -1:
+                                self.order_queue.pop(0)
+
+                            for o in self.moveableObjects():
+                                if o.id == current_id:
+                                    o.setOrderNoPod(order)
+
+                    if o.object_type == "robot" and o.order is None and o.current_state == 'idle' and order.has_to_take_pod == True:
                         dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
                         if dist < current_distance:
                             current_id = o.id
@@ -66,30 +81,17 @@ class Inventory(Universe):
 
                         for o in self.moveableObjects():
                             if o.id == current_id:
-                                o.setOrder2(order)
-
-                if o.object_type == "robot" and o.order is None and o.current_state == 'idle' and o.has_to_take_pod == True:
-                    order = self.order_queue[0]
-                    dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
-                    if dist < current_distance:
-                        current_id = o.id
-                        current_distance = dist
-
-                    if current_id != -1:
-                        self.order_queue.pop(0)
-
-                    for o in self.moveableObjects():
-                        if o.id == current_id:
-                            o.setOrder(order)
+                                o.setOrder(order)
 
         total_energy = 0
         total_turning = 0
         for o in self.moveableObjects():
+            initial_velocity = o.velocity
             o.move()
             if isinstance(o, Robot):
                 total_energy += o.energy_consumption
                 total_turning += o.turning
-                if o.velocity == 0:
+                if o.velocity == 0 and initial_velocity > 0:
                     self.stop_and_go += 1
         
         self.total_energy = total_energy
