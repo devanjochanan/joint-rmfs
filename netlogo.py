@@ -299,19 +299,19 @@ def initWays(universe):
             shape_modification = 0
 
             weight = 1
-            obj_key_neighboor = str(j - 1) + "," + str(i)
+            obj_key_neighbor = str(j - 1) + "," + str(i)
             if i % 2 == 0:
-                obj_key_neighboor = str(j + 1) + "," + str(i)
+                obj_key_neighbor = str(j + 1) + "," + str(i)
             if j < 5 and i % 3 != 0:
                 weight = 20
-            graph.add_edge(obj_key, obj_key_neighboor, weight=weight)
+            graph.add_edge(obj_key, obj_key_neighbor, weight=weight)
 
-            obj_key_neighboor_2 = str(j) + "," + str(i - 1)
+            obj_key_neighbor_2 = str(j) + "," + str(i - 1)
             if j % 2 == 0:
-                obj_key_neighboor_2 = str(j) + "," + str(i + 1)
+                obj_key_neighbor_2 = str(j) + "," + str(i + 1)
                 if j == 2:
-                    obj_key_neighboor_2 = str(j) + "," + str(i - 1)
-            graph.add_edge(obj_key, obj_key_neighboor_2, weight=1)
+                    obj_key_neighbor_2 = str(j) + "," + str(i - 1)
+            graph.add_edge(obj_key, obj_key_neighbor_2, weight=1)
 
             if i % 3 == 0:
                 obj.shape = 'arrow-left'
@@ -347,6 +347,7 @@ def initWays(universe):
                 if j > 9 and (i % 3 != 0):
                     shape_modification = 1
             if shape_modification > 1 or (j < 10 and i % 3 == 0) or (j == 5):
+                obj.shape = 'full square'
                 intersections.append([obj.pos_x, obj.pos_y])
 
             if 5 > j >= 2 and i < 34:
@@ -382,34 +383,34 @@ def initWays(universe):
                 obj.shape = 'empty-space'
 
             if i % 3 == 0:
-                obj_key_neighboor = str(j - 1) + "," + str(i)
+                obj_key_neighbor = str(j - 1) + "," + str(i)
                 if i % 6 == 0:
-                    obj_key_neighboor = str(j + 1) + "," + str(i)
-                graph_pod.add_edge(obj_key, obj_key_neighboor, weight=1)
+                    obj_key_neighbor = str(j + 1) + "," + str(i)
+                graph_pod.add_edge(obj_key, obj_key_neighbor, weight=1)
 
             weight = 1
             if j < 10:
                 weight = 3
 
             if obj.shape == 'arrow-up':
-                obj_key_neighboor = str(j) + "," + str(i + 1)
-                graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
+                obj_key_neighbor = str(j) + "," + str(i + 1)
+                graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
             elif obj.shape == 'arrow-down':
-                obj_key_neighboor = str(j) + "," + str(i - 1)
-                graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
+                obj_key_neighbor = str(j) + "," + str(i - 1)
+                graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
 
             if j < 5:
                 if (i - 3) % 6 == 0:
-                    obj_key_neighboor = str(j - 1) + "," + str(i)
-                    graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
+                    obj_key_neighbor = str(j - 1) + "," + str(i)
+                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
                 if i % 6 == 0:
-                    obj_key_neighboor = str(j + 1) + "," + str(i)
-                    graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
+                    obj_key_neighbor = str(j + 1) + "," + str(i)
+                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
                 if j == 2:
-                    obj_key_neighboor = str(j) + "," + str(i - 1)
-                    graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
-                    obj_key_neighboor = str(j) + "," + str(i - 2)
-                    graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
+                    obj_key_neighbor = str(j) + "," + str(i - 1)
+                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
+                    obj_key_neighbor = str(j) + "," + str(i - 2)
+                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
 
             universe.addObject(obj)
     # Visualization (optional)

@@ -68,7 +68,7 @@ class Landscape:
             'movement': movement,
         }
 
-    def getNeighboorObject(self, x, y, radius):
+    def getNeighborObject(self, x, y, radius):
         i = x-radius
         j = y+radius
         check = 2*radius+1

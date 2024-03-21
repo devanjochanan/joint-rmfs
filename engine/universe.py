@@ -4,7 +4,9 @@ class Universe:
     tick_to_second = 0.5
     _objects = []
     landscape = None
+    graph = None
     graph_pod = None
+    deadlock_prevention_manager = None
 
     def addObject(self, object):
         object.id = len(self._objects)

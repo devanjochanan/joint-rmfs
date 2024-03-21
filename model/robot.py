@@ -1,16 +1,15 @@
 import math
+
 from engine.heading import Heading
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
-from engine.universe import Universe
-from engine.util import calculateDistance
-from engine.movement import Movement
 from .traffic_policy import TrafficPolicy
+
 
 class Robot(Object):
     order = None
     destination = None
-    
+
     # netlogo related
     shape = 'turtle-2'
     object_type = 'robot'
@@ -44,65 +43,68 @@ class Robot(Object):
     def __init__(self):
         self.traffic_policy = []
         super().__init__()
-            
-    def _checkMovementDirection(self, p1, p2):
+
+    @staticmethod
+    def _checkMovementDirection(p1, p2):
         if p1.y == p2.y:
             # horizontal
             if p1.x < p2.x:
                 return 90
             if p1.x > p2.x:
                 return 270
-            
+
         if p1.x == p2.x:
             # vertical
             if p1.y < p2.y:
                 return 0
             if p1.y > p2.y:
                 return 180
-        
+
         return None
-    
+
     def calculateEnergy(self, velocity, acceleration):
         tick_unit = self.universe.tick_to_second
         if acceleration != 0 and velocity != 0:
-            average_speed = 2*velocity + (acceleration * tick_unit)
-            return (self.mass + self.load_mass) * ((self._gravity * self._friction) + (acceleration * self._inertia)) * average_speed * tick_unit/7200
+            average_speed = 2 * velocity + (acceleration * tick_unit)
+            return (self.mass + self.load_mass) * ((self._gravity * self._friction) + (
+                        acceleration * self._inertia)) * average_speed * tick_unit / 7200
         elif velocity != 0:
-            return (self.mass + self.load_mass) * self._gravity * self._friction * velocity * tick_unit/3600
+            return (self.mass + self.load_mass) * self._gravity * self._friction * velocity * tick_unit / 3600
         return 0
-    
+
     def setMovementPlanToStation(self):
         start = self._coordinateToNodeKey(self.pos_x, self.pos_y)
-        end = self._coordinateToNodeKey(2, 1+(self.order.station_number)*6)
+        end = self._coordinateToNodeKey(2, 1 + self.order.station_number * 6)
 
         node_routes = self.universe.graph_pod.dijkstra(start, end)
         self.setPath(self._transformRouteToList(node_routes))
-    
+
     def setPath(self, path):
         current_heading = self.heading
         route_stop_points = []
 
         # convert path list to route_stop_points (list of NetLogoCoordinate where the robot should stop and Heading to turn the robot)
         for i in range(1, len(path), 1):
-            p1 = NetLogoCoordinate(path[i-1][0], path[i-1][1])
+            p1 = NetLogoCoordinate(path[i - 1][0], path[i - 1][1])
             p2 = NetLogoCoordinate(path[i][0], path[i][1])
             heading = self.getHeading(p1, p2)
             if current_heading != heading:
                 current_heading = heading
-                route_stop_points.append(NetLogoCoordinate(path[i-1][0], path[i-1][1]))
+                route_stop_points.append(NetLogoCoordinate(path[i - 1][0], path[i - 1][1]))
                 route_stop_points.append(Heading(heading))
-        if len(route_stop_points) > 0 and isinstance(route_stop_points[len(route_stop_points)-1], NetLogoCoordinate) == False:
-            now = path[len(path)-1]
+        if len(route_stop_points) > 0 and isinstance(route_stop_points[len(route_stop_points) - 1],
+                                                     NetLogoCoordinate) == False:
+            now = path[len(path) - 1]
             route_stop_points.append(NetLogoCoordinate(now[0], now[1]))
         self.route_stop_points = route_stop_points
 
     def changeColorByState(self):
         if self.current_state == "taking_pod":
-            self.color = 57 # green
+            self.color = 57  # green
         elif self.current_state == "delivering_pod":
-            self.color = 15 # red
+            self.color = 15  # red
         elif self.current_state == "returning_pod":
-            self.color = 46 # yellow
+            self.color = 46  # yellow
 
     def advanceState(self):
         if self.current_state == "taking_pod":
@@ -117,10 +119,11 @@ class Robot(Object):
         will_collide = False
         selected_label = ""
         object_heading = 0
-        distance = math.sqrt((o['x'] - self.pos_x)**2 + (o['y'] - self.pos_y)**2)
+        distance = math.sqrt((o['x'] - self.pos_x) ** 2 + (o['y'] - self.pos_y) ** 2)
         if collision_block is not None:
-            self_distance = self._calculateTwoPoint(NetLogoCoordinate(self.pos_x, self.pos_y), NetLogoCoordinate(collision_block[0], collision_block[1]))
-            if (self.velocity**2)/2 >= self_distance or distance < collide_distance:
+            self_distance = self._calculateTwoPoint(NetLogoCoordinate(self.pos_x, self.pos_y),
+                                                    NetLogoCoordinate(collision_block[0], collision_block[1]))
+            if (self.velocity ** 2) / 2 >= self_distance or distance < collide_distance:
                 will_collide = True
                 selected_label = o['label']
                 object_heading = o['heading']
@@ -130,21 +133,23 @@ class Robot(Object):
             object_heading = o['heading']
         return will_collide, selected_label, object_heading
 
-    def getCollisionCandidates(self, exclude=[]):
+    def getCollisionCandidates(self, exclude=None):
+        if exclude is None:
+            exclude = []
         collision_radius = 4
 
         # this variable then will be replaced with correct closest neighboor that might collide
         closest_candidates = []
 
-        neighboors = self.universe.landscape.getNeighboorObject(int(self.pos_x), int(self.pos_y), collision_radius)
-        if len(neighboors) > 0:
+        neighbors = self.universe.landscape.getNeighborObject(int(self.pos_x), int(self.pos_y), collision_radius)
+        if len(neighbors) > 0:
             self_next_blocks = self._calculateNextBlocks(int(self.pos_x), int(self.pos_y), self.heading, 10)
 
-            for o in neighboors:
+            for o in neighbors:
                 if o['label'] in exclude:
                     continue
                 object_next_blocks = self._calculateNextBlocks(int(o['x']), int(o['y']), o['heading'], 10)
-                    
+
                 collision_block = self._getIntersectionBlock(self_next_blocks, object_next_blocks)
                 if collision_block is None:
                     continue
@@ -152,48 +157,56 @@ class Robot(Object):
                 if self.heading == 270:
                     # care robot at left
                     if o['x'] < self.pos_x:
-                        if (o['heading'] == 0 and o['y'] <= self.pos_y) or (o['heading'] == 180 and o['y'] >= self.pos_y) or (o['heading'] == 270 and int(o['y']) == int(self.pos_y)):
+                        if (o['heading'] == 0 and o['y'] <= self.pos_y) or (
+                                o['heading'] == 180 and o['y'] >= self.pos_y) or (
+                                o['heading'] == 270 and int(o['y']) == int(self.pos_y)):
                             closest_candidates.append(self._getRobot(o['label']))
 
                 elif self.heading == 90:
                     # care robot at right
                     if o['x'] > self.pos_x:
-                        if (o['heading'] == 0 and o['y'] <= self.pos_y) or (o['heading'] == 180 and o['y'] >= self.pos_y) or (o['heading'] == 90 and int(o['y']) == int(self.pos_y)):
+                        if (o['heading'] == 0 and o['y'] <= self.pos_y) or (
+                                o['heading'] == 180 and o['y'] >= self.pos_y) or (
+                                o['heading'] == 90 and int(o['y']) == int(self.pos_y)):
                             closest_candidates.append(self._getRobot(o['label']))
-                    
+
                 elif self.heading == 0:
                     # care robot at top
                     if o['y'] > self.pos_y:
-                        if (o['heading'] == 90 and o['x'] <= self.pos_x) or (o['heading'] == 270 and o['x'] >= self.pos_x) or (o['heading'] == 0 and int(o['x']) == int(self.pos_x)):
+                        if (o['heading'] == 90 and o['x'] <= self.pos_x) or (
+                                o['heading'] == 270 and o['x'] >= self.pos_x) or (
+                                o['heading'] == 0 and int(o['x']) == int(self.pos_x)):
                             closest_candidates.append(self._getRobot(o['label']))
 
                 elif self.heading == 180:
                     # care robot at bottom
                     if o['y'] < self.pos_y:
-                        if (o['heading'] == 90 and o['x'] <= self.pos_x) or (o['heading'] == 270 and o['x'] >= self.pos_x) or (o['heading'] == 180 and int(o['x']) == int(self.pos_x)):
+                        if (o['heading'] == 90 and o['x'] <= self.pos_x) or (
+                                o['heading'] == 270 and o['x'] >= self.pos_x) or (
+                                o['heading'] == 180 and int(o['x']) == int(self.pos_x)):
                             closest_candidates.append(self._getRobot(o['label']))
 
         return closest_candidates
 
-    def _getRobot(self, robotName):
+    def _getRobot(self, robot_name):
         for o in self.universe._objects:
-            if o.object_type == "robot" and o.robotName() == robotName:
-               return o
-            
+            if o.object_type == "robot" and o.robotName() == robot_name:
+                return o
+
     def appliedTrafficPolicyKeys(self):
         result = []
         for tp in self.traffic_policy:
             result.append(tp.prioritized_robot)
         return result
-    
-    def hasTrafficPolicyFor(self, robotName):
+
+    def hasTrafficPolicyFor(self, robot_name):
         for robot in self.appliedTrafficPolicyKeys():
-            if robot == robotName:
+            if robot == robot_name:
                 return True
         return False
-    
+
     def addTrafficPolicy(self, traffic_policy: TrafficPolicy):
-        if self.hasTrafficPolicyFor(traffic_policy.prioritized_robot) == False:
+        if not self.hasTrafficPolicyFor(traffic_policy.prioritized_robot):
             self.traffic_policy.append(traffic_policy)
 
     def deadlockPrevention(self):
@@ -221,10 +234,12 @@ class Robot(Object):
                 tp: TrafficPolicy = self.traffic_policy[index]
                 prioritized_robot: Robot = self._getRobot(tp.prioritized_robot)
 
-                prioritized_robot_next_blocks = self._calculateNextBlocks(int(prioritized_robot.pos_x), int(prioritized_robot.pos_y), prioritized_robot.heading, 5)
-                self_next_blocks = self._calculateNextBlocks(tp.collision_block.x, tp.collision_block.y, self.heading, 5)
-                
-                
+                prioritized_robot_next_blocks = self._calculateNextBlocks(int(prioritized_robot.pos_x),
+                                                                          int(prioritized_robot.pos_y),
+                                                                          prioritized_robot.heading, 5)
+                self_next_blocks = self._calculateNextBlocks(tp.collision_block.x, tp.collision_block.y, self.heading,
+                                                             5)
+
                 # if the two objects are heading to the same direction, then as long as the prioritized robot is in front of this robot, then it is safe to remove the traffic policy
                 # if the two objects are in different heading direction, resolve traffic policy after the two objects do not have collision block
                 if self.heading == prioritized_robot.heading:
@@ -246,20 +261,28 @@ class Robot(Object):
                 collision_candidate: Robot = c
 
                 # check if collision candidate has traffic policy for this robot
-                if collision_candidate.hasTrafficPolicyFor(self.robotName()) == False:
+                if not collision_candidate.hasTrafficPolicyFor(self.robotName()):
                     self_next_blocks = self._calculateNextBlocks(int(self.pos_x), int(self.pos_y), self.heading, 5)
-                    object_next_blocks = self._calculateNextBlocks(int(collision_candidate.pos_x), int(collision_candidate.pos_y), collision_candidate.heading, 5)
+                    object_next_blocks = self._calculateNextBlocks(int(collision_candidate.pos_x),
+                                                                   int(collision_candidate.pos_y),
+                                                                   collision_candidate.heading, 5)
 
                     collision_block: tuple[int, int] = self._getIntersectionBlock(self_next_blocks, object_next_blocks)
                     if collision_block is not None:
                         object_coor = NetLogoCoordinate(collision_candidate.pos_x, collision_candidate.pos_y)
                         self_coor = NetLogoCoordinate(self.pos_x, self.pos_y)
 
-                        self_distance_to_collision_block = self._calculateTwoPoint(self_coor, NetLogoCoordinate(collision_block[0], collision_block[1]))
-                        other_object_distance_to_collision_block = self._calculateTwoPoint(object_coor, NetLogoCoordinate(collision_block[0], collision_block[1]))
+                        self_distance_to_collision_block = self._calculateTwoPoint(self_coor,
+                                                                                   NetLogoCoordinate(collision_block[0],
+                                                                                                     collision_block[
+                                                                                                         1]))
+                        other_object_distance_to_collision_block = self._calculateTwoPoint(object_coor,
+                                                                                           NetLogoCoordinate(
+                                                                                               collision_block[0],
+                                                                                               collision_block[1]))
 
                         each_other_distance = self._calculateTwoPoint(self_coor, object_coor)
-                        self_should_decelerate = (self.velocity**2)/2 >= self_distance_to_collision_block-1.5
+                        self_should_decelerate = (self.velocity ** 2) / 2 >= self_distance_to_collision_block - 1.5
 
                         # prepare traffic policy object
                         tp = TrafficPolicy()
@@ -274,13 +297,14 @@ class Robot(Object):
                                 self.addTrafficPolicy(tp)
                         else:
                             # if the two objects are heading to the same direction, just make sure object that is behind keeps appropriate distance gap
-                            if (self.velocity**2)/2 >= each_other_distance-1:
+                            if (self.velocity ** 2) / 2 >= each_other_distance - 1:
                                 self.acceleration = -1
                                 self.addTrafficPolicy(tp)
 
         return len(self.traffic_policy) > 0
-        
-    def _transformRouteToList(self, path):
+
+    @staticmethod
+    def _transformRouteToList(path):
         path_int = []
         for p in path:
             l = p.split(',')
@@ -296,7 +320,7 @@ class Robot(Object):
         self.coordinate = NetLogoCoordinate(int(self.pos_x), int(self.pos_y))
         self.pos_x = int(self.pos_x)
         self.pos_y = int(self.pos_y)
-    
+
     def pickingItemInPod(self):
         if self.pick_pod_item_delay != 0:
             self.pick_pod_item_delay -= 1
@@ -304,7 +328,7 @@ class Robot(Object):
             # when the delay counter is zero, then return the pod
             if self.pick_pod_item_delay == 0:
                 self.current_state = "returning_pod"
-                
+
                 start = self._coordinateToNodeKey(self.coordinate.x, self.coordinate.y)
                 end = self._coordinateToNodeKey(self.order.coordinate.x, self.order.coordinate.y)
 
@@ -317,7 +341,7 @@ class Robot(Object):
     def shouldMoveToDestination(self):
         tp = self.trafficPolicy()
         return len(self.route_stop_points) > 0 and tp == False
-        
+
     def movementPlan(self):
         if self.pickingItemInPod():
             return
@@ -329,7 +353,7 @@ class Robot(Object):
                 self.turning += 1
                 self.route_stop_points.pop(0)
                 return
-            
+
             if isinstance(next_destination_coordinate, NetLogoCoordinate):
                 now_coor = NetLogoCoordinate(self.pos_x, self.pos_y)
 
@@ -341,7 +365,7 @@ class Robot(Object):
                     self.velocity = 0
                     self.acceleration = 0
                     self.route_stop_points.pop(0)
-                    
+
                     # check if robot is done doing movement plan
                     if len(self.route_stop_points) == 0:
                         # set robot to correct position and route to destination if any
@@ -357,16 +381,16 @@ class Robot(Object):
                     self.acceleration = 1
 
                     # if robot is close enough to next destination, then decelerate
-                    if (self.velocity**2)/2 >= self._calculateTwoPoint(now_coor, next_destination_coordinate):
+                    if (self.velocity ** 2) / 2 >= self._calculateTwoPoint(now_coor, next_destination_coordinate):
                         self.acceleration = -1
-            
+
         self.drawNextPosition()
 
     def move(self):
         self.changeColorByState()
 
         self.movementPlan()
-        
+
         self.latest_tick += 1
 
     def drawNextPosition(self):
@@ -374,16 +398,16 @@ class Robot(Object):
         initial_acceleration = self.acceleration
 
         self.energy_consumption += self.calculateEnergy(initial_velocity, initial_acceleration)
-        
-        if(self.velocity != 0):
+
+        if self.velocity != 0:
             distance_delta = self.velocity * self.universe.tick_to_second
-            if(self.heading == 0):
+            if self.heading == 0:
                 self.pos_y += distance_delta
-            elif(self.heading == 180):
+            elif self.heading == 180:
                 self.pos_y -= distance_delta
-            elif(self.heading == 90):
+            elif self.heading == 90:
                 self.pos_x += distance_delta
-            elif(self.heading == 270):
+            elif self.heading == 270:
                 self.pos_x -= distance_delta
         self.coordinate = NetLogoCoordinate(int(self.pos_x), int(self.pos_y))
 
@@ -392,13 +416,14 @@ class Robot(Object):
             self.velocity = max(0, min(self.maximum_speed, self.velocity))
 
         # for traffic policy purposes, report states to the manager
-        self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration, self.heading)
+        self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
+                                          self.heading)
 
     def setOrder(self, order):
         print("======Order set")
         self.order = order
         self.destination = order.coordinate
-        
+
         start = self._coordinateToNodeKey(self.pos_x, self.pos_y)
         end = self._coordinateToNodeKey(order.coordinate.x, order.coordinate.y)
 
@@ -416,13 +441,14 @@ class Robot(Object):
         next_blocks = self._calculateNextBlocks(int(self.pos_x), int(self.pos_y), self.heading, 5)
 
         start = self._coordinateToNodeKey(next_blocks[1][0], next_blocks[1][1])
-        end = self._coordinateToNodeKey(2, 1+(self.order.station_number)*6)
-        
+        end = self._coordinateToNodeKey(2, 1 + self.order.station_number * 6)
+
         node_paths = self.universe.graph_pod.dijkstra(start, end)
         self.setPath(self._transformRouteToList(node_paths))
 
     # utility functions
-    def getHeading(self, p1: NetLogoCoordinate, p2: NetLogoCoordinate):
+    @staticmethod
+    def getHeading(p1: NetLogoCoordinate, p2: NetLogoCoordinate):
         if p1.x == p2.x:
             if p1.y > p2.y:
                 return 180
@@ -433,15 +459,17 @@ class Robot(Object):
                 return 270
             else:
                 return 90
-            
-    def _calculateTwoPoint(self, p1: NetLogoCoordinate, p2: NetLogoCoordinate):
-        return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
-    
+
+    @staticmethod
+    def _calculateTwoPoint(p1: NetLogoCoordinate, p2: NetLogoCoordinate):
+        return math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2)
+
     def close_enough(self, p: NetLogoCoordinate, precision=0.25):
         self_coor = NetLogoCoordinate(self.pos_x, self.pos_y)
         return self._calculateTwoPoint(self_coor, p) < precision
-    
-    def ensure_coor(self, number):
+
+    @staticmethod
+    def ensure_coordinate(number):
         if isinstance(number, int):
             print(f"{number} is an integer.")
         elif isinstance(number, float) and number.is_integer():
@@ -449,17 +477,20 @@ class Robot(Object):
         else:
             print(f"{number} is not a valid integer or float with 0 precision.")
 
-    def get_decimal(self, number):
+    @staticmethod
+    def get_decimal(number):
         subtractor = int(number)
         return number - subtractor
-    
+
     def robotName(self):
         return f"robot-{self._id}"
-    
-    def robotID(self, robotName):
-        return int(robotName.split('-')[1])
-    
-    def _calculateNextBlocks(self, x, y, heading, block_count = 5):
+
+    @staticmethod
+    def robotID(robot_name):
+        return int(robot_name.split('-')[1])
+
+    @staticmethod
+    def _calculateNextBlocks(x, y, heading, block_count=5):
         x_difference = 0
         y_difference = 0
 
@@ -471,20 +502,22 @@ class Robot(Object):
             x_difference = -1
         if heading == 180:
             y_difference = -1
-        
+
         result = []
         for i in range(block_count):
             result.append([x, y])
 
             x += x_difference
             y += y_difference
-        
+
         return result
-    
-    def _coordinateToNodeKey(self, x: int, y: int):
+
+    @staticmethod
+    def _coordinateToNodeKey(x: int, y: int):
         return "{},{}".format(x, y)
-    
-    def _getIntersectionBlock(self, blocks_1, blocks_2):
+
+    @staticmethod
+    def _getIntersectionBlock(blocks_1, blocks_2):
         for p in blocks_1:
             if p in blocks_2:
                 return p
