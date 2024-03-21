@@ -41,6 +41,9 @@ class Robot(Object):
     _inertia = 0.4
 
     def __init__(self):
+        self.id = None
+        self.designated_pod = None
+        self.has_to_take_pod = None
         self.traffic_policy = []
         super().__init__()
 
@@ -67,7 +70,7 @@ class Robot(Object):
         if acceleration != 0 and velocity != 0:
             average_speed = 2 * velocity + (acceleration * tick_unit)
             return (self.mass + self.load_mass) * ((self._gravity * self._friction) + (
-                        acceleration * self._inertia)) * average_speed * tick_unit / 7200
+                    acceleration * self._inertia)) * average_speed * tick_unit / 7200
         elif velocity != 0:
             return (self.mass + self.load_mass) * self._gravity * self._friction * velocity * tick_unit / 3600
         return 0

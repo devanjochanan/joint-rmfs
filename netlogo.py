@@ -347,7 +347,7 @@ def initWays(universe):
                 if j > 9 and (i % 3 != 0):
                     shape_modification = 1
             if shape_modification > 1 or (j < 10 and i % 3 == 0) or (j == 5):
-                obj.shape = 'full square'
+                # obj.shape = 'full square'
                 intersections.append([obj.pos_x, obj.pos_y])
 
             if 5 > j >= 2 and i < 34:

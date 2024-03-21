@@ -1,11 +1,12 @@
 from engine.netlogo_coordinate import NetLogoCoordinate
 
+
 class DeadlockPreventionManager:
     def __init__(self, dimension):
         self._map = []
-        for i in range(dimension+1):
+        for i in range(dimension + 1):
             one_row = []
-            for j in range(dimension+1):
+            for j in range(dimension + 1):
                 one_row.append(0)
             self._map.append(one_row)
 

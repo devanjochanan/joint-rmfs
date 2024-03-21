@@ -1,7 +1,3 @@
-from .netlogo_coordinate import NetLogoCoordinate
-from .coordinate import Coordinate
-from .heading import Heading
-
 class Landscape:
     dimension = 0
     total_objects = 0

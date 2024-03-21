@@ -4,6 +4,7 @@ from engine.util import *
 from .order import Order
 from .robot import Robot
 
+
 class Inventory(Universe):
     dimension = 60
     map = []
@@ -28,21 +29,21 @@ class Inventory(Universe):
 
     def addObject(self, object):
         if object.object_type == "robot":
-            object._id = self.total_pod+1
+            object._id = self.total_pod + 1
             self.total_pod += 1
-        
+
         super().addObject(object)
 
     def addTrafficPolicyHistory(self, sender, target):
         if target not in self.movement_channel:
             self.movement_channel[target] = []
-        
+
         self.movement_channel[target].append(sender)
 
     def getTrafficPolicyHistory(self, target):
         if target not in self.movement_channel:
             return []
-        
+
         return self.movement_channel[target]
 
     def tick(self):
@@ -56,7 +57,7 @@ class Inventory(Universe):
                     order: Robot = self.order_queue[0]
                     if o.object_type == "robot" and o.current_state == 'returning_pod':
                         o: Robot = o
-                        if order.has_to_take_pod == False:
+                        if not order.has_to_take_pod:
                             dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
                             if dist < current_distance:
                                 current_id = o.id
@@ -65,9 +66,9 @@ class Inventory(Universe):
                             if current_id != -1:
                                 self.order_queue.pop(0)
 
-                            for o in self.moveableObjects():
-                                if o.id == current_id:
-                                    o.setOrderNoPod(order)
+                            for movableObject in self.moveableObjects():
+                                if movableObject.id == current_id:
+                                    movableObject.setOrderNoPod(order)
 
                     if o.object_type == "robot" and o.order is None and o.current_state == 'idle' and order.has_to_take_pod == True:
                         dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
@@ -78,9 +79,9 @@ class Inventory(Universe):
                         if current_id != -1:
                             self.order_queue.pop(0)
 
-                        for o in self.moveableObjects():
-                            if o.id == current_id:
-                                o.setOrder(order)
+                        for movableObject in self.moveableObjects():
+                            if movableObject.id == current_id:
+                                movableObject.setOrder(order)
 
         total_energy = 0
         total_turning = 0
@@ -92,7 +93,7 @@ class Inventory(Universe):
                 total_turning += o.turning
                 if o.velocity == 0 and initial_velocity > 0:
                     self.stop_and_go += 1
-        
+
         self.total_energy = total_energy
         self.total_turning = total_turning
         self._tick += self.tick_to_second
@@ -111,7 +112,7 @@ class Inventory(Universe):
         if current_id == -1:
             self.order_queue.append(order)
             return
-        
+
         for o in self.moveableObjects():
             if o.id == current_id:
                 o.setOrder(order)

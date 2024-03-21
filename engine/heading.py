@@ -1,4 +1,3 @@
-from .netlogo_coordinate import NetLogoCoordinate
 class Heading:
     heading = 0
 
