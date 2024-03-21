@@ -6,4 +6,5 @@ class Station(Object):
         self.shape = 'empty-space'
         self.object_type = 'station'
         self.mass = 1
+        self.coordinate = None
         super().__init__()

@@ -1,43 +1,76 @@
-from engine.netlogo_coordinate import NetLogoCoordinate
-from model.inventory import Inventory
-from model.robot import Robot
-from model.station import Station
-from model.order import Order
-from engine.object import Object
-from model.pod import Pod
-import pickle
 import csv
+import pickle
 
 import networkx as nx
-import matplotlib.pyplot as plt
+
+from engine.netlogo_coordinate import NetLogoCoordinate
+from engine.object import Object
+from model.inventory import Inventory
+from model.order import Order
+from model.pod import Pod
+from model.robot import Robot
+from model.station import Station
+
+from pip._internal import main as pipmain
+
 
 class DirectedGraph:
     key = ''
 
     def __init__(self):
+        """Initialize an instance with a directed graph."""
         self.graph = nx.DiGraph()
 
-    def node_valid(self, node):
-        l = node.split(",")
-        x = int(l[0])
-        y = int(l[1])
-        return x>=2 and y>=0
-    
+    @staticmethod
+    def node_valid(node):
+        """Check if a node is valid based on custom logic.
+
+        Args:
+            node (str): The node in format 'x,y'.
+
+        Returns:
+            bool: True if the node is valid, False otherwise.
+        """
+        x, y = map(int, node.split(","))
+        return x >= 2 and y >= 0
+
     def add_node(self, node):
+        """Add a node to the graph if it's valid.
+
+        Args:
+            node (str): The node to add.
+        """
         if self.node_valid(node):
             self.graph.add_node(node)
 
     def add_edge(self, start, end, weight):
+        """Add an edge between two nodes with a weight if both nodes are valid.
+
+        Args:
+            start (str): The start node.
+            end (str): The end node.
+            weight (float): The weight of the edge.
+        """
         if self.node_valid(start) and self.node_valid(end):
             self.graph.add_edge(start, end, weight=weight)
 
     def dijkstra(self, start, end):
+        """Find the shortest path between two nodes using Dijkstra's algorithm.
+
+        Args:
+            start (str): The start node.
+            end (str): The end node.
+
+        Returns:
+            list or None: The path from start to end if one exists, otherwise None.
+        """
         try:
             path = nx.shortest_path(self.graph, source=start, target=end, weight='weight', method='bellman-ford')
             return path
         except nx.NetworkXNoPath:
             return None
-        
+
+
 intersections = []
 
 stations = [
@@ -49,48 +82,90 @@ stations = [
     [2, 3],
 ]
 
+
 def initPod(universe: Inventory):
+    # Access the graphs from the universe object
     graph = universe.graph
     graph_pod = universe.graph_pod
+
+    # Open and read the 'pod.csv' file
     with open('pod.csv') as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
+
+        # Initialize a counter for the rows (y-coordinate)
         line_count = 0
+
         for row in csv_reader:
+            # Initialize the x-coordinate for the start of the row
             current_x = 0
-            for j in row:
-                if(j == '1'):
-                    pObj = Pod()
-                    pObj.pos_x = current_x-1
-                    pObj.pos_y = line_count
-                    pObj.coor = NetLogoCoordinate(pObj.pos_x, pObj.pos_y)
-                    universe.addObject(pObj)
-                    obj_key = str(pObj.pos_x) + "," + str(pObj.pos_y)
+
+            for cell_value in row:
+                # Check if the cell indicates a Pod location
+                if cell_value == '1':
+                    # Create a new Pod object and set its position and coordinates
+                    pod = Pod()
+                    pod.pos_x = current_x - 1
+                    pod.pos_y = line_count
+                    pod.coordinate = NetLogoCoordinate(pod.pos_x, pod.pos_y)
+
+                    # Add the Pod object to the universe
+                    universe.addObject(pod)
+
+                    # Construct the key for the current Pod based on its coordinates
+                    obj_key = f"{pod.pos_x},{pod.pos_y}"
+
+                    # Add nodes for the Pod in both graphs
                     graph.add_node(obj_key)
                     graph_pod.add_node(obj_key)
 
-                    obj_key_neighboor = str(pObj.pos_x) + "," + str(pObj.pos_y-1)
-                    if (pObj.pos_y + 1) % 3 == 0:
-                        obj_key_neighboor = str(pObj.pos_x) + "," + str(pObj.pos_y+1)
-                    graph_pod.add_node(obj_key_neighboor)
-                    graph.add_edge(obj_key, obj_key_neighboor, weight=1)
-                    graph_pod.add_edge(obj_key, obj_key_neighboor, weight=1)
-                    graph_pod.add_edge(obj_key_neighboor, obj_key, weight=1)
+                    # Determine the key for the neighboring node based on the y-coordinate
+                    obj_key_neighbor = f"{pod.pos_x},{pod.pos_y - 1}"
+                    if (pod.pos_y + 1) % 3 == 0:
+                        obj_key_neighbor = f"{pod.pos_x},{pod.pos_y + 1}"
+
+                    # Add the neighboring node and edges between the Pod and its neighbor in both graphs
+                    graph_pod.add_node(obj_key_neighbor)
+                    graph.add_edge(obj_key, obj_key_neighbor, weight=1)
+                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=1)
+                    graph_pod.add_edge(obj_key_neighbor, obj_key, weight=1)
+
+                # Move to the next x-coordinate
                 current_x += 1
+
+            # Limit the processing to the first 33 lines
             if line_count > 32:
                 break
+
+            # Move to the next row (y-coordinate)
             line_count += 1
 
+
 def initStation(universe: Inventory):
+    # Iterate over each station defined in the 'stations' list
+    # Assuming 'stations' is a list of tuples/lists where each item contains the x and y coordinates of a station
     for s in stations:
-        sObj = Station()
-        sObj.pos_x = s[0]
-        sObj.pos_y = s[1]
-        sObj.coor = NetLogoCoordinate(s[0], s[1])
-        universe.addObject(sObj)
-        universe.addStation(sObj)
-    
+        # Create a new Station object
+        station = Station()
+
+        # Set the x and y positions from the station data
+        station.pos_x = s[0]
+        station.pos_y = s[1]
+
+        # Set the coordinates for the station using a helper function or class
+        # NetLogoCoordinate may be a function or class designed to handle coordinate transformations or representations
+        station.coordinate = NetLogoCoordinate(s[0], s[1])
+
+        # Add the station object to the universe's list of objects
+        # This could be for general object management within the universe
+        universe.addObject(station)
+
+        # Specifically add the station object to the universe's list of stations
+        # This could be for easy access to stations or station-specific management
+        universe.addStation(station)
+
+
 def initOrders(universe: Inventory):
-    dest = [
+    destinations = [
         [12, 13, 2],
         [11, 13, 2],
         [30, 14, 2],
@@ -124,7 +199,7 @@ def initOrders(universe: Inventory):
         # [14, 25, 3],
 
         # [27, 28, 1],
-        
+
         # [27, 28, 4],
         # [27, 28, 0],
         # [27, 28, 1],
@@ -143,20 +218,28 @@ def initOrders(universe: Inventory):
         # [27, 28, 4],
     ]
 
-    for d in dest:
-        order = Order([d[0], d[1]])
-        order.coor = NetLogoCoordinate(order.designated_pod[0], order.designated_pod[1])
-        order.station_number = d[2]
-    
+    for destination in destinations:
+        # Create a new Order object with x and y positions
+        order = Order(destination[:2])  # Assuming Order takes a list [x, y] as argument
+        # Set the coordinates for the order using a helper function or class
+        order.coordinate = NetLogoCoordinate(*destination[:2])
+        # Set the station number for the order
+        order.station_number = destination[2]
+
+        # Add the order to the universe's list of orders
         universe.addOrder(order)
-        obj = Object()
-        obj.pos_x = d[0]
-        obj.pos_y = d[1]
-        obj.shape = 'box'
-        obj.object_type = 'order'
-        universe.addObject(obj)
-        
-    
+
+        # Create a visual representation of the order as an Object
+        visual_obj = Object()
+        visual_obj.pos_x = destination[0]
+        visual_obj.pos_y = destination[1]
+        visual_obj.shape = 'box'  # Assuming this is a fixed shape for all orders
+        visual_obj.object_type = 'order'
+
+        # Add the visual object to the universe
+        universe.addObject(visual_obj)
+
+
 def initRobots(universe: Inventory):
     robots = [
         {'velocity': 0, 'heading': 180, 'x': 7, 'y': 11},
@@ -175,14 +258,22 @@ def initRobots(universe: Inventory):
         # {'velocity': 0, 'heading': 0, 'x': 48, 'y': 11},
         # {'velocity': 0, 'heading': 0, 'x': 46, 'y': 3},
     ]
-    
+
+    # Iterate through each robot in the list to initialize and add to the universe
     for r in robots:
+        # Create a new Robot instance
         robot = Robot()
+
+        # Set the robot's attributes based on the dictionary values
         robot.velocity = r['velocity']
         robot.heading = r['heading']
         robot.pos_x = r['x']
         robot.pos_y = r['y']
-        robot.coor = NetLogoCoordinate(robot.pos_x, robot.pos_y)
+
+        # Optionally, set the robot's coordinates using a specific coordinate system
+        robot.coordinate = NetLogoCoordinate(robot.pos_x, robot.pos_y)
+
+        # Add the robot to the universe, which likely involves adding it to some internal list or map
         universe.addObject(robot)
 
 
@@ -194,10 +285,10 @@ def initWays(universe):
     universe.graph = graph
     universe.graph_pod = graph_pod
 
-    for i in range(universe.dimension+1):
+    for i in range(universe.dimension + 1):
         if i > 33:
             break
-        for j in range(universe.dimension+1):
+        for j in range(universe.dimension + 1):
             obj = Object()
             obj.object_type = 'way-direction'
             obj.pos_x = j
@@ -208,20 +299,19 @@ def initWays(universe):
             shape_modification = 0
 
             weight = 1
-            obj_key_neighboor = str(j-1) + "," + str(i)
+            obj_key_neighboor = str(j - 1) + "," + str(i)
             if i % 2 == 0:
-                obj_key_neighboor = str(j+1) + "," + str(i)
+                obj_key_neighboor = str(j + 1) + "," + str(i)
             if j < 5 and i % 3 != 0:
                 weight = 20
             graph.add_edge(obj_key, obj_key_neighboor, weight=weight)
 
-            obj_key_neighboor_2 = str(j) + "," + str(i-1)
+            obj_key_neighboor_2 = str(j) + "," + str(i - 1)
             if j % 2 == 0:
-                obj_key_neighboor_2 = str(j) + "," + str(i+1)
+                obj_key_neighboor_2 = str(j) + "," + str(i + 1)
                 if j == 2:
-                    obj_key_neighboor_2 = str(j) + "," + str(i-1)
+                    obj_key_neighboor_2 = str(j) + "," + str(i - 1)
             graph.add_edge(obj_key, obj_key_neighboor_2, weight=1)
-            
 
             if i % 3 == 0:
                 obj.shape = 'arrow-left'
@@ -230,13 +320,13 @@ def initWays(universe):
                     obj.shape = 'arrow-right'
                     shape_modification += 1
 
-            if (j-9) % 5 == 0 and j > 9:
+            if (j - 9) % 5 == 0 and j > 9:
                 obj.shape = 'arrow-up'
                 shape_modification += 1
-            if (j-9) % 10 == 0 and j > 9:
+            if (j - 9) % 10 == 0 and j > 9:
                 obj.shape = 'arrow-down'
                 shape_modification += 1
-            
+
             # draw hallway
             if j < 10:
                 if j % 2 == 1:
@@ -245,21 +335,21 @@ def initWays(universe):
                 else:
                     obj.shape = 'arrow-up'
                     shape_modification += 1
-                    
+
             if j < 5:
                 obj.shape = 'empty-space'
             if j == 9:
                 obj.shape = 'arrow-down'
-            
+
             if shape_modification:
-                if j > 9 and (((j-9) % 6  == 0) == False):
+                if j > 9 and (((j - 9) % 6 == 0) == False):
                     shape_modification = 1
-                if j > 9 and ((i%3 != 0)):
+                if j > 9 and (i % 3 != 0):
                     shape_modification = 1
-            if shape_modification > 1 or (j < 10 and i%3 == 0) or (j == 5):
+            if shape_modification > 1 or (j < 10 and i % 3 == 0) or (j == 5):
                 intersections.append([obj.pos_x, obj.pos_y])
-            
-            if j < 5 and j >= 2 and i < 34:
+
+            if 5 > j >= 2 and i < 34:
                 if i % 3 == 0:
                     obj.shape = 'rail'
                     if j == 2:
@@ -281,20 +371,20 @@ def initWays(universe):
 
             if i == 35:
                 obj.shape = "empty-space"
-            
+
             if j > 44:
                 if j % 2 == 0:
                     obj.shape = 'arrow-up'
                 else:
                     obj.shape = 'arrow-down'
-            
+
             if j > 49:
                 obj.shape = 'empty-space'
 
             if i % 3 == 0:
-                obj_key_neighboor = str(j-1) + "," + str(i)
+                obj_key_neighboor = str(j - 1) + "," + str(i)
                 if i % 6 == 0:
-                    obj_key_neighboor = str(j+1) + "," + str(i)
+                    obj_key_neighboor = str(j + 1) + "," + str(i)
                 graph_pod.add_edge(obj_key, obj_key_neighboor, weight=1)
 
             weight = 1
@@ -302,23 +392,23 @@ def initWays(universe):
                 weight = 3
 
             if obj.shape == 'arrow-up':
-                obj_key_neighboor = str(j) + "," + str(i+1)
+                obj_key_neighboor = str(j) + "," + str(i + 1)
                 graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
             elif obj.shape == 'arrow-down':
-                obj_key_neighboor = str(j) + "," + str(i-1)
+                obj_key_neighboor = str(j) + "," + str(i - 1)
                 graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
-            
+
             if j < 5:
-                if (i-3) % 6 == 0:
-                    obj_key_neighboor = str(j-1) + "," + str(i)
+                if (i - 3) % 6 == 0:
+                    obj_key_neighboor = str(j - 1) + "," + str(i)
                     graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
-                if (i) % 6 == 0:
-                    obj_key_neighboor = str(j+1) + "," + str(i)
+                if i % 6 == 0:
+                    obj_key_neighboor = str(j + 1) + "," + str(i)
                     graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
                 if j == 2:
-                    obj_key_neighboor = str(j) + "," + str(i-1)
+                    obj_key_neighboor = str(j) + "," + str(i - 1)
                     graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
-                    obj_key_neighboor = str(j) + "," + str(i-2)
+                    obj_key_neighboor = str(j) + "," + str(i - 2)
                     graph_pod.add_edge(obj_key, obj_key_neighboor, weight=weight)
 
             universe.addObject(obj)
@@ -329,62 +419,67 @@ def initWays(universe):
     # nx.draw_networkx_edge_labels(graph.graph, pos, edge_labels=labels)
     # plt.show()
 
+
 def setup():
+    # Initialize the simulation universe
     universe = Inventory()
+
+    # Populate the universe with objects and connections
     initWays(universe)
     initStation(universe)
     initRobots(universe)
     initPod(universe)
     initOrders(universe)
 
+    # Set simulation parameters
     universe.tick_to_second = 0.15
-    universe.intersections = intersections
-    
-    next = universe.generateResult()
+    universe.intersections = intersections  # Ensure 'intersections' is defined earlier
 
+    # Generate initial results
+    next_result = universe.generateResult()
+
+    # Save the universe state for future ticks
     with open('netlogo.state', 'wb') as config_dictionary_file:
         pickle.dump(universe, config_dictionary_file)
 
-    return next
+    return next_result
+
 
 def tick():
     print("========tick========")
-    universe = None
-    
-    # open a file, where you stored the pickled data
-    file = open('netlogo.state', 'rb')
 
-    # dump information to that file
-    universe = pickle.load(file)
+    # Load the simulation state
+    with open('netlogo.state', 'rb') as file:
+        universe = pickle.load(file)
 
     print("before tick", universe._tick)
 
+    # Update each object with the current universe context
     for _n in universe._objects:
         _n.setUniverse(universe)
 
-    # close the file
-    file.close()
-
+    # Perform a simulation tick
     universe.tick()
 
-    next = universe.generateResult()
+    # Generate results after the tick
+    next_result = universe.generateResult()
     with open('netlogo.state', 'wb') as config_dictionary_file:
         pickle.dump(universe, config_dictionary_file)
-    return [next, universe.total_energy, len(universe.order_queue), universe.stop_and_go, universe.total_turning]
+
+    return [next_result, universe.total_energy, len(universe.order_queue), universe.stop_and_go, universe.total_turning]
+
 
 def setup_py():
-    from pip._internal import main as pipmain
-
     def install_package(package_name):
-        pipmain(["install", package_name])
+        """Install a Python package using pip."""
+        pipmain(['install', package_name])
 
-    # Example: Install the "requests" package
-    packages = [
-        "networkx",
-        "matplotlib",
-    ]
-    for p in packages:
-        install_package(p)
+    # List of packages to install
+    packages = ["networkx", "matplotlib"]
+
+    # Install each package
+    for package in packages:
+        install_package(package)
 # setup()
 # x = setup()
 # print(x)

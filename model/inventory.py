@@ -1,6 +1,4 @@
 from engine.landscape import Landscape
-from engine.netlogo_coordinate import NetLogoCoordinate
-from engine.object import Object
 from engine.universe import Universe
 from engine.util import *
 from .order import Order
@@ -17,6 +15,7 @@ class Inventory(Universe):
     total_turning = 0
     movement_channel = {}
     graph = None
+    graph_pod = None
 
     def __init__(self):
         self._tick = 0

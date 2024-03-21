@@ -17,7 +17,7 @@ class Robot(Object):
     _id = 0
 
     # movement related
-    coor = None
+    coordinate = None
     maximum_speed = 2
     current_state = 'idle'
     energy_consumption = 0
@@ -293,7 +293,7 @@ class Robot(Object):
         self.route_stop_points = []
 
     def setPositionToInt(self):
-        self.coor = NetLogoCoordinate(int(self.pos_x), int(self.pos_y))
+        self.coordinate = NetLogoCoordinate(int(self.pos_x), int(self.pos_y))
         self.pos_x = int(self.pos_x)
         self.pos_y = int(self.pos_y)
     
@@ -305,8 +305,8 @@ class Robot(Object):
             if self.pick_pod_item_delay == 0:
                 self.current_state = "returning_pod"
                 
-                start = self._coordinateToNodeKey(self.coor.x, self.coor.y)
-                end = self._coordinateToNodeKey(self.order.coor.x, self.order.coor.y)
+                start = self._coordinateToNodeKey(self.coordinate.x, self.coordinate.y)
+                end = self._coordinateToNodeKey(self.order.coordinate.x, self.order.coordinate.y)
 
                 self.neutralizeRobotState()
 
@@ -337,7 +337,7 @@ class Robot(Object):
                     # stop robot and advance to next stop points
                     self.pos_x = int(next_destination_coordinate.x)
                     self.pos_y = int(next_destination_coordinate.y)
-                    self.coor = NetLogoCoordinate(self.pos_x, self.pos_y)
+                    self.coordinate = NetLogoCoordinate(self.pos_x, self.pos_y)
                     self.velocity = 0
                     self.acceleration = 0
                     self.route_stop_points.pop(0)
@@ -385,7 +385,7 @@ class Robot(Object):
                 self.pos_x += distance_delta
             elif(self.heading == 270):
                 self.pos_x -= distance_delta
-        self.coor = NetLogoCoordinate(int(self.pos_x), int(self.pos_y))
+        self.coordinate = NetLogoCoordinate(int(self.pos_x), int(self.pos_y))
 
         if self.acceleration != 0:
             self.velocity += (self.acceleration * self.universe.tick_to_second)
@@ -397,10 +397,10 @@ class Robot(Object):
     def setOrder(self, order):
         print("======Order set")
         self.order = order
-        self.destination = order.coor
+        self.destination = order.coordinate
         
         start = self._coordinateToNodeKey(self.pos_x, self.pos_y)
-        end = self._coordinateToNodeKey(order.coor.x, order.coor.y)
+        end = self._coordinateToNodeKey(order.coordinate.x, order.coordinate.y)
 
         node_paths = self.universe.graph.dijkstra(start, end)
 
@@ -410,9 +410,9 @@ class Robot(Object):
     def setOrderNoPod(self, order):
         print("======Order set 2=======")
         self.order = order
-        self.destination = order.coor
+        self.destination = order.coordinate
         self.current_state = 'delivering_pod'
-        self.coor = NetLogoCoordinate(self.pos_x, self.pos_y)
+        self.coordinate = NetLogoCoordinate(self.pos_x, self.pos_y)
         next_blocks = self._calculateNextBlocks(int(self.pos_x), int(self.pos_y), self.heading, 5)
 
         start = self._coordinateToNodeKey(next_blocks[1][0], next_blocks[1][1])

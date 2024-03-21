@@ -1,2 +1,2 @@
-networkx
+networkx~=3.2.1
 matplotlib

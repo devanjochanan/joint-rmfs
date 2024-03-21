@@ -7,4 +7,5 @@ class Pod(Object):
         self.shape = 'empty-space'
         self.object_type = 'pod'
         self.mass = 4
+        self.coordinate = None
         super().__init__()
