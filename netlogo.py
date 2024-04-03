@@ -10,6 +10,7 @@ from model.order import Order
 from model.pod import Pod
 from model.robot import Robot
 from model.station import Station
+from model.layout import Layout
 
 from pip._internal import main as pipmain
 
@@ -426,6 +427,7 @@ def setup():
     universe = Inventory()
 
     # Populate the universe with objects and connections
+    Layout().draw()
     initWays(universe)
     initStation(universe)
     initRobots(universe)
