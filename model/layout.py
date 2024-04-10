@@ -15,48 +15,43 @@ class Layout(object):
 
     def draw(self):
         order_picker_positions = self.get_order_picker_indexes(self.get_order_picker_positions())
-        # print(order_picker_positions)
+        print(order_picker_positions)
         with open('generated_pod.csv', 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            row = 0
-            while self.pod_batch_vertical_count < self.pod_batch_vertical_max:
-                if row % (self.pod_batch_vertical + 1) == 0:
-                    # Horizontal straight line
-                    current_row = [0] * self.total_cols()
-                    if row != 0:
-                        self.pod_batch_vertical_count += 1
-                    
-                    # Overwrite for intersection
-                    for col in range(self.reserved_column_start - 1, len(current_row) - (self.reserved_column_end - 1), self.pod_batch_horizontal_max + 1):
-                        current_row[col] = 3
-                else:
-                    current_row = []
-                    self.pod_batch_horizontal_count = 0
-                    for col in range(self.total_cols()):
-                        # Write pods
-                        if col >= self.reserved_column_start - 1:
-                            pod_index = (col - self.reserved_column_start) % (self.pod_batch_horizontal + 1)
-                            if pod_index < self.pod_batch_horizontal and self.pod_batch_horizontal_count <= self.pod_batch_horizontal_max:
-                                current_row.append(1)
+            for row in range(self.total_rows()):
+                current_row = []
+                self.pod_batch_horizontal_count = 0
+                for col in range(self.total_cols()):
+                    if col < 4:
+                        current_row.append(self.get_value_for_order_picking(row, col, order_picker_positions))
+                    else:
+                        if self.reserved_column_start <= col < (self.total_cols() - self.reserved_column_end):
+                            if row % (self.pod_batch_vertical + 1) == 0:
+                                if (col - self.reserved_column_start) % (self.pod_batch_horizontal_max + 1) == 0:
+                                    current_row.append(3)
+                                else:
+                                    current_row.append(0)
                             else:
-                                self.pod_batch_horizontal_count += 1
-                                current_row.append(0)
+                                pod_index = (col - self.reserved_column_start - 1) % (self.pod_batch_horizontal + 1)
+                                if pod_index < self.pod_batch_horizontal:
+                                    current_row.append(1)
+                                else:
+                                    current_row.append(0)
+                                    self.pod_batch_horizontal_count += 1
                         else:
                             current_row.append(0)
 
-                # Overwrite for order picker
-                if any(lower <= row <= upper for lower, upper in order_picker_positions):
-                    for col in range(5):
-                        current_row[col] = 2
-
                 writer.writerow(current_row)
-                row += 1
+
+    def total_rows(self):
+        return (self.pod_batch_vertical_max * self.pod_batch_vertical) + self.pod_batch_vertical_max + 1
 
     def total_cols(self):
         # Total columns include reserved columns, pods, and spaces between pods
-        total_pod_space = (self.pod_batch_horizontal * self.pod_batch_horizontal_max) + self.pod_batch_horizontal_max - 1
-        return self.reserved_column_start + total_pod_space + self.reserved_column_end
-    
+        total_pod_space = (
+                                  self.pod_batch_horizontal * self.pod_batch_horizontal_max) + self.pod_batch_horizontal_max - 1
+        return (self.reserved_column_start + 1) + total_pod_space + (self.reserved_column_end + 1)
+
     def determine_order_picker_limits(self):
         return int((self.pod_batch_vertical_max + 1) / 2)
 
@@ -71,20 +66,43 @@ class Layout(object):
                 offset = (i // 2)
             else:
                 offset = -(i // 2) - 1
-            
+
             selected_sequence.append(numbers[middle_index + offset])
 
         print(selected_sequence)
         print(total_numbers)
         return sorted(selected_sequence)
-    
+
     def get_order_picker_indexes(self, order_picker_positions):
         result = []
         for i in order_picker_positions:
             result.append(self.get_order_picker_index(i))
 
         return result
-    
+
     def get_order_picker_index(self, order_picker_position):
         start_index = (order_picker_position - 1) * (2 * self.pod_batch_vertical + 2)
-        return (start_index, start_index + self.pod_batch_vertical + 1)
+        return start_index, start_index + self.pod_batch_vertical + 1
+
+    @staticmethod
+    def get_value_for_order_picking(row, col, ranges):
+        for start, end in ranges:
+            if row == start:
+                # First row
+                if col == 1:
+                    return 14
+                elif col == 2 or col == 3:
+                    return 12
+            elif row == end:
+                # Last row
+                if col == 0:
+                    return 11
+                elif col == 1:
+                    return 15
+                elif col == 2 or col == 3:
+                    return 12
+            elif start < row < end:
+                # Middle row
+                if col == 1:
+                    return 13
+        return 99
