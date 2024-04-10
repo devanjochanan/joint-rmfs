@@ -5,13 +5,14 @@ class Layout(object):
     def __init__(self):
         self.pod_batch_horizontal = 5
         self.pod_batch_vertical = 2
-        self.pod_batch_horizontal_count = 0
         self.pod_batch_horizontal_max = 5
         self.pod_batch_vertical_count = 0
         self.pod_batch_vertical_max = 10
         self.reserved_column_start = 10
         self.reserved_column_end = 10
         self.order_picker_total = 3
+        self.horizontal_direction_switch = False
+        self.vertical_direction_switch = False
 
     def draw(self):
         order_picker_positions = self.get_order_picker_indexes(self.get_order_picker_positions())
@@ -20,7 +21,7 @@ class Layout(object):
             writer = csv.writer(csvfile)
             for row in range(self.total_rows()):
                 current_row = []
-                self.pod_batch_horizontal_count = 0
+                self.vertical_direction_switch = False
                 for col in range(self.total_cols()):
                     if col < 4:
                         current_row.append(self.get_value_for_order_picking(row, col, order_picker_positions))
@@ -30,18 +31,20 @@ class Layout(object):
                                 if (col - self.reserved_column_start) % (self.pod_batch_horizontal_max + 1) == 0:
                                     current_row.append(3)
                                 else:
-                                    current_row.append(0)
+                                    current_row.append(4 if self.horizontal_direction_switch else 5)
                             else:
                                 pod_index = (col - self.reserved_column_start - 1) % (self.pod_batch_horizontal + 1)
                                 if pod_index < self.pod_batch_horizontal:
                                     current_row.append(1)
                                 else:
-                                    current_row.append(0)
-                                    self.pod_batch_horizontal_count += 1
+                                    current_row.append(6 if self.vertical_direction_switch else 7)
+                                    self.vertical_direction_switch = not self.vertical_direction_switch
                         else:
-                            current_row.append(0)
+                            current_row.append(6 if self.vertical_direction_switch else 7)
+                            self.vertical_direction_switch = not self.vertical_direction_switch
 
                 writer.writerow(current_row)
+                self.horizontal_direction_switch = not self.horizontal_direction_switch
 
     def total_rows(self):
         return (self.pod_batch_vertical_max * self.pod_batch_vertical) + self.pod_batch_vertical_max + 1
