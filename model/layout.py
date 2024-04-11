@@ -28,8 +28,9 @@ class Layout(object):
                     else:
                         if self.reserved_column_start <= col < (self.total_cols() - self.reserved_column_end):
                             if row % (self.pod_batch_vertical + 1) == 0:
-                                if (col - self.reserved_column_start) % (self.pod_batch_horizontal_max + 1) == 0:
+                                if (col - self.reserved_column_start) % (self.pod_batch_horizontal + 1) == 0:
                                     current_row.append(3)
+                                    self.vertical_direction_switch = not self.vertical_direction_switch
                                 else:
                                     current_row.append(4 if self.horizontal_direction_switch else 5)
                             else:
