@@ -1,7 +1,9 @@
 import csv
 import pickle
+import os
 
 import networkx as nx
+import pandas as pd
 
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
@@ -278,6 +280,84 @@ def initRobots(universe: Inventory):
         universe.addObject(robot)
 
 
+def draw_layout(universe):
+    # Check if pod.csv exists in the current directory
+    if os.path.exists('pod.csv'):
+        # If the file exists, call the method to draw layout from the file
+        generate_and_draw_layout(universe)
+    else:
+        # If the file does not exist, generate and draw the layout
+        generate_and_draw_layout(universe)
+
+
+def generate_and_draw_layout(universe):
+    Layout().generate()
+    draw_from_generated_file(universe)
+    initRobots(universe)
+
+def draw_from_generated_file(universe):
+    graph = DirectedGraph()
+    graph_pod = DirectedGraph()
+    graph_pod.key = 'pod'
+    universe.graph = graph
+    universe.graph_pod = graph_pod
+    data = pd.read_csv("generated_pod.csv", header=None)
+    total_rows = len(data)
+    for y, row in data.iterrows():
+        y = total_rows - y + 2
+        for x, value in row.items():
+            obj = Object()
+            obj.object_type = 'way-direction'
+            obj_key = str(x) + "," + str(y)
+
+            if value == 1:
+                obj = Pod()
+                obj.coordinate = NetLogoCoordinate(obj.pos_x, obj.pos_y)
+                graph_pod.add_node(obj_key)
+            elif value == 3:
+                obj.shape = 'empty-space'
+                intersections.append([obj.pos_x, obj.pos_y])
+            elif value == 4:
+                obj.shape = 'arrow-left'
+            elif value == 5:
+                obj.shape = 'arrow-right'
+            elif value == 6:
+                obj.shape = 'arrow-up'
+            elif value == 7:
+                obj.shape = 'arrow-down'
+            elif value == 11:
+                obj = Station()
+                obj.coordinate = NetLogoCoordinate(x, y)
+                obj.shape = 'person-red'
+                universe.addStation(obj)
+            elif value == 12:
+                obj.shape = 'rail'
+            elif value == 13:
+                obj.shape = 'rail'
+                obj.heading = 90
+            elif value == 14:
+                obj.shape = 'rail-corner'
+            elif value == 15:
+                obj.shape = 'rail-corner'
+                obj.heading = 270
+            elif value == 99:
+                obj.shape = 'empty-space'
+            else:
+                continue
+
+            obj.pos_x = x
+            obj.pos_y = y
+            graph.add_node(obj_key)
+            universe.addObject(obj)
+
+def draw_layout_from_file(universe):
+    initWays(universe)
+    initStation(universe)
+    initRobots(universe)
+    initPod(universe)
+    initOrders(universe)
+
+
 def initWays(universe):
     # Example Usage
     graph = DirectedGraph()
@@ -427,12 +507,8 @@ def setup():
     universe = Inventory()
 
     # Populate the universe with objects and connections
-    Layout().draw()
-    initWays(universe)
-    initStation(universe)
-    initRobots(universe)
-    initPod(universe)
-    initOrders(universe)
+    Layout().generate()
+    draw_layout(universe)
 
     # Set simulation parameters
     universe.tick_to_second = 0.15

@@ -14,7 +14,7 @@ class Layout(object):
         self.horizontal_direction_switch = False
         self.vertical_direction_switch = False
 
-    def draw(self):
+    def generate(self):
         order_picker_positions = self.get_order_picker_indexes(self.get_order_picker_positions())
         print(order_picker_positions)
         with open('generated_pod.csv', 'w', newline='') as csvfile:
@@ -23,7 +23,9 @@ class Layout(object):
                 current_row = []
                 self.vertical_direction_switch = False
                 for col in range(self.total_cols()):
-                    if col < 4:
+                    if col == self.total_cols() - 1:
+                        current_row.append(None)
+                    elif col < 4:
                         current_row.append(self.get_value_for_order_picking(row, col, order_picker_positions))
                     else:
                         if self.reserved_column_start <= col < (self.total_cols() - self.reserved_column_end):
@@ -97,16 +99,22 @@ class Layout(object):
                     return 14
                 elif col == 2 or col == 3:
                     return 12
+                else:
+                    return 99
             elif row == end:
                 # Last row
-                if col == 0:
-                    return 11
-                elif col == 1:
+                if col == 1:
                     return 15
                 elif col == 2 or col == 3:
                     return 12
+                else:
+                    return 99
             elif start < row < end:
                 # Middle row
+                if col == 0 and row == end - 1:
+                    return 11
                 if col == 1:
                     return 13
+                else:
+                    return 99
         return 99

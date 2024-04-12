@@ -1,2 +1,4 @@
 networkx~=3.2.1
 matplotlib
+pandas~=2.2.1
+pip~=23.2.1
