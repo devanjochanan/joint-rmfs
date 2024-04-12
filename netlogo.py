@@ -305,6 +305,7 @@ def draw_from_generated_file(universe):
     data = pd.read_csv("generated_pod.csv", header=None)
     total_rows = len(data)
     for y, row in data.iterrows():
+        # add plus 2, somehow the graph is having 2 space empty
         y = total_rows - y + 2
         for x, value in row.items():
             obj = Object()
