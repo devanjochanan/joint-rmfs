@@ -284,6 +284,7 @@ def draw_layout(universe):
     # Check if pod.csv exists in the current directory
     if os.path.exists('pod.csv'):
         # If the file exists, call the method to draw layout from the file
+        # should call draw_layout_from_file, but still doing testing
         generate_and_draw_layout(universe)
     else:
         # If the file does not exist, generate and draw the layout
