@@ -1,6 +1,7 @@
 import csv
 import pickle
 import os
+import traceback
 
 import networkx as nx
 import pandas as pd
@@ -169,19 +170,19 @@ def initStation(universe: Inventory):
 
 def initOrders(universe: Inventory):
     destinations = [
-        [12, 13, 2],
-        [11, 13, 2],
-        [30, 14, 2],
-        [12, 25, 2],
-        [25, 31, 2],
-        [26, 11, 2],
-        [15, 25, 2],
-        [42, 28, 2],
-        [43, 11, 2],
-        [30, 16, 2],
-        [26, 22, 2],
-        [26, 11, 2],
-        [15, 25, 0],
+        [12, 13, 0],
+        # [11, 13, 3],
+        # [30, 14, 3],
+        # [12, 25, 3],
+        # [25, 31, 3],
+        # [26, 11, 3],
+        # [15, 25, 3],
+        # [42, 28, 3],
+        # [43, 11, 3],
+        # [30, 16, 3],
+        # [26, 22, 3],
+        # [26, 11, 3],
+        # [15, 25, 0],
         # [42, 28, 1],
         # [44, 31, 2],
         # [26, 11, 1],
@@ -247,7 +248,7 @@ def initRobots(universe: Inventory):
     robots = [
         {'velocity': 0, 'heading': 180, 'x': 7, 'y': 11},
         {'velocity': 0, 'heading': 180, 'x': 7, 'y': 12},
-        {'velocity': 0, 'heading': 0, 'x': 14, 'y': 10},
+        {'velocity': 0, 'heading': 0, 'x': 14, 'y': 9},
         {'velocity': 0, 'heading': 180, 'x': 7, 'y': 5},
         {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
         {'velocity': 0, 'heading': 180, 'x': 45, 'y': 26},
@@ -273,6 +274,8 @@ def initRobots(universe: Inventory):
         robot.pos_x = r['x']
         robot.pos_y = r['y']
 
+        robot.setStations(universe.stations)
+
         # Optionally, set the robot's coordinates using a specific coordinate system
         robot.coordinate = NetLogoCoordinate(robot.pos_x, robot.pos_y)
 
@@ -295,6 +298,8 @@ def generate_and_draw_layout(universe):
     Layout().generate()
     draw_from_generated_file(universe)
     initRobots(universe)
+    initOrders(universe)
+
 
 def draw_from_generated_file(universe):
     graph = DirectedGraph()
@@ -305,43 +310,119 @@ def draw_from_generated_file(universe):
     data = pd.read_csv("generated_pod.csv", header=None)
     total_rows = len(data)
     for y, row in data.iterrows():
-        # add plus 2, somehow the graph is having 2 space empty
-        y = total_rows - y + 2
+        # Invert Y
+        y = total_rows - y - 1
         for x, value in row.items():
             obj = Object()
             obj.object_type = 'way-direction'
-            obj_key = str(x) + "," + str(y)
+            obj_key = f"{x},{y}"
+            way_left_neighbor = f"{x - 1},{y}"
+            way_right_neighbor = f"{x + 1},{y}"
+            way_up_neighbor = f"{x},{y + 1}"
+            way_down_neighbor = f"{x},{y - 1}"
+
+            # Check way directions on all four sides
+            left_obj = data.iloc[y, x - 1] if x > 0 else None
+            right_obj = data.iloc[y, x + 1] if x < len(row) - 1 else None
+            above_obj = data.iloc[y + 1, x] if y < total_rows - 1 else None
+            below_obj = data.iloc[y - 1, x] if y > 0 else None
+
+            weight = 1
+            if x < 10:
+                weight = 3
 
             if value == 1:
                 obj = Pod()
                 obj.coordinate = NetLogoCoordinate(obj.pos_x, obj.pos_y)
                 graph_pod.add_node(obj_key)
+
+                if left_obj != 1:
+                    add_all_direction_paths(graph, obj_key, weight=weight)
+                    # add_path(graph_pod, obj_key, way_left_neighbor, weight=1)
+                    graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
+                if right_obj != 1:
+                    add_all_direction_paths(graph, obj_key, weight=weight)
+                    # add_path(graph_pod, obj_key, way_right_neighbor, weight=1)
+                    graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
+                if above_obj != 1:
+                    add_all_direction_paths(graph, obj_key, weight=weight)
+                    # add_path(graph_pod, obj_key, way_up_neighbor, weight=1)
+                    graph_pod.add_edge(obj_key, way_up_neighbor, weight=weight)
+                if below_obj != 1:
+                    add_all_direction_paths(graph, obj_key, weight=weight)
+                    # add_path(graph_pod, obj_key, way_down_neighbor, weight=1)
+                    graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
             elif value == 3:
                 obj.shape = 'empty-space'
                 intersections.append([obj.pos_x, obj.pos_y])
+
+                if (x > 0 and data.iloc[y, x - 1] == 4) or (x < len(row) - 1 and data.iloc[y, x + 1] == 4):
+                    graph.add_edge(obj_key, way_left_neighbor, weight=weight)
+                    graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
+                else:
+                    graph.add_edge(obj_key, way_right_neighbor, weight=weight)
+                    graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
+
+                if (y > 0 and data.iloc[y - 1, x] == 6) or (y < total_rows - 1 and data.iloc[y + 1, x] == 6):
+                    graph.add_edge(obj_key, way_up_neighbor, weight=weight)
+                    graph_pod.add_edge(obj_key, way_up_neighbor, weight=weight)
+                else:
+                    graph.add_edge(obj_key, way_down_neighbor, weight=weight)
+                    graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
             elif value == 4:
                 obj.shape = 'arrow-left'
+                graph.add_edge(obj_key, way_left_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
+
+                add_path(graph, obj_key, way_up_neighbor, weight=weight)
+                add_path(graph, obj_key, way_down_neighbor, weight=weight)
             elif value == 5:
                 obj.shape = 'arrow-right'
+                graph.add_edge(obj_key, way_right_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
+
+                add_path(graph, obj_key, way_up_neighbor, weight=weight)
+                add_path(graph, obj_key, way_down_neighbor, weight=weight)
             elif value == 6:
                 obj.shape = 'arrow-up'
+                graph.add_edge(obj_key, way_up_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, way_up_neighbor, weight=weight)
+
+                add_path(graph, obj_key, way_left_neighbor, weight=weight)
+                add_path(graph, obj_key, way_right_neighbor, weight=weight)
             elif value == 7:
                 obj.shape = 'arrow-down'
+                graph.add_edge(obj_key, way_down_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
+
+                add_path(graph, obj_key, way_left_neighbor, weight=weight)
+                add_path(graph, obj_key, way_right_neighbor, weight=weight)
             elif value == 11:
-                obj = Station()
-                obj.coordinate = NetLogoCoordinate(x, y)
                 obj.shape = 'person-red'
-                universe.addStation(obj)
             elif value == 12:
+                graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
                 obj.shape = 'rail'
             elif value == 13:
+                graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
+                obj.shape = 'rail'
+            elif value == 14:
                 obj.shape = 'rail'
                 obj.heading = 90
-            elif value == 14:
-                obj.shape = 'rail-corner'
+                graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
             elif value == 15:
+                obj = Station()
+                obj.coordinate = NetLogoCoordinate(x, y)
+                obj.shape = 'rail'
+                obj.heading = 90
+                graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
+                universe.addStation(obj)
+            elif value == 16:
+                obj.shape = 'rail-corner'
+                graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
+            elif value == 17:
                 obj.shape = 'rail-corner'
                 obj.heading = 270
+                graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
             elif value == 99:
                 obj.shape = 'empty-space'
             else:
@@ -349,8 +430,28 @@ def draw_from_generated_file(universe):
 
             obj.pos_x = x
             obj.pos_y = y
-            graph.add_node(obj_key)
             universe.addObject(obj)
+
+
+def add_all_direction_paths(graph, obj_key, weight):
+    x, y = map(int, obj_key.split(','))
+    directions = {
+        'left': (x - 1, y),
+        'right': (x + 1, y),
+        'up': (x, y + 1),
+        'down': (x, y - 1)
+    }
+
+    for dir_key, (nx, ny) in directions.items():
+        neighbor_key = f"{nx},{ny}"
+        add_path(graph, obj_key, neighbor_key, weight)
+        add_path(graph, neighbor_key, obj_key, weight)
+
+
+def add_path(graph, obj_key, neighbor_key, weight):
+    graph.add_edge(obj_key, neighbor_key, weight)
+    graph.add_edge(neighbor_key, obj_key, weight)
+
 
 def draw_layout_from_file(universe):
     initWays(universe)
@@ -505,49 +606,61 @@ def initWays(universe):
 
 
 def setup():
-    # Initialize the simulation universe
-    universe = Inventory()
+    try:
+        # Initialize the simulation universe
+        universe = Inventory()
 
-    # Populate the universe with objects and connections
-    Layout().generate()
-    draw_layout(universe)
+        # Populate the universe with objects and connections
+        Layout().generate()
+        draw_layout(universe)
 
-    # Set simulation parameters
-    universe.tick_to_second = 0.15
-    universe.intersections = intersections  # Ensure 'intersections' is defined earlier
+        # Set simulation parameters
+        universe.tick_to_second = 0.15
+        universe.intersections = intersections  # Ensure 'intersections' is defined earlier
 
-    # Generate initial results
-    next_result = universe.generateResult()
+        # Generate initial results
+        next_result = universe.generateResult()
 
-    # Save the universe state for future ticks
-    with open('netlogo.state', 'wb') as config_dictionary_file:
-        pickle.dump(universe, config_dictionary_file)
+        # Save the universe state for future ticks
+        with open('netlogo.state', 'wb') as config_dictionary_file:
+            pickle.dump(universe, config_dictionary_file)
 
-    return next_result
+        return next_result
+
+    except Exception as e:
+        # Print complete stack trace
+        traceback.print_exc()
+        return "An error occurred. See the details above."
 
 
 def tick():
-    print("========tick========")
+    try:
+        print("========tick========")
 
-    # Load the simulation state
-    with open('netlogo.state', 'rb') as file:
-        universe = pickle.load(file)
+        # Load the simulation state
+        with open('netlogo.state', 'rb') as file:
+            universe = pickle.load(file)
 
-    print("before tick", universe._tick)
+        print("before tick", universe._tick)
 
-    # Update each object with the current universe context
-    for _n in universe._objects:
-        _n.setUniverse(universe)
+        # Update each object with the current universe context
+        for _n in universe._objects:
+            _n.setUniverse(universe)
 
-    # Perform a simulation tick
-    universe.tick()
+        # Perform a simulation tick
+        universe.tick()
 
-    # Generate results after the tick
-    next_result = universe.generateResult()
-    with open('netlogo.state', 'wb') as config_dictionary_file:
-        pickle.dump(universe, config_dictionary_file)
+        # Generate results after the tick
+        next_result = universe.generateResult()
+        with open('netlogo.state', 'wb') as config_dictionary_file:
+            pickle.dump(universe, config_dictionary_file)
 
-    return [next_result, universe.total_energy, len(universe.order_queue), universe.stop_and_go, universe.total_turning]
+        return [next_result, universe.total_energy, len(universe.order_queue), universe.stop_and_go,
+                universe.total_turning]
+    except Exception as e:
+        # Print complete stack trace
+        traceback.print_exc()
+        return "An error occurred. See the details above."
 
 
 def setup_py():

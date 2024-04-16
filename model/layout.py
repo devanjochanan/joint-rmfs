@@ -23,9 +23,7 @@ class Layout(object):
                 current_row = []
                 self.vertical_direction_switch = False
                 for col in range(self.total_cols()):
-                    if col == self.total_cols() - 1:
-                        current_row.append(None)
-                    elif col < 4:
+                    if col < 5:
                         current_row.append(self.get_value_for_order_picking(row, col, order_picker_positions))
                     else:
                         if self.reserved_column_start <= col < (self.total_cols() - self.reserved_column_end):
@@ -95,26 +93,31 @@ class Layout(object):
         for start, end in ranges:
             if row == start:
                 # First row
-                if col == 1:
-                    return 14
-                elif col == 2 or col == 3:
+                if col == 2:
+                    return 16
+                elif col == 3 or col == 4:
                     return 12
                 else:
                     return 99
             elif row == end:
                 # Last row
-                if col == 1:
-                    return 15
-                elif col == 2 or col == 3:
-                    return 12
+                if col == 2:
+                    return 17
+                elif col == 3 or col == 4:
+                    return 13
                 else:
                     return 99
             elif start < row < end:
                 # Middle row
-                if col == 0 and row == end - 1:
-                    return 11
-                if col == 1:
-                    return 13
+                if row == end - 1:
+                    if col == 1:
+                        return 11
+                    if col == 2:
+                        return 15
+                    else:
+                        return 99
+                if col == 2:
+                    return 14
                 else:
                     return 99
         return 99

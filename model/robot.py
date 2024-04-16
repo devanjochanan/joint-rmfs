@@ -9,6 +9,7 @@ from .traffic_policy import TrafficPolicy
 class Robot(Object):
     order = None
     destination = None
+    stations = []
 
     # netlogo related
     shape = 'turtle-2'
@@ -77,7 +78,8 @@ class Robot(Object):
 
     def setMovementPlanToStation(self):
         start = self._coordinateToNodeKey(self.pos_x, self.pos_y)
-        end = self._coordinateToNodeKey(2, 1 + self.order.station_number * 6)
+        end = self._coordinateToNodeKey(self.stations[self.order.station_number].pos_x,
+                                        self.stations[self.order.station_number].pos_y)
 
         node_routes = self.universe.graph_pod.dijkstra(start, end)
         self.setPath(self._transformRouteToList(node_routes))
@@ -434,6 +436,13 @@ class Robot(Object):
 
         self.setPath(self._transformRouteToList(node_paths))
         self.current_state = "taking_pod"
+
+    def setStations(self, stations=None):
+
+        if stations is None:
+            stations = []
+
+        self.stations = stations
 
     def setOrderNoPod(self, order):
         print("======Order set 2=======")
