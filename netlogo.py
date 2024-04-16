@@ -365,47 +365,47 @@ def draw_from_generated_file(universe):
                     graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
 
                 if obj_left_value == 6 or obj_left_value == 7:
-                    add_path_both_direction(graph, obj_key, obj_left_coordinate, weight=weight)
-                    add_path_both_direction(graph_pod, obj_key, obj_left_coordinate, weight=weight)
+                    graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 elif obj_right_value == 6 or obj_right_value == 7:
-                    add_path_both_direction(graph, obj_key, obj_right_coordinate, weight=weight)
-                    add_path_both_direction(graph_pod, obj_key, obj_right_coordinate, weight=weight)
+                    graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
             elif value == 4:
                 obj.shape = 'arrow-left'
                 graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
 
-                add_path_both_direction(graph, obj_key, obj_above_coordinate, weight=weight)
-                add_path_both_direction(graph_pod, obj_key, obj_above_coordinate, weight=weight)
-                add_path_both_direction(graph, obj_key, obj_below_coordinate, weight=weight)
-                add_path_both_direction(graph_pod, obj_key, obj_below_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 5:
                 obj.shape = 'arrow-right'
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
 
-                add_path_both_direction(graph, obj_key, obj_above_coordinate, weight=weight)
-                add_path_both_direction(graph_pod, obj_key, obj_above_coordinate, weight=weight)
-                add_path_both_direction(graph, obj_key, obj_below_coordinate, weight=weight)
-                add_path_both_direction(graph_pod, obj_key, obj_below_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 6:
                 obj.shape = 'arrow-up'
                 graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
 
-                add_path_both_direction(graph, obj_key, obj_left_coordinate, weight=weight)
-                add_path_both_direction(graph_pod, obj_key, obj_left_coordinate, weight=weight)
-                add_path_both_direction(graph, obj_key, obj_right_coordinate, weight=weight)
-                add_path_both_direction(graph_pod, obj_key, obj_right_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
             elif value == 7:
                 obj.shape = 'arrow-down'
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
 
-                add_path_both_direction(graph, obj_key, obj_left_coordinate, weight=weight)
-                add_path_both_direction(graph_pod, obj_key, obj_left_coordinate, weight=weight)
-                add_path_both_direction(graph, obj_key, obj_right_coordinate, weight=weight)
-                add_path_both_direction(graph_pod, obj_key, obj_right_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
             elif value == 11:
                 obj.shape = 'person-red'
             elif value == 12:
@@ -456,12 +456,7 @@ def add_all_direction_paths(graph, obj_key, weight):
 
     for dir_key, (nx, ny) in directions.items():
         neighbor_key = f"{nx},{ny}"
-        add_path_both_direction(graph, obj_key, neighbor_key, weight)
-
-
-def add_path_both_direction(graph, obj_key, neighbor_key, weight):
-    graph.add_edge(obj_key, neighbor_key, weight)
-    graph.add_edge(neighbor_key, obj_key, weight)
+        graph.add_edge(obj_key, neighbor_key, weight=weight)
 
 
 def draw_layout_from_file(universe):
