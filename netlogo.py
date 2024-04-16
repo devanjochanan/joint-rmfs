@@ -327,9 +327,7 @@ def draw_from_generated_file(universe):
             obj_above_value = data.iloc[y + 1, x] if y < total_rows - 1 else None
             obj_below_value = data.iloc[y - 1, x] if y > 0 else None
 
-            weight = 1
-            if x < 10:
-                weight = 3
+            weight = 3 if x < 10 else 1
 
             if value == 1:
                 obj = Pod()
