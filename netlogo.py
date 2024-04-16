@@ -356,17 +356,17 @@ def draw_from_generated_file(universe):
                 obj.shape = 'empty-space'
                 intersections.append([obj.pos_x, obj.pos_y])
 
-                if (x > 0 and data.iloc[y, x - 1] == 4) or (x < len(row) - 1 and data.iloc[y, x + 1] == 4):
+                if left_obj == 4 or right_obj == 4:
                     graph.add_edge(obj_key, way_left_neighbor, weight=weight)
                     graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
-                else:
+                elif left_obj == 5 or right_obj == 5:
                     graph.add_edge(obj_key, way_right_neighbor, weight=weight)
                     graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
 
-                if (y > 0 and data.iloc[y - 1, x] == 6) or (y < total_rows - 1 and data.iloc[y + 1, x] == 6):
+                if above_obj == 6:
                     graph.add_edge(obj_key, way_up_neighbor, weight=weight)
                     graph_pod.add_edge(obj_key, way_up_neighbor, weight=weight)
-                else:
+                elif below_obj == 7:
                     graph.add_edge(obj_key, way_down_neighbor, weight=weight)
                     graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
             elif value == 4:
@@ -375,28 +375,36 @@ def draw_from_generated_file(universe):
                 graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
 
                 add_path(graph, obj_key, way_up_neighbor, weight=weight)
+                add_path(graph_pod, obj_key, way_up_neighbor, weight=weight)
                 add_path(graph, obj_key, way_down_neighbor, weight=weight)
+                add_path(graph_pod, obj_key, way_down_neighbor, weight=weight)
             elif value == 5:
                 obj.shape = 'arrow-right'
                 graph.add_edge(obj_key, way_right_neighbor, weight=weight)
                 graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
 
                 add_path(graph, obj_key, way_up_neighbor, weight=weight)
+                add_path(graph_pod, obj_key, way_up_neighbor, weight=weight)
                 add_path(graph, obj_key, way_down_neighbor, weight=weight)
+                add_path(graph_pod, obj_key, way_down_neighbor, weight=weight)
             elif value == 6:
                 obj.shape = 'arrow-up'
                 graph.add_edge(obj_key, way_up_neighbor, weight=weight)
                 graph_pod.add_edge(obj_key, way_up_neighbor, weight=weight)
 
                 add_path(graph, obj_key, way_left_neighbor, weight=weight)
+                add_path(graph_pod, obj_key, way_left_neighbor, weight=weight)
                 add_path(graph, obj_key, way_right_neighbor, weight=weight)
+                add_path(graph_pod, obj_key, way_right_neighbor, weight=weight)
             elif value == 7:
                 obj.shape = 'arrow-down'
                 graph.add_edge(obj_key, way_down_neighbor, weight=weight)
                 graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
 
                 add_path(graph, obj_key, way_left_neighbor, weight=weight)
+                add_path(graph_pod, obj_key, way_left_neighbor, weight=weight)
                 add_path(graph, obj_key, way_right_neighbor, weight=weight)
+                add_path(graph_pod, obj_key, way_right_neighbor, weight=weight)
             elif value == 11:
                 obj.shape = 'person-red'
             elif value == 12:
@@ -427,6 +435,9 @@ def draw_from_generated_file(universe):
                 obj.shape = 'empty-space'
             else:
                 continue
+
+            if left_obj == 12:
+                graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
 
             obj.pos_x = x
             obj.pos_y = y
