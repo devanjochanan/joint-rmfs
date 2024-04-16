@@ -316,16 +316,16 @@ def draw_from_generated_file(universe):
             obj = Object()
             obj.object_type = 'way-direction'
             obj_key = f"{x},{y}"
-            way_left_neighbor = f"{x - 1},{y}"
-            way_right_neighbor = f"{x + 1},{y}"
-            way_up_neighbor = f"{x},{y + 1}"
-            way_down_neighbor = f"{x},{y - 1}"
 
-            # Check way directions on all four sides
-            left_obj = data.iloc[y, x - 1] if x > 0 else None
-            right_obj = data.iloc[y, x + 1] if x < len(row) - 1 else None
-            above_obj = data.iloc[y + 1, x] if y < total_rows - 1 else None
-            below_obj = data.iloc[y - 1, x] if y > 0 else None
+            obj_left_coordinate = f"{x - 1},{y}"
+            obj_right_coordinate = f"{x + 1},{y}"
+            obj_above_coordinate = f"{x},{y + 1}"
+            obj_below_coordinate = f"{x},{y - 1}"
+
+            obj_left_value = data.iloc[y, x - 1] if x > 0 else None
+            obj_right_value = data.iloc[y, x + 1] if x < len(row) - 1 else None
+            obj_above_value = data.iloc[y + 1, x] if y < total_rows - 1 else None
+            obj_below_value = data.iloc[y - 1, x] if y > 0 else None
 
             weight = 1
             if x < 10:
@@ -336,108 +336,109 @@ def draw_from_generated_file(universe):
                 obj.coordinate = NetLogoCoordinate(obj.pos_x, obj.pos_y)
                 graph_pod.add_node(obj_key)
 
-                if left_obj != 1:
-                    add_all_direction_paths(graph, obj_key, weight=weight)
-                    # add_path(graph_pod, obj_key, way_left_neighbor, weight=1)
-                    graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
-                if right_obj != 1:
-                    add_all_direction_paths(graph, obj_key, weight=weight)
-                    # add_path(graph_pod, obj_key, way_right_neighbor, weight=1)
-                    graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
-                if above_obj != 1:
-                    add_all_direction_paths(graph, obj_key, weight=weight)
-                    # add_path(graph_pod, obj_key, way_up_neighbor, weight=1)
-                    graph_pod.add_edge(obj_key, way_up_neighbor, weight=weight)
-                if below_obj != 1:
-                    add_all_direction_paths(graph, obj_key, weight=weight)
-                    # add_path(graph_pod, obj_key, way_down_neighbor, weight=1)
-                    graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
+                if obj_left_value != 1:
+                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                if obj_right_value != 1:
+                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                if obj_above_value != 1:
+                    graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                if obj_below_value != 1:
+                    graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
+
+                add_all_direction_paths(graph, obj_key, weight=weight)
             elif value == 3:
                 obj.shape = 'empty-space'
                 intersections.append([obj.pos_x, obj.pos_y])
 
-                if left_obj == 4 or right_obj == 4:
-                    graph.add_edge(obj_key, way_left_neighbor, weight=weight)
-                    graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
-                elif left_obj == 5 or right_obj == 5:
-                    graph.add_edge(obj_key, way_right_neighbor, weight=weight)
-                    graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
+                if obj_left_value == 4 or obj_right_value == 4:
+                    graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                elif obj_left_value == 5 or obj_right_value == 5:
+                    graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
 
-                if above_obj == 6:
-                    graph.add_edge(obj_key, way_up_neighbor, weight=weight)
-                    graph_pod.add_edge(obj_key, way_up_neighbor, weight=weight)
-                elif below_obj == 7:
-                    graph.add_edge(obj_key, way_down_neighbor, weight=weight)
-                    graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
+                if obj_above_value == 6:
+                    graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                elif obj_below_value == 7:
+                    graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
+
+                if obj_left_value == 6 or obj_left_value == 7:
+                    add_path_both_direction(graph, obj_key, obj_left_coordinate, weight=weight)
+                    add_path_both_direction(graph_pod, obj_key, obj_left_coordinate, weight=weight)
+                elif obj_right_value == 6 or obj_right_value == 7:
+                    add_path_both_direction(graph, obj_key, obj_right_coordinate, weight=weight)
+                    add_path_both_direction(graph_pod, obj_key, obj_right_coordinate, weight=weight)
             elif value == 4:
                 obj.shape = 'arrow-left'
-                graph.add_edge(obj_key, way_left_neighbor, weight=weight)
-                graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
+                graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
 
-                add_path(graph, obj_key, way_up_neighbor, weight=weight)
-                add_path(graph_pod, obj_key, way_up_neighbor, weight=weight)
-                add_path(graph, obj_key, way_down_neighbor, weight=weight)
-                add_path(graph_pod, obj_key, way_down_neighbor, weight=weight)
+                add_path_both_direction(graph, obj_key, obj_above_coordinate, weight=weight)
+                add_path_both_direction(graph_pod, obj_key, obj_above_coordinate, weight=weight)
+                add_path_both_direction(graph, obj_key, obj_below_coordinate, weight=weight)
+                add_path_both_direction(graph_pod, obj_key, obj_below_coordinate, weight=weight)
             elif value == 5:
                 obj.shape = 'arrow-right'
-                graph.add_edge(obj_key, way_right_neighbor, weight=weight)
-                graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
+                graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
 
-                add_path(graph, obj_key, way_up_neighbor, weight=weight)
-                add_path(graph_pod, obj_key, way_up_neighbor, weight=weight)
-                add_path(graph, obj_key, way_down_neighbor, weight=weight)
-                add_path(graph_pod, obj_key, way_down_neighbor, weight=weight)
+                add_path_both_direction(graph, obj_key, obj_above_coordinate, weight=weight)
+                add_path_both_direction(graph_pod, obj_key, obj_above_coordinate, weight=weight)
+                add_path_both_direction(graph, obj_key, obj_below_coordinate, weight=weight)
+                add_path_both_direction(graph_pod, obj_key, obj_below_coordinate, weight=weight)
             elif value == 6:
                 obj.shape = 'arrow-up'
-                graph.add_edge(obj_key, way_up_neighbor, weight=weight)
-                graph_pod.add_edge(obj_key, way_up_neighbor, weight=weight)
+                graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
 
-                add_path(graph, obj_key, way_left_neighbor, weight=weight)
-                add_path(graph_pod, obj_key, way_left_neighbor, weight=weight)
-                add_path(graph, obj_key, way_right_neighbor, weight=weight)
-                add_path(graph_pod, obj_key, way_right_neighbor, weight=weight)
+                add_path_both_direction(graph, obj_key, obj_left_coordinate, weight=weight)
+                add_path_both_direction(graph_pod, obj_key, obj_left_coordinate, weight=weight)
+                add_path_both_direction(graph, obj_key, obj_right_coordinate, weight=weight)
+                add_path_both_direction(graph_pod, obj_key, obj_right_coordinate, weight=weight)
             elif value == 7:
                 obj.shape = 'arrow-down'
-                graph.add_edge(obj_key, way_down_neighbor, weight=weight)
-                graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
+                graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
 
-                add_path(graph, obj_key, way_left_neighbor, weight=weight)
-                add_path(graph_pod, obj_key, way_left_neighbor, weight=weight)
-                add_path(graph, obj_key, way_right_neighbor, weight=weight)
-                add_path(graph_pod, obj_key, way_right_neighbor, weight=weight)
+                add_path_both_direction(graph, obj_key, obj_left_coordinate, weight=weight)
+                add_path_both_direction(graph_pod, obj_key, obj_left_coordinate, weight=weight)
+                add_path_both_direction(graph, obj_key, obj_right_coordinate, weight=weight)
+                add_path_both_direction(graph_pod, obj_key, obj_right_coordinate, weight=weight)
             elif value == 11:
                 obj.shape = 'person-red'
             elif value == 12:
-                graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 obj.shape = 'rail'
             elif value == 13:
-                graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 obj.shape = 'rail'
             elif value == 14:
                 obj.shape = 'rail'
                 obj.heading = 90
-                graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 15:
                 obj = Station()
                 obj.coordinate = NetLogoCoordinate(x, y)
                 obj.shape = 'rail'
                 obj.heading = 90
-                graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
                 universe.addStation(obj)
             elif value == 16:
                 obj.shape = 'rail-corner'
-                graph_pod.add_edge(obj_key, way_down_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 17:
                 obj.shape = 'rail-corner'
                 obj.heading = 270
-                graph_pod.add_edge(obj_key, way_right_neighbor, weight=weight)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
             elif value == 99:
                 obj.shape = 'empty-space'
             else:
                 continue
 
-            if left_obj == 12:
-                graph_pod.add_edge(obj_key, way_left_neighbor, weight=weight)
+            if obj_left_coordinate == 12:
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
 
             obj.pos_x = x
             obj.pos_y = y
@@ -455,11 +456,10 @@ def add_all_direction_paths(graph, obj_key, weight):
 
     for dir_key, (nx, ny) in directions.items():
         neighbor_key = f"{nx},{ny}"
-        add_path(graph, obj_key, neighbor_key, weight)
-        add_path(graph, neighbor_key, obj_key, weight)
+        add_path_both_direction(graph, obj_key, neighbor_key, weight)
 
 
-def add_path(graph, obj_key, neighbor_key, weight):
+def add_path_both_direction(graph, obj_key, neighbor_key, weight):
     graph.add_edge(obj_key, neighbor_key, weight)
     graph.add_edge(neighbor_key, obj_key, weight)
 
