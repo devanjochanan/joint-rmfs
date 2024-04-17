@@ -78,12 +78,19 @@ class Robot(Object):
 
     def setMovementPlanToStation(self):
         start = self.coordinate_to_string_key(self.pos_x, self.pos_y)
-        end = self.coordinate_to_string_key(self.stations[self.order.station_number].pos_x,
-                                            self.stations[self.order.station_number].pos_y)
+
+        station_pos_x, station_pos_y = self.get_station_position()
+        end = self.coordinate_to_string_key(station_pos_x, station_pos_y)
 
         node_routes = self.universe.graph_pod.dijkstra(start, end)
         print(node_routes)
         self.setPath(self._transformRouteToList(node_routes))
+
+    def get_station_position(self):
+        station_number = self.order.station_number
+        pos_x = self.stations[station_number].pos_x
+        pos_y = self.stations[station_number].pos_y
+        return pos_x, pos_y
 
     def setPath(self, path):
         current_heading = self.heading
@@ -454,7 +461,9 @@ class Robot(Object):
         next_blocks = self._calculateNextBlocks(int(self.pos_x), int(self.pos_y), self.heading, 5)
 
         start = self.coordinate_to_string_key(next_blocks[1][0], next_blocks[1][1])
-        end = self.coordinate_to_string_key(2, 1 + self.order.station_number * 6)
+
+        station_pos_x, station_pos_y = self.get_station_position()
+        end = self.coordinate_to_string_key(station_pos_x, station_pos_y)
 
         node_paths = self.universe.graph_pod.dijkstra(start, end)
         self.setPath(self._transformRouteToList(node_paths))
