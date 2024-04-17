@@ -103,7 +103,7 @@ GRAPHICS-WINDOW
 1
 1
 0
-50
+48
 0
 30
 0
@@ -287,7 +287,7 @@ true
 0
 Polygon -7500403 true true 150 0 0 150 105 150 105 293 195 293 195 150 300 150
 
-arrow-down
+arrow-up
 true
 0
 Line -16777216 false 75 150 150 225
@@ -305,7 +305,7 @@ true
 Line -16777216 false 150 75 225 150
 Line -16777216 false 225 150 150 225
 
-arrow-up
+arrow-down
 true
 0
 Line -16777216 false 75 150 150 75
