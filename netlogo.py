@@ -229,6 +229,7 @@ def initOrders(universe: Inventory):
         order.coordinate = NetLogoCoordinate(*destination[:2])
         # Set the station number for the order
         order.station_number = destination[2]
+        order.station = universe.stations[destination[2]]
 
         # Add the order to the universe's list of orders
         universe.addOrder(order)
@@ -273,8 +274,6 @@ def initRobots(universe: Inventory):
         robot.heading = r['heading']
         robot.pos_x = r['x']
         robot.pos_y = r['y']
-
-        robot.setStations(universe.stations)
 
         # Optionally, set the robot's coordinates using a specific coordinate system
         robot.coordinate = NetLogoCoordinate(robot.pos_x, robot.pos_y)

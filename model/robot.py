@@ -8,8 +8,8 @@ from .traffic_policy import TrafficPolicy
 
 class Robot(Object):
     order = None
+    pod = None
     destination = None
-    stations = []
 
     # netlogo related
     shape = 'turtle-2'
@@ -87,9 +87,8 @@ class Robot(Object):
         self.setPath(self._transformRouteToList(node_routes))
 
     def get_station_position(self):
-        station_number = self.order.station_number
-        pos_x = self.stations[station_number].pos_x
-        pos_y = self.stations[station_number].pos_y
+        pos_x = self.order.station.pos_x
+        pos_y = self.order.station.pos_y
         return pos_x, pos_y
 
     def setPath(self, path):
@@ -445,12 +444,8 @@ class Robot(Object):
         self.setPath(self._transformRouteToList(node_paths))
         self.current_state = "taking_pod"
 
-    def setStations(self, stations=None):
-
-        if stations is None:
-            stations = []
-
-        self.stations = stations
+    def assign_pod(self, pod):
+        self.pod = pod
 
     def setOrderNoPod(self, order):
         print("======Order set 2=======")
