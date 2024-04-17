@@ -247,13 +247,13 @@ def initOrders(universe: Inventory):
 def initRobots(universe: Inventory):
     robots = [
         {'velocity': 0, 'heading': 180, 'x': 7, 'y': 11},
-        {'velocity': 0, 'heading': 180, 'x': 7, 'y': 12},
-        {'velocity': 0, 'heading': 0, 'x': 14, 'y': 9},
-        {'velocity': 0, 'heading': 180, 'x': 7, 'y': 5},
-        {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
-        {'velocity': 0, 'heading': 180, 'x': 45, 'y': 26},
-        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 10},
-        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 2},
+        # {'velocity': 0, 'heading': 180, 'x': 7, 'y': 12},
+        # {'velocity': 0, 'heading': 0, 'x': 14, 'y': 9},
+        # {'velocity': 0, 'heading': 180, 'x': 7, 'y': 5},
+        # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
+        # {'velocity': 0, 'heading': 180, 'x': 45, 'y': 26},
+        # {'velocity': 0, 'heading': 0, 'x': 48, 'y': 10},
+        # {'velocity': 0, 'heading': 0, 'x': 46, 'y': 2},
         # {'velocity': 0, 'heading': 180, 'x': 9, 'y': 14},
         # {'velocity': 0, 'heading': 180, 'x': 7, 'y': 14},
         # {'velocity': 0, 'heading': 180, 'x': 7, 'y': 6},
@@ -295,13 +295,14 @@ def draw_layout(universe):
 
 
 def generate_and_draw_layout(universe):
-    Layout().generate()
-    draw_from_generated_file(universe)
+    layout = Layout()
+    layout.generate()
+    draw_from_generated_file(universe, layout)
     initRobots(universe)
     initOrders(universe)
 
 
-def draw_from_generated_file(universe):
+def draw_from_generated_file(universe, layout):
     graph = DirectedGraph()
     graph_pod = DirectedGraph()
     graph_pod.key = 'pod'
@@ -310,8 +311,7 @@ def draw_from_generated_file(universe):
     data = pd.read_csv("generated_pod.csv", header=None)
     total_rows = len(data)
     for y, row in data.iterrows():
-        # Invert Y
-        y = total_rows - y - 1
+        # Invert Y only to draw
         for x, value in row.items():
             obj = Object()
             obj.object_type = 'way-direction'
@@ -319,20 +319,23 @@ def draw_from_generated_file(universe):
 
             obj_left_coordinate = f"{x - 1},{y}"
             obj_right_coordinate = f"{x + 1},{y}"
-            obj_above_coordinate = f"{x},{y + 1}"
-            obj_below_coordinate = f"{x},{y - 1}"
+            obj_above_coordinate = f"{x},{y - 1}"
+            obj_below_coordinate = f"{x},{y + 1}"
 
             obj_left_value = data.iloc[y, x - 1] if x > 0 else None
             obj_right_value = data.iloc[y, x + 1] if x < len(row) - 1 else None
-            obj_above_value = data.iloc[y + 1, x] if y < total_rows - 1 else None
-            obj_below_value = data.iloc[y - 1, x] if y > 0 else None
+            obj_above_value = data.iloc[y - 1, x] if y > 0 else None
+            obj_below_value = data.iloc[y + 1, x] if y < total_rows - 1 else None
 
-            weight = 3 if x < 10 else 1
+            weight = 3 if x < layout.reserved_column_start else 1
 
-            if value == 1:
-                obj = Pod()
-                obj.coordinate = NetLogoCoordinate(obj.pos_x, obj.pos_y)
-                graph_pod.add_node(obj_key)
+            if value == 0 or value == 1:
+                if value == 0:
+                    obj.shape = 'empty-space'
+                elif value == 1:
+                    obj = Pod()
+                    obj.coordinate = NetLogoCoordinate(obj.pos_x, obj.pos_y)
+                    graph_pod.add_node(obj_key)
 
                 add_all_direction_paths(graph, obj_key, weight=weight)
 
@@ -374,36 +377,36 @@ def draw_from_generated_file(universe):
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
 
                 graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=10)
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=10)
             elif value == 5:
                 obj.shape = 'arrow-right'
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
 
                 graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=10)
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=10)
             elif value == 6:
                 obj.shape = 'arrow-up'
                 graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
 
                 graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=10)
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=10)
             elif value == 7:
                 obj.shape = 'arrow-down'
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
 
                 graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=10)
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=10)
             elif value == 11:
                 obj.shape = 'person-red'
             elif value == 12:
@@ -425,10 +428,10 @@ def draw_from_generated_file(universe):
                 universe.addStation(obj)
             elif value == 16:
                 obj.shape = 'rail-corner'
+                obj.heading = 270
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 17:
                 obj.shape = 'rail-corner'
-                obj.heading = 270
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
             elif value == 99:
                 obj.shape = 'empty-space'

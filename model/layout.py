@@ -1,4 +1,5 @@
 import csv
+import random
 
 
 class Layout(object):
@@ -8,44 +9,52 @@ class Layout(object):
         self.pod_batch_horizontal_max = 5
         self.pod_batch_vertical_count = 0
         self.pod_batch_vertical_max = 10
-        self.reserved_column_start = 10
-        self.reserved_column_end = 10
+        self.reserved_column_start = 9
+        self.reserved_column_end = 9
+        self.reserved_column_station = 5
         self.order_picker_total = 3
         self.horizontal_direction_switch = False
         self.vertical_direction_switch = False
+        self.pod_percentage = 50
 
     def generate(self):
         order_picker_positions = self.get_order_picker_indexes(self.get_order_picker_positions())
-        print(order_picker_positions)
+
+        data_matrix = []
+
+        for row in range(self.total_rows()):
+            current_row = []
+            self.vertical_direction_switch = False
+            for col in range(self.total_cols()):
+                if col < self.reserved_column_station:
+                    current_row.append(self.get_value_for_order_picking(row, col, order_picker_positions))
+                else:
+                    if self.reserved_column_start <= col < (self.total_cols() - self.reserved_column_end):
+                        if row % (self.pod_batch_vertical + 1) == 0:
+                            if (col - self.reserved_column_start) % (self.pod_batch_horizontal + 1) == 0:
+                                current_row.append(3)
+                                self.vertical_direction_switch = not self.vertical_direction_switch
+                            else:
+                                current_row.append(4 if self.horizontal_direction_switch else 5)
+                        else:
+                            pod_index = (col - self.reserved_column_start - 1) % (self.pod_batch_horizontal + 1)
+                            if pod_index < self.pod_batch_horizontal:
+                                current_row.append(1)
+                            else:
+                                current_row.append(6 if self.vertical_direction_switch else 7)
+                                self.vertical_direction_switch = not self.vertical_direction_switch
+                    else:
+                        current_row.append(6 if self.vertical_direction_switch else 7)
+                        self.vertical_direction_switch = not self.vertical_direction_switch
+
+            data_matrix.append(current_row)
+            self.horizontal_direction_switch = not self.horizontal_direction_switch
+
+        self.adjust_pod_availability(data_matrix)
+
         with open('generated_pod.csv', 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            for row in range(self.total_rows()):
-                current_row = []
-                self.vertical_direction_switch = False
-                for col in range(self.total_cols()):
-                    if col < 5:
-                        current_row.append(self.get_value_for_order_picking(row, col, order_picker_positions))
-                    else:
-                        if self.reserved_column_start <= col < (self.total_cols() - self.reserved_column_end):
-                            if row % (self.pod_batch_vertical + 1) == 0:
-                                if (col - self.reserved_column_start) % (self.pod_batch_horizontal + 1) == 0:
-                                    current_row.append(3)
-                                    self.vertical_direction_switch = not self.vertical_direction_switch
-                                else:
-                                    current_row.append(4 if self.horizontal_direction_switch else 5)
-                            else:
-                                pod_index = (col - self.reserved_column_start - 1) % (self.pod_batch_horizontal + 1)
-                                if pod_index < self.pod_batch_horizontal:
-                                    current_row.append(1)
-                                else:
-                                    current_row.append(6 if self.vertical_direction_switch else 7)
-                                    self.vertical_direction_switch = not self.vertical_direction_switch
-                        else:
-                            current_row.append(6 if self.vertical_direction_switch else 7)
-                            self.vertical_direction_switch = not self.vertical_direction_switch
-
-                writer.writerow(current_row)
-                self.horizontal_direction_switch = not self.horizontal_direction_switch
+            writer.writerows(data_matrix)
 
     def total_rows(self):
         return (self.pod_batch_vertical_max * self.pod_batch_vertical) + self.pod_batch_vertical_max + 1
@@ -73,8 +82,6 @@ class Layout(object):
 
             selected_sequence.append(numbers[middle_index + offset])
 
-        print(selected_sequence)
-        print(total_numbers)
         return sorted(selected_sequence)
 
     def get_order_picker_indexes(self, order_picker_positions):
@@ -121,3 +128,14 @@ class Layout(object):
                 else:
                     return 99
         return 99
+
+    def adjust_pod_availability(self, matrix):
+        total_pods = sum(row.count(1) for row in matrix)
+        pods_to_deactivate = int((100 - self.pod_percentage) / 100.0 * total_pods)
+
+        # List of all pod positions in matrix
+        pod_positions = [(r, c) for r in range(len(matrix)) for c in range(len(matrix[r])) if matrix[r][c] == 1]
+
+        # Randomly select and deactivate pods
+        for r, c in random.sample(pod_positions, pods_to_deactivate):
+            matrix[r][c] = 0
