@@ -1,8 +1,9 @@
 from engine.landscape import Landscape
 from engine.universe import Universe
 from engine.util import *
-from .order import Order
+from .pod import Pod
 from .robot import Robot
+from .robot_job import RobotJob
 
 
 class Inventory(Universe):
@@ -22,8 +23,13 @@ class Inventory(Universe):
         self._tick = 0
         self.ignored_types = ["pod", "station", "way-direction"]
         self.tick_to_second = 0.25
-        self.order_queue = []
+        self.job_queue = []
         self.landscape = Landscape(self.dimension)
+
+        # Dictionary mapping coordinate tuples (x, y) to Pod instances
+        # Key: Tuple representing the coordinates (x, y) of the Pod
+        # Value: Pod instance located at those coordinates
+        self.pods = {}
 
         super().__init__()
 
@@ -48,13 +54,13 @@ class Inventory(Universe):
 
     def tick(self):
         self.movement_channel = {}
-        if len(self.order_queue) > 0:
+        if len(self.job_queue) > 0:
             current_distance = 1000000
             current_id = -1
 
             for o in self.moveableObjects():
-                if len(self.order_queue) > 0:
-                    order: Robot = self.order_queue[0]
+                if len(self.job_queue) > 0:
+                    order: Robot = self.job_queue[0]
                     if o.object_type == "robot" and o.current_state == 'returning_pod':
                         o: Robot = o
                         if not order.has_to_take_pod:
@@ -64,7 +70,7 @@ class Inventory(Universe):
                                 current_distance = dist
 
                             if current_id != -1:
-                                self.order_queue.pop(0)
+                                self.job_queue.pop(0)
 
                             for movableObject in self.moveableObjects():
                                 if movableObject.id == current_id:
@@ -77,7 +83,7 @@ class Inventory(Universe):
                             current_distance = dist
 
                         if current_id != -1:
-                            self.order_queue.pop(0)
+                            self.job_queue.pop(0)
 
                         for movableObject in self.moveableObjects():
                             if movableObject.id == current_id:
@@ -98,27 +104,35 @@ class Inventory(Universe):
         self.total_turning = total_turning
         self._tick += self.tick_to_second
 
-    def addOrder(self, order: Order):
+    def assign_job(self, job: RobotJob):
         current_distance = 1000000
         current_id = -1
 
         for o in self.moveableObjects():
-            if o.object_type == "robot" and o.order is None and o.current_state == 'idle':
-                dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
+            if isinstance(o, Robot) and o.job is None and o.current_state == 'idle':
+                dist = calculateDistance(o.pos_x, o.pos_y, job.designated_pod.pos_x, job.designated_pod.pos_y)
                 if dist < current_distance:
                     current_id = o.id
                     current_distance = dist
 
         if current_id == -1:
-            self.order_queue.append(order)
+            self.job_queue.append(job)
             return
 
         for o in self.moveableObjects():
-            if o.id == current_id:
-                o.setOrder(order)
+            if o.id == current_id and isinstance(o, Robot):
+                o.assign_job_and_set_move_to_take_pod(job)
 
     def addStation(self, station):
         self.stations.append(station)
+
+    def add_pod(self, pod: Pod, x, y):
+        """Add a pod at a specific coordinate."""
+        self.pods[(x, y)] = pod  # Store pod by its coordinate tuple
+
+    def find_pod(self, x, y):
+        """Find and return the pod at the specified x and y coordinates using dictionary lookup."""
+        return self.pods.get((x, y), None)  # Returns None if no pod is found at those coordinates
 
     def moveableObjects(self):
         result = []

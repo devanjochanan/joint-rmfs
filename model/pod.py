@@ -1,11 +1,12 @@
 from engine.object import Object
+from engine.netlogo_coordinate import NetLogoCoordinate
 
 
 class Pod(Object):
     def __init__(self):
         self.shape = 'full square'
         self.object_type = 'pod'
-        self.coordinate = None
+        self.coordinate = NetLogoCoordinate()
         self.skus = {}
         super().__init__()
 
@@ -37,3 +38,8 @@ class Pod(Object):
 
     def pick_sku(self, sku, qty):
         self.skus[sku]['current_qty'] -= qty
+
+    def get_unassigned_skus(self):
+        """Return a list of SKUs that have not yet been assigned a pod."""
+        unassigned_skus = [sku for sku, details in self.skus.items() if details['pod'] is None]
+        return unassigned_skus

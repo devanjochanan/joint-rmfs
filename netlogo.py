@@ -1,6 +1,7 @@
 import csv
 import pickle
 import os
+import random
 import traceback
 
 import networkx as nx
@@ -12,6 +13,7 @@ from model.inventory import Inventory
 from model.order import Order
 from model.pod import Pod
 from model.robot import Robot
+from model.robot_job import RobotJob
 from model.station import Station
 from model.layout import Layout
 
@@ -232,7 +234,13 @@ def initOrders(universe: Inventory):
         order.station = universe.stations[destination[2]]
 
         # Add the order to the universe's list of orders
-        universe.addOrder(order)
+        # universe.addOrder(order)
+
+        pod = universe.find_pod(destination[0], destination[1])
+        station = universe.stations[destination[2]]
+        job = RobotJob(pod, station)
+
+        universe.assign_job(job)
 
         # Create a visual representation of the order as an Object
         visual_obj = Object()
@@ -298,10 +306,15 @@ def generate_and_draw_layout(universe):
     layout.generate()
     draw_from_generated_file(universe, layout)
     initRobots(universe)
-    initOrders(universe)
+
+    pod = list(universe.pods.values())[-1]
+    destinations = [
+        [pod.pos_x, pod.pos_y, 0]
+    ]
+    assign_jobs(universe, destinations)
 
 
-def draw_from_generated_file(universe, layout):
+def draw_from_generated_file(universe: Inventory, layout):
     graph = DirectedGraph()
     graph_pod = DirectedGraph()
     graph_pod.key = 'pod'
@@ -333,19 +346,28 @@ def draw_from_generated_file(universe, layout):
                     obj.shape = 'empty-space'
                 elif value == 1:
                     obj = Pod()
-                    obj.coordinate = NetLogoCoordinate(obj.pos_x, obj.pos_y)
+                    obj.coordinate = NetLogoCoordinate(x, y)
+                    obj.pos_x = x
+                    obj.pos_y = y
+                    random_sku = random.randint(1, 2)
+                    obj.add_sku(random_sku, limit_qty=10, current_qty=10, threshold=5)
+
+                    random_sku = random.randint(3, 5)
+                    obj.add_sku(random_sku, limit_qty=10, current_qty=10, threshold=5)
+
                     graph_pod.add_node(obj_key)
+                    universe.add_pod(obj, x, y)
 
                 add_all_direction_paths(graph, obj_key, weight=weight)
 
                 if obj_left_value != 1:
-                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=10)
+                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
                 if obj_right_value != 1:
-                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=10)
+                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=100)
                 if obj_above_value != 1:
-                    graph_pod.add_edge(obj_key, obj_above_coordinate, weight=10)
+                    graph_pod.add_edge(obj_key, obj_above_coordinate, weight=100)
                 if obj_below_value != 1:
-                    graph_pod.add_edge(obj_key, obj_below_coordinate, weight=10)
+                    graph_pod.add_edge(obj_key, obj_below_coordinate, weight=100)
             elif value == 3:
                 obj.shape = 'empty-space'
                 intersections.append([obj.pos_x, obj.pos_y])
@@ -376,36 +398,36 @@ def draw_from_generated_file(universe, layout):
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
 
                 graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=10)
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=100)
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=10)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=100)
             elif value == 5:
                 obj.shape = 'arrow-right'
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
 
                 graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=10)
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=100)
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=10)
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=100)
             elif value == 6:
                 obj.shape = 'arrow-up'
                 graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
 
                 graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=10)
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=10)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=100)
             elif value == 7:
                 obj.shape = 'arrow-down'
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
 
                 graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=10)
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
-                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=10)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=100)
             elif value == 11:
                 obj.shape = 'person-red'
             elif value == 12:
@@ -420,6 +442,8 @@ def draw_from_generated_file(universe, layout):
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 15:
                 obj = Station()
+                obj.pos_x = x
+                obj.pos_y = y
                 obj.coordinate = NetLogoCoordinate(x, y)
                 obj.shape = 'rail'
                 obj.heading = 90
@@ -458,6 +482,24 @@ def add_all_direction_paths(graph, obj_key, weight):
         neighbor_key = f"{nx},{ny}"
         graph.add_edge(obj_key, neighbor_key, weight=weight)
 
+
+def assign_jobs(universe: Inventory, destinations: list):
+    for destination in destinations:
+        pod = universe.find_pod(destination[0], destination[1])
+        station = universe.stations[destination[2]]
+        job = RobotJob(pod, station)
+
+        universe.assign_job(job)
+
+        # Create a visual representation of the order as an Object
+        visual_obj = Object()
+        visual_obj.pos_x = destination[0]
+        visual_obj.pos_y = destination[1]
+        visual_obj.shape = 'box'  # Assuming this is a fixed shape for all orders
+        visual_obj.object_type = 'order'
+
+        # Add the visual object to the universe
+        universe.addObject(visual_obj)
 
 def draw_layout_from_file(universe):
     initWays(universe)
@@ -645,7 +687,7 @@ def tick():
 
         # Load the simulation state
         with open('netlogo.state', 'rb') as file:
-            universe = pickle.load(file)
+            universe: Inventory = pickle.load(file)
 
         print("before tick", universe._tick)
 
@@ -660,8 +702,7 @@ def tick():
         next_result = universe.generateResult()
         with open('netlogo.state', 'wb') as config_dictionary_file:
             pickle.dump(universe, config_dictionary_file)
-
-        return [next_result, universe.total_energy, len(universe.order_queue), universe.stop_and_go,
+        return [next_result, universe.total_energy, len(universe.job_queue), universe.stop_and_go,
                 universe.total_turning]
     except Exception as e:
         # Print complete stack trace

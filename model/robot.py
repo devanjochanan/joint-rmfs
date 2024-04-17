@@ -1,15 +1,18 @@
 import math
+from typing import Optional
 
 from engine.heading import Heading
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
+from .order import Order
+from .robot_job import RobotJob
 from .traffic_policy import TrafficPolicy
 
 
 class Robot(Object):
-    order = None
-    pod = None
+    order: Optional[Order] = None
     destination = None
+    job: Optional[RobotJob] = None
 
     # netlogo related
     shape = 'turtle-2'
@@ -83,12 +86,11 @@ class Robot(Object):
         end = self.coordinate_to_string_key(station_pos_x, station_pos_y)
 
         node_routes = self.universe.graph_pod.dijkstra(start, end)
-        print(node_routes)
         self.setPath(self._transformRouteToList(node_routes))
 
     def get_station_position(self):
-        pos_x = self.order.station.pos_x
-        pos_y = self.order.station.pos_y
+        pos_x = self.job.station.pos_x
+        pos_y = self.job.station.pos_y
         return pos_x, pos_y
 
     def setPath(self, path):
@@ -324,6 +326,7 @@ class Robot(Object):
         return path_int
 
     def neutralizeRobotState(self):
+        self.job = None
         self.order = None
         self.destination = None
         self.route_stop_points = []
@@ -342,7 +345,7 @@ class Robot(Object):
                 self.current_state = "returning_pod"
 
                 start = self.coordinate_to_string_key(self.coordinate.x, self.coordinate.y)
-                end = self.coordinate_to_string_key(self.order.coordinate.x, self.order.coordinate.y)
+                end = self.coordinate_to_string_key(self.job.designated_pod.pos_x, self.job.designated_pod.pos_y)
 
                 self.neutralizeRobotState()
 
@@ -383,7 +386,7 @@ class Robot(Object):
                         # set robot to correct position and route to destination if any
                         if self.current_state == "taking_pod":
                             self.update_current_position()
-                            self.setMovementPlanToStation()
+                            self.set_move_to_station()
                         elif self.current_state == "returning_pod":
                             self.update_current_position()
 
@@ -431,37 +434,26 @@ class Robot(Object):
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
                                           self.heading)
 
-    def setOrder(self, order):
-        print("======Order set")
-        self.order = order
-        self.destination = order.coordinate
+    def assign_job_and_set_move_to_take_pod(self, job: RobotJob):
+        print("robot from coordinate ", self.coordinate, " assigning job ", job)
+        self.job = job
 
-        start = self.coordinate_to_string_key(self.pos_x, self.pos_y)
-        end = self.coordinate_to_string_key(order.coordinate.x, order.coordinate.y)
+        self.set_move_to_take_pod()
 
-        node_paths = self.universe.graph.dijkstra(start, end)
-
-        self.setPath(self._transformRouteToList(node_paths))
+    def set_move_to_take_pod(self):
+        self.set_move(self.job.designated_pod)
         self.current_state = "taking_pod"
 
-    def assign_pod(self, pod):
-        self.pod = pod
+    def set_move_to_station(self):
+        self.set_move(self.job.station)
 
-    def setOrderNoPod(self, order):
-        print("======Order set 2=======")
-        self.order = order
-        self.destination = order.coordinate
-        self.current_state = 'delivering_pod'
-        self.coordinate = NetLogoCoordinate(self.pos_x, self.pos_y)
-        next_blocks = self._calculateNextBlocks(int(self.pos_x), int(self.pos_y), self.heading, 5)
+    def set_move(self, dest: Object):
+        start = self.coordinate_to_string_key(self.pos_x, self.pos_y)
 
-        start = self.coordinate_to_string_key(next_blocks[1][0], next_blocks[1][1])
+        end = self.coordinate_to_string_key(dest.pos_x, dest.pos_y)
 
-        station_pos_x, station_pos_y = self.get_station_position()
-        end = self.coordinate_to_string_key(station_pos_x, station_pos_y)
-
-        node_paths = self.universe.graph_pod.dijkstra(start, end)
-        self.setPath(self._transformRouteToList(node_paths))
+        node_routes = self.universe.graph_pod.dijkstra(start, end)
+        self.setPath(self._transformRouteToList(node_routes))
 
     # utility functions
     @staticmethod

@@ -13,9 +13,9 @@ class Layout(object):
         self.reserved_column_end = 9
         self.reserved_column_station = 5
         self.order_picker_total = 3
-        self.horizontal_direction_switch = False
+        self.horizontal_direction_switch = True
         self.vertical_direction_switch = False
-        self.pod_percentage = 50
+        self.total_pods_active = 400
 
     def generate(self):
         order_picker_positions = self.get_order_picker_indexes(self.get_order_picker_positions())
@@ -130,12 +130,19 @@ class Layout(object):
         return 99
 
     def adjust_pod_availability(self, matrix):
-        total_pods = sum(row.count(1) for row in matrix)
-        pods_to_deactivate = int((100 - self.pod_percentage) / 100.0 * total_pods)
+        # Count the current total number of active pods
+        current_total_pods = sum(row.count(1) for row in matrix)
 
-        # List of all pod positions in matrix
+        # Calculate how many pods need to be deactivated
+        if current_total_pods > self.total_pods_active:
+            pods_to_deactivate = current_total_pods - self.total_pods_active
+        else:
+            pods_to_deactivate = 0
+
+        # List of all pod positions in matrix that are currently active
         pod_positions = [(r, c) for r in range(len(matrix)) for c in range(len(matrix[r])) if matrix[r][c] == 1]
 
-        # Randomly select and deactivate pods
-        for r, c in random.sample(pod_positions, pods_to_deactivate):
-            matrix[r][c] = 0
+        # Randomly select and deactivate pods if there are any to deactivate
+        if pods_to_deactivate > 0:
+            for r, c in random.sample(pod_positions, pods_to_deactivate):
+                matrix[r][c] = 0
