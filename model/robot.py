@@ -77,11 +77,12 @@ class Robot(Object):
         return 0
 
     def setMovementPlanToStation(self):
-        start = self._coordinateToNodeKey(self.pos_x, self.pos_y)
-        end = self._coordinateToNodeKey(self.stations[self.order.station_number].pos_x,
-                                        self.stations[self.order.station_number].pos_y)
+        start = self.coordinate_to_string_key(self.pos_x, self.pos_y)
+        end = self.coordinate_to_string_key(self.stations[self.order.station_number].pos_x,
+                                            self.stations[self.order.station_number].pos_y)
 
         node_routes = self.universe.graph_pod.dijkstra(start, end)
+        print(node_routes)
         self.setPath(self._transformRouteToList(node_routes))
 
     def setPath(self, path):
@@ -321,7 +322,7 @@ class Robot(Object):
         self.destination = None
         self.route_stop_points = []
 
-    def setPositionToInt(self):
+    def update_current_position(self):
         self.coordinate = NetLogoCoordinate(int(self.pos_x), int(self.pos_y))
         self.pos_x = int(self.pos_x)
         self.pos_y = int(self.pos_y)
@@ -334,8 +335,8 @@ class Robot(Object):
             if self.pick_pod_item_delay == 0:
                 self.current_state = "returning_pod"
 
-                start = self._coordinateToNodeKey(self.coordinate.x, self.coordinate.y)
-                end = self._coordinateToNodeKey(self.order.coordinate.x, self.order.coordinate.y)
+                start = self.coordinate_to_string_key(self.coordinate.x, self.coordinate.y)
+                end = self.coordinate_to_string_key(self.order.coordinate.x, self.order.coordinate.y)
 
                 self.neutralizeRobotState()
 
@@ -375,10 +376,10 @@ class Robot(Object):
                     if len(self.route_stop_points) == 0:
                         # set robot to correct position and route to destination if any
                         if self.current_state == "taking_pod":
-                            self.setPositionToInt()
+                            self.update_current_position()
                             self.setMovementPlanToStation()
                         elif self.current_state == "returning_pod":
-                            self.setPositionToInt()
+                            self.update_current_position()
 
                         # advance robot to next state
                         self.advanceState()
@@ -429,8 +430,8 @@ class Robot(Object):
         self.order = order
         self.destination = order.coordinate
 
-        start = self._coordinateToNodeKey(self.pos_x, self.pos_y)
-        end = self._coordinateToNodeKey(order.coordinate.x, order.coordinate.y)
+        start = self.coordinate_to_string_key(self.pos_x, self.pos_y)
+        end = self.coordinate_to_string_key(order.coordinate.x, order.coordinate.y)
 
         node_paths = self.universe.graph.dijkstra(start, end)
 
@@ -452,8 +453,8 @@ class Robot(Object):
         self.coordinate = NetLogoCoordinate(self.pos_x, self.pos_y)
         next_blocks = self._calculateNextBlocks(int(self.pos_x), int(self.pos_y), self.heading, 5)
 
-        start = self._coordinateToNodeKey(next_blocks[1][0], next_blocks[1][1])
-        end = self._coordinateToNodeKey(2, 1 + self.order.station_number * 6)
+        start = self.coordinate_to_string_key(next_blocks[1][0], next_blocks[1][1])
+        end = self.coordinate_to_string_key(2, 1 + self.order.station_number * 6)
 
         node_paths = self.universe.graph_pod.dijkstra(start, end)
         self.setPath(self._transformRouteToList(node_paths))
@@ -525,7 +526,7 @@ class Robot(Object):
         return result
 
     @staticmethod
-    def _coordinateToNodeKey(x: int, y: int):
+    def coordinate_to_string_key(x: int, y: int):
         return "{},{}".format(x, y)
 
     @staticmethod
