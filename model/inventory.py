@@ -1,6 +1,9 @@
+import pandas as pd
+
 from engine.landscape import Landscape
 from engine.universe import Universe
 from engine.util import *
+from .order import Order
 from .pod import Pod
 from .robot import Robot
 from .robot_job import RobotJob
@@ -24,6 +27,7 @@ class Inventory(Universe):
         self.ignored_types = ["pod", "station", "way-direction"]
         self.tick_to_second = 0.25
         self.job_queue = []
+        self.orders = []
         self.landscape = Landscape(self.dimension)
 
         # Dictionary mapping coordinate tuples (x, y) to Pod instances
@@ -102,7 +106,28 @@ class Inventory(Universe):
 
         self.total_energy = total_energy
         self.total_turning = total_turning
+
+        print(self.find_new_orders())
         self._tick += self.tick_to_second
+
+    def find_new_orders(self):
+        orders_df = pd.read_csv('generated_order.csv')
+
+        current_second = self._tick * self.tick_to_second
+        previous_second = (self._tick - 4) * self.tick_to_second
+
+        # Filter orders that have arrived by the current second and have not been processed before
+        new_orders = orders_df[(orders_df['Order Arrival (in second)'] <= current_second) &
+                               (orders_df['Order Arrival (in second)'] > previous_second)]
+
+        for index, row in new_orders.iterrows():
+            # Assuming Pod object or similar needs to be passed; placeholder Pod() used
+            order = Order(order_id=row['Order Id'], order_arrival_in_seconds=row['Order Arrival (in second)'])
+            order.add_sku(row['Item Id'], row['Quantity'])
+
+            self.orders.append(order)
+
+        return new_orders
 
     def assign_job(self, job: RobotJob):
         current_distance = 1000000

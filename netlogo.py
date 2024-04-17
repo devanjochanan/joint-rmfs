@@ -501,6 +501,7 @@ def assign_jobs(universe: Inventory, destinations: list):
         # Add the visual object to the universe
         universe.addObject(visual_obj)
 
+
 def draw_layout_from_file(universe):
     initWays(universe)
     initStation(universe)

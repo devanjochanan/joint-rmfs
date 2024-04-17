@@ -1,6 +1,7 @@
 class Order:
-    def __init__(self, pod):
-        self.designated_pod = pod
+    def __init__(self, order_id, order_arrival_in_seconds):
+        self.order_id = order_id
+        self.order_arrival_in_seconds = order_arrival_in_seconds
         self.coordinate = None
         self.station = None
         self.skus = {}
