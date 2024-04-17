@@ -340,13 +340,13 @@ def draw_from_generated_file(universe, layout):
                 add_all_direction_paths(graph, obj_key, weight=weight)
 
                 if obj_left_value != 1:
-                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=10)
                 if obj_right_value != 1:
-                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=10)
                 if obj_above_value != 1:
-                    graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_above_coordinate, weight=10)
                 if obj_below_value != 1:
-                    graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                    graph_pod.add_edge(obj_key, obj_below_coordinate, weight=10)
             elif value == 3:
                 obj.shape = 'empty-space'
                 intersections.append([obj.pos_x, obj.pos_y])
