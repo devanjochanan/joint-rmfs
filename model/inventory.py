@@ -162,7 +162,6 @@ class Inventory(Universe):
             order.start_processing(int(self._tick))
 
             for sku in order.get_remaining_skus():
-                print("TEST")
                 available_pod: Pod = self.pod_manager.get_available_pod(sku)
                 if available_pod is None:
                     continue

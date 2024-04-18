@@ -338,6 +338,10 @@ class Robot(Object):
             return False
         else:
             if self.is_in_station():
+                if self.job.picking_delay % self.job.picking_delay_per_sku == 0:
+                    print("PICKING_ITEMS")
+                    self.job.execute_pick()
+
                 self.job.picking_delay -= 1
 
                 if self.job.picking_delay == 0:
