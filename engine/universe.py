@@ -17,12 +17,12 @@ class Universe:
         for o in self._objects:
             o.move()
 
-    def moveableObjects(self):
+    def get_movable_objects(self):
         return self._objects
     
     def generateResult(self):
         result = []
-        for o in self.moveableObjects():
+        for o in self.get_movable_objects():
             result.append({
                 'id': o.id,
                 'heading': o.heading,

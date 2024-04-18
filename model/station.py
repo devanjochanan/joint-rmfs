@@ -8,6 +8,7 @@ class Station(Object):
         self.mass = 1
         self.coordinate = None
         self.orders = []
+        self.max_orders = 5
         super().__init__()
 
     def add_order(self, order):

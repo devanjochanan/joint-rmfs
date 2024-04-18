@@ -167,84 +167,7 @@ def initStation(universe: Inventory):
 
         # Specifically add the station object to the universe's list of stations
         # This could be for easy access to stations or station-specific management
-        universe.addStation(station)
-
-
-def initOrders(universe: Inventory):
-    destinations = [
-        [12, 13, 0],
-        # [11, 13, 3],
-        # [30, 14, 3],
-        # [12, 25, 3],
-        # [25, 31, 3],
-        # [26, 11, 3],
-        # [15, 25, 3],
-        # [42, 28, 3],
-        # [43, 11, 3],
-        # [30, 16, 3],
-        # [26, 22, 3],
-        # [26, 11, 3],
-        # [15, 25, 0],
-        # [42, 28, 1],
-        # [44, 31, 2],
-        # [26, 11, 1],
-        # [14, 25, 0],
-        # [25, 28, 4],
-        # [24, 31, 2],
-        # [26, 11, 1],
-        # [14, 25, 0],
-        # [42, 28, 2],
-        # [43, 11, 2],
-        # [30, 16, 4],
-        # [24, 22, 4],
-        # [26, 11, 3],
-        # [14, 25, 1],
-        # [42, 28, 0],
-        # [44, 31, 2],
-        # [26, 11, 3],
-        # [14, 25, 3],
-
-        # [27, 28, 1],
-
-        # [27, 28, 4],
-        # [27, 28, 0],
-        # [27, 28, 1],
-        # [27, 28, 2],
-        # [27, 28, 3],
-        # [27, 28, 4],
-        # [27, 28, 0],
-        # [27, 28, 1],
-        # [27, 28, 2],
-        # [27, 28, 3],
-        # [27, 28, 4],
-        # [27, 28, 0],
-        # [27, 28, 1],
-        # [27, 28, 2],
-        # [27, 28, 3],
-        # [27, 28, 4],
-    ]
-
-    for destination in destinations:
-        # Create a new Order object with x and y positions
-        order = Order(destination[:2])  # Assuming Order takes a list [x, y] as argument
-        # Set the coordinates for the order using a helper function or class
-        order.coordinate = NetLogoCoordinate(*destination[:2])
-        # Set the station number for the order
-        order.station_number = destination[2]
-        order.station = universe.stations[destination[2]]
-
-        # Add the order to the universe's list of orders
-        # universe.addOrder(order)
-
-        # Create a visual representation of the order as an Object
-        visual_obj = Object()
-        visual_obj.pos_x = destination[0]
-        visual_obj.pos_y = destination[1]
-        visual_obj.shape = 'box'  # Assuming this is a fixed shape for all orders
-        visual_obj.object_type = 'order'
-
-        # Add the visual object to the universe
-        universe.addObject(visual_obj)
+        universe.station_manager.add_station(station)
 
 
 def initRobots(universe: Inventory):
@@ -299,14 +222,21 @@ def generate_and_draw_layout(universe: Inventory):
     layout = Layout()
     layout.generate()
     draw_from_generated_file(universe, layout)
-    assign_skus_to_pods(universe.coordinate_to_pods.values())
+    assign_skus_to_pods(universe.pod_manager)
     initRobots(universe)
+    assign_backlog_orders(universe)
 
-    pod = list(universe.coordinate_to_pods.values())[0]
+    pod = list(universe.pod_manager.coordinate_to_pods.values())[0]
     destinations = [
         [pod.pos_x, pod.pos_y, 0]
     ]
-    assign_jobs(universe, destinations)
+    # assign_jobs(universe, destinations)
+
+
+def assign_backlog_orders(universe: Inventory):
+    order = Order("backlog", 0)
+    order.add_sku(1, 10)
+    universe.orders.append(order)
 
 
 def draw_from_generated_file(universe: Inventory, layout):
@@ -347,7 +277,7 @@ def draw_from_generated_file(universe: Inventory, layout):
                     obj.pos_y = y
 
                     graph_pod.add_node(obj_key)
-                    universe.add_pod(obj, x, y)
+                    universe.pod_manager.add_pod(obj)
 
                 if obj_left_value != 1:
                     graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
@@ -437,7 +367,7 @@ def draw_from_generated_file(universe: Inventory, layout):
                 obj.shape = 'rail'
                 obj.heading = 90
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
-                universe.addStation(obj)
+                universe.station_manager.add_station(obj)
             elif value == 16:
                 obj.shape = 'rail-corner'
                 obj.heading = 270
@@ -474,12 +404,12 @@ def add_all_direction_paths(graph, obj_key, weight):
 
 def assign_jobs(universe: Inventory, destinations: list):
     for destination in destinations:
-        pod = universe.find_pod(destination[0], destination[1])
-        station = universe.stations[destination[2]]
+        pod = universe.pod_manager.get_pod_by_coordinate(destination[0], destination[1])
+        station = universe.station_manager.stations[destination[2]]
         job = RobotJob(pod, station)
         job.picking_delay = 10
 
-        universe.assign_job(job)
+        universe.assign_job_to_available_robot(job)
 
         # Create a visual representation of the order as an Object
         visual_obj = Object()
@@ -492,17 +422,18 @@ def assign_jobs(universe: Inventory, destinations: list):
         universe.addObject(visual_obj)
 
 
-def assign_skus_to_pods(pods):
+def assign_skus_to_pods(pod_manager):
     total_skus = 1000  # Total number of SKUs from 0 to 999
     skus = list(range(total_skus))  # List of all SKUs
     random.shuffle(skus)  # Shuffle the list of SKUs for random distribution
 
     # Assign 5 SKUs to each pod
     sku_index = 0
-    for pod in pods:
+    for pod in pod_manager.pods:
         for _ in range(5):
             if sku_index < total_skus:
                 pod.add_sku(skus[sku_index], limit_qty=10, current_qty=10, threshold=5)  # Example values
+                pod_manager.add_sku_to_pod(skus[sku_index], pod)
                 sku_index += 1
 
 def draw_layout_from_file(universe):
@@ -510,7 +441,6 @@ def draw_layout_from_file(universe):
     initStation(universe)
     initRobots(universe)
     initPod(universe)
-    initOrders(universe)
 
 
 def initWays(universe):

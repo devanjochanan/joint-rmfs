@@ -2,9 +2,8 @@ class Order:
     def __init__(self, order_id, order_arrival):
         self.order_id = order_id
         self.order_arrival = order_arrival
-        self.process_start_time = 0
-        self.order_complete_time = 0
-        self.coordinate = None
+        self.process_start_time = -1
+        self.order_complete_time = -1
         self.station = None
         self.skus = {}
 
@@ -41,6 +40,12 @@ class Order:
     def complete_order(self, complete_time):
         """Record the time when order processing is completed."""
         self.order_complete_time = complete_time
+
+    def get_quantity_left_for_sku(self, sku):
+        """Return the total quantity left to be delivered for the specified SKU, including committed quantities."""
+        details = self.skus[sku]
+        remaining = details['total_quantity'] - (details['quantity_delivered'] + details['quantity_committed'])
+        return remaining
 
     def is_order_completed(self):
         """Check if all SKUs in the order have been delivered as per the total quantity."""

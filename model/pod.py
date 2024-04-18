@@ -40,6 +40,9 @@ class Pod(Object):
     def pick_sku(self, sku, qty):
         self.skus[sku]['current_qty'] -= qty
 
+    def get_quantity(self, sku):
+        return self.skus[sku]['current_qty']
+
     def get_unassigned_skus(self):
         """Return a list of SKUs that have not yet been assigned a pod."""
         unassigned_skus = [sku for sku, details in self.skus.items() if details['pod'] is None]

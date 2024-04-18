@@ -10,6 +10,9 @@ class RobotJob:
         self.orders = []  # This will hold tuples of (order, sku, quantity)
         self.picking_delay_per_sku = 12
         self.picking_delay = 0
+        self.is_active = True
+
+        self.designated_pod.is_idle = False
 
     def add_picking_task(self, order: Order, sku, quantity):
         """Add an order with the specific SKU and quantity to be picked."""
@@ -31,3 +34,9 @@ class RobotJob:
 
     def assign_station(self, station):
         self.station = station
+
+    def mark_job_as_done(self):
+        """Marks the job as done and sets the pod back to idle."""
+        if self.is_active:
+            self.is_active = False
+            self.designated_pod.is_idle = True
