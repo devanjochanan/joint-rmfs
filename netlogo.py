@@ -299,6 +299,7 @@ def generate_and_draw_layout(universe: Inventory):
     layout = Layout()
     layout.generate()
     draw_from_generated_file(universe, layout)
+    assign_skus_to_pods(universe.coordinate_to_pods.values())
     initRobots(universe)
 
     pod = list(universe.coordinate_to_pods.values())[-1]
@@ -344,11 +345,6 @@ def draw_from_generated_file(universe: Inventory, layout):
                     obj.coordinate = NetLogoCoordinate(x, y)
                     obj.pos_x = x
                     obj.pos_y = y
-                    random_sku = random.randint(1, 2)
-                    obj.add_sku(random_sku, limit_qty=10, current_qty=10, threshold=5)
-
-                    random_sku = random.randint(3, 5)
-                    obj.add_sku(random_sku, limit_qty=10, current_qty=10, threshold=5)
 
                     graph_pod.add_node(obj_key)
                     universe.add_pod(obj, x, y)
@@ -494,6 +490,19 @@ def assign_jobs(universe: Inventory, destinations: list):
         # Add the visual object to the universe
         universe.addObject(visual_obj)
 
+
+def assign_skus_to_pods(pods):
+    total_skus = 1000  # Total number of SKUs from 0 to 999
+    skus = list(range(total_skus))  # List of all SKUs
+    random.shuffle(skus)  # Shuffle the list of SKUs for random distribution
+
+    # Assign 5 SKUs to each pod
+    sku_index = 0
+    for pod in pods:
+        for _ in range(5):
+            if sku_index < total_skus:
+                pod.add_sku(skus[sku_index], limit_qty=10, current_qty=10, threshold=5)  # Example values
+                sku_index += 1
 
 def draw_layout_from_file(universe):
     initWays(universe)
