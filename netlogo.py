@@ -302,7 +302,7 @@ def generate_and_draw_layout(universe: Inventory):
     assign_skus_to_pods(universe.coordinate_to_pods.values())
     initRobots(universe)
 
-    pod = list(universe.coordinate_to_pods.values())[-1]
+    pod = list(universe.coordinate_to_pods.values())[0]
     destinations = [
         [pod.pos_x, pod.pos_y, 0]
     ]
@@ -477,6 +477,7 @@ def assign_jobs(universe: Inventory, destinations: list):
         pod = universe.find_pod(destination[0], destination[1])
         station = universe.stations[destination[2]]
         job = RobotJob(pod, station)
+        job.picking_delay = 10
 
         universe.assign_job(job)
 

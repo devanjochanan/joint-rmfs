@@ -80,7 +80,7 @@ class Inventory(Universe):
                                 if movableObject.id == current_id:
                                     movableObject.setOrderNoPod(order)
 
-                    if o.object_type == "robot" and o.order is None and o.current_state == 'idle' and order.has_to_take_pod == True:
+                    if o.object_type == "robot" and o.job is None and o.current_state == 'idle' and order.has_to_take_pod == True:
                         dist = calculateDistance(o.pos_x, o.pos_y, order.designated_pod[0], order.designated_pod[1])
                         if dist < current_distance:
                             current_id = o.id
@@ -107,7 +107,6 @@ class Inventory(Universe):
         self.total_energy = total_energy
         self.total_turning = total_turning
 
-        print(self.find_new_orders())
         self._tick += self.tick_to_second
 
     def find_new_orders(self):
@@ -122,7 +121,7 @@ class Inventory(Universe):
 
         for index, row in new_orders.iterrows():
             # Assuming Pod object or similar needs to be passed; placeholder Pod() used
-            order = Order(order_id=row['Order Id'], order_arrival_in_seconds=row['Order Arrival (in second)'])
+            order = Order(order_id=row['Order Id'], order_arrival=row['Order Arrival (in second)'])
             order.add_sku(row['Item Id'], row['Quantity'])
 
             self.orders.append(order)

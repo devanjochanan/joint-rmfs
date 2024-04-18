@@ -4,13 +4,11 @@ from typing import Optional
 from engine.heading import Heading
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
-from .order import Order
 from .robot_job import RobotJob
 from .traffic_policy import TrafficPolicy
 
 
 class Robot(Object):
-    order: Optional[Order] = None
     destination = None
     job: Optional[RobotJob] = None
 
@@ -327,7 +325,6 @@ class Robot(Object):
 
     def neutralizeRobotState(self):
         self.job = None
-        self.order = None
         self.destination = None
         self.route_stop_points = []
 
@@ -336,31 +333,29 @@ class Robot(Object):
         self.pos_x = int(self.pos_x)
         self.pos_y = int(self.pos_y)
 
-    def pickingItemInPod(self):
-        if self.pick_pod_item_delay != 0:
-            self.pick_pod_item_delay -= 1
+    def picking_item_in_pod(self):
+        if self.job is None:
+            return False
+        else:
+            if self.is_in_station():
+                self.job.picking_delay -= 1
 
-            # when the delay counter is zero, then return the pod
-            if self.pick_pod_item_delay == 0:
-                self.current_state = "returning_pod"
+                if self.job.picking_delay == 0:
+                    self.current_state = "returning_pod"
+                    self.set_move(self.job.designated_pod, self.universe.graph_pod, need_neutralize_robot=True)
 
-                start = self.coordinate_to_string_key(self.coordinate.x, self.coordinate.y)
-                end = self.coordinate_to_string_key(self.job.designated_pod.pos_x, self.job.designated_pod.pos_y)
+                return True
 
-                self.neutralizeRobotState()
-
-                node_routes = self.universe.graph_pod.dijkstra(start, end)
-                self.setPath(self._transformRouteToList(node_routes))
-            return True
+    def is_in_station(self):
+        return self.pos_x is self.job.station.pos_x and self.pos_y is self.job.station.pos_y
 
     def shouldMoveToDestination(self):
         tp = self.trafficPolicy()
         return len(self.route_stop_points) > 0 and tp == False
 
     def movementPlan(self):
-        if self.pickingItemInPod():
+        if self.picking_item_in_pod() is True:
             return
-
         if self.shouldMoveToDestination():
             next_destination_coordinate = self.route_stop_points[0]
             if isinstance(next_destination_coordinate, Heading):
@@ -441,18 +436,20 @@ class Robot(Object):
         self.set_move_to_take_pod()
 
     def set_move_to_take_pod(self):
-        self.set_move(self.job.designated_pod)
+        self.set_move(self.job.designated_pod, graph=self.universe.graph, need_neutralize_robot=False)
         self.current_state = "taking_pod"
 
     def set_move_to_station(self):
-        self.set_move(self.job.station)
+        self.set_move(self.job.station, graph=self.universe.graph_pod, need_neutralize_robot=False)
 
-    def set_move(self, dest: Object):
+    def set_move(self, dest: Object, graph, need_neutralize_robot: bool):
         start = self.coordinate_to_string_key(self.pos_x, self.pos_y)
-
         end = self.coordinate_to_string_key(dest.pos_x, dest.pos_y)
 
-        node_routes = self.universe.graph_pod.dijkstra(start, end)
+        if need_neutralize_robot:
+            self.neutralizeRobotState()
+
+        node_routes = graph.dijkstra(start, end)
         self.setPath(self._transformRouteToList(node_routes))
 
     # utility functions
