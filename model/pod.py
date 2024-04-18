@@ -8,6 +8,7 @@ class Pod(Object):
         self.object_type = 'pod'
         self.coordinate = NetLogoCoordinate()
         self.skus = {}
+        self.is_idle = True
         super().__init__()
 
     def add_sku(self, sku, limit_qty, current_qty, threshold):

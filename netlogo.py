@@ -236,12 +236,6 @@ def initOrders(universe: Inventory):
         # Add the order to the universe's list of orders
         # universe.addOrder(order)
 
-        pod = universe.find_pod(destination[0], destination[1])
-        station = universe.stations[destination[2]]
-        job = RobotJob(pod, station)
-
-        universe.assign_job(job)
-
         # Create a visual representation of the order as an Object
         visual_obj = Object()
         visual_obj.pos_x = destination[0]
@@ -301,13 +295,13 @@ def draw_layout(universe):
         generate_and_draw_layout(universe)
 
 
-def generate_and_draw_layout(universe):
+def generate_and_draw_layout(universe: Inventory):
     layout = Layout()
     layout.generate()
     draw_from_generated_file(universe, layout)
     initRobots(universe)
 
-    pod = list(universe.pods.values())[-1]
+    pod = list(universe.coordinate_to_pods.values())[-1]
     destinations = [
         [pod.pos_x, pod.pos_y, 0]
     ]
@@ -342,6 +336,7 @@ def draw_from_generated_file(universe: Inventory, layout):
             weight = 3 if x < layout.reserved_column_start else 1
 
             if value == 0 or value == 1:
+                add_all_direction_paths(graph, obj_key, weight=weight)
                 if value == 0:
                     obj.shape = 'empty-space'
                 elif value == 1:
@@ -357,8 +352,6 @@ def draw_from_generated_file(universe: Inventory, layout):
 
                     graph_pod.add_node(obj_key)
                     universe.add_pod(obj, x, y)
-
-                add_all_direction_paths(graph, obj_key, weight=weight)
 
                 if obj_left_value != 1:
                     graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
@@ -379,10 +372,10 @@ def draw_from_generated_file(universe: Inventory, layout):
                     graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
                     graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
 
-                if obj_above_value == 6:
+                if obj_above_value == 6 or obj_above_value == 6:
                     graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
                     graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
-                elif obj_below_value == 7:
+                elif obj_below_value == 7 or obj_below_value == 7:
                     graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
                     graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
 

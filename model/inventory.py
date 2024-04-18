@@ -33,7 +33,7 @@ class Inventory(Universe):
         # Dictionary mapping coordinate tuples (x, y) to Pod instances
         # Key: Tuple representing the coordinates (x, y) of the Pod
         # Value: Pod instance located at those coordinates
-        self.pods = {}
+        self.coordinate_to_pods = {}
 
         super().__init__()
 
@@ -153,11 +153,11 @@ class Inventory(Universe):
 
     def add_pod(self, pod: Pod, x, y):
         """Add a pod at a specific coordinate."""
-        self.pods[(x, y)] = pod  # Store pod by its coordinate tuple
+        self.coordinate_to_pods[(x, y)] = pod  # Store pod by its coordinate tuple
 
     def find_pod(self, x, y):
         """Find and return the pod at the specified x and y coordinates using dictionary lookup."""
-        return self.pods.get((x, y), None)  # Returns None if no pod is found at those coordinates
+        return self.coordinate_to_pods.get((x, y), None)  # Returns None if no pod is found at those coordinates
 
     def moveableObjects(self):
         result = []
