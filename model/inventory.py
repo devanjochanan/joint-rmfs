@@ -1,12 +1,11 @@
-import math
-from typing import List
-
 import pandas as pd
 
 from engine.landscape import Landscape
 from engine.universe import Universe
 from engine.util import *
+from . import order_manager
 from .order import Order
+from .order_manager import OrderManager
 from .pod import Pod
 from .pod_manager import PodManager
 from .robot import Robot
@@ -31,10 +30,10 @@ class Inventory(Universe):
         self.ignored_types = ["pod", "station", "way-direction"]
         self.tick_to_second = 0.25
         self.job_queue = []
-        self.orders = []
         self.landscape = Landscape(self.dimension)
         self.pod_manager = PodManager()
         self.station_manager = StationManager()
+        self.order_manager = OrderManager()
         self.next_process_tick = 0
 
         super().__init__()
@@ -111,12 +110,17 @@ class Inventory(Universe):
         new_orders = orders_df[(orders_df['Order Arrival (in second)'] <= current_second) &
                                (orders_df['Order Arrival (in second)'] > previous_second)]
 
-        for index, row in new_orders.iterrows():
-            # Assuming Pod object or similar needs to be passed; placeholder Pod() used
-            order = Order(order_id=row['Order Id'], order_arrival=row['Order Arrival (in second)'])
-            order.add_sku(row['Item Id'], row['Quantity'])
+        grouped_orders = new_orders.groupby('Order Id')
 
-            self.orders.append(order)
+        for order_id, group in grouped_orders:
+            order_items = group[['Item Id', 'Quantity']].to_dict('records')
+            order = Order(order_id=order_id, order_arrival=current_second)
+
+            # Add each item in the group to the order
+            for item in order_items:
+                order.add_sku(item['Item Id'], item['Quantity'])
+
+            self.order_manager.add_order(order)
 
         return new_orders
 
@@ -148,7 +152,7 @@ class Inventory(Universe):
         return result
 
     def process_orders(self):
-        for order in self.orders:
+        for order in self.order_manager.orders:
             if order.station is None:
                 available_station = self.station_manager.find_available_station()
                 if available_station is not None:
@@ -168,6 +172,6 @@ class Inventory(Universe):
                 quantity_to_take = order.get_quantity_left_for_sku(sku)
                 order.commit_quantity(sku, quantity_to_take)
 
-                job = RobotJob(available_pod, order.station)
-                job.add_picking_task(order, sku, quantity_to_take)
+                job = RobotJob(available_pod, order.station, order_manager=self.order_manager)
+                job.add_picking_task(order.order_id, sku, quantity_to_take)
                 self.job_queue.append(job)

@@ -173,9 +173,8 @@ def initStation(universe: Inventory):
 def initRobots(universe: Inventory):
     robots = [
         {'velocity': 0, 'heading': 180, 'x': 7, 'y': 11},
-        # {'velocity': 0, 'heading': 180, 'x': 7, 'y': 12},
-        # {'velocity': 0, 'heading': 0, 'x': 14, 'y': 9},
-        # {'velocity': 0, 'heading': 180, 'x': 7, 'y': 5},
+        {'velocity': 0, 'heading': 180, 'x': 14, 'y': 8},
+        {'velocity': 0, 'heading': 180, 'x': 10, 'y': 5},
         # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
         # {'velocity': 0, 'heading': 180, 'x': 45, 'y': 26},
         # {'velocity': 0, 'heading': 0, 'x': 48, 'y': 10},
@@ -236,7 +235,7 @@ def generate_and_draw_layout(universe: Inventory):
 def assign_backlog_orders(universe: Inventory):
     order = Order("backlog", 0)
     order.add_sku(1, 10)
-    universe.orders.append(order)
+    universe.order_manager.add_order(order)
 
 
 def draw_from_generated_file(universe: Inventory, layout):
@@ -264,7 +263,7 @@ def draw_from_generated_file(universe: Inventory, layout):
             obj_above_value = data.iloc[y - 1, x] if y > 0 else None
             obj_below_value = data.iloc[y + 1, x] if y < total_rows - 1 else None
 
-            weight = 3 if x < layout.reserved_column_start else 1
+            weight = 1
 
             if value == 0 or value == 1:
                 add_all_direction_paths(graph, obj_key, weight=weight)

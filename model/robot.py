@@ -9,9 +9,6 @@ from .traffic_policy import TrafficPolicy
 
 
 class Robot(Object):
-    destination = None
-    job: Optional[RobotJob] = None
-
     # netlogo related
     shape = 'turtle-2'
     object_type = 'robot'
@@ -44,9 +41,8 @@ class Robot(Object):
 
     def __init__(self):
         self.id = None
-        self.designated_pod = None
-        self.has_to_take_pod = None
         self.traffic_policy = []
+        self.job: Optional[RobotJob] = None
         super().__init__()
 
     @staticmethod
@@ -325,7 +321,6 @@ class Robot(Object):
 
     def neutralizeRobotState(self):
         self.job = None
-        self.destination = None
         self.route_stop_points = []
 
     def update_current_position(self):

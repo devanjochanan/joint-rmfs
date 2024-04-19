@@ -21,8 +21,8 @@ class Order:
         self.skus[sku]['quantity_committed'] += quantity
 
     def deliver_quantity(self, sku, quantity):
-        self.skus[sku]['quantity_committed'] -= quantity
         self.skus[sku]['quantity_delivered'] += quantity
+        self.skus[sku]['quantity_committed'] -= quantity
 
     def get_remaining_skus(self):
         """Return a dictionary of SKUs with their remaining quantities to be fulfilled."""
