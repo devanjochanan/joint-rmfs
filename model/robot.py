@@ -83,8 +83,8 @@ class Robot(Object):
         self.setPath(self._transformRouteToList(node_routes))
 
     def get_station_position(self):
-        pos_x = self.job.station.pos_x
-        pos_y = self.job.station.pos_y
+        pos_x = self.job.station_coordinate.x
+        pos_y = self.job.station_coordinate.y
         return pos_x, pos_y
 
     def setPath(self, path):
@@ -320,7 +320,7 @@ class Robot(Object):
         return path_int
 
     def neutralizeRobotState(self):
-        self.job = None
+        self.job.is_active = False
         self.route_stop_points = []
 
     def update_current_position(self):
@@ -329,24 +329,20 @@ class Robot(Object):
         self.pos_y = int(self.pos_y)
 
     def picking_item_in_pod(self):
-        if self.job is None:
+        if self.job is None or not self.job.is_active:
             return False
         else:
             if self.is_in_station():
-                if self.job.picking_delay % self.job.picking_delay_per_sku == 0:
-                    print("PICKING_ITEMS")
-                    self.job.execute_pick()
-
                 self.job.picking_delay -= 1
 
                 if self.job.picking_delay == 0:
                     self.current_state = "returning_pod"
-                    self.set_move(self.job.designated_pod, self.universe.graph_pod, need_neutralize_robot=True)
+                    self.set_move(self.job.pod_coordinate, self.universe.graph_pod, need_neutralize_robot=True)
 
                 return True
 
     def is_in_station(self):
-        return self.pos_x is self.job.station.pos_x and self.pos_y is self.job.station.pos_y
+        return self.pos_x is self.job.station_coordinate.x and self.pos_y is self.job.station_coordinate.y
 
     def shouldMoveToDestination(self):
         tp = self.trafficPolicy()
@@ -429,21 +425,20 @@ class Robot(Object):
                                           self.heading)
 
     def assign_job_and_set_move_to_take_pod(self, job: RobotJob):
-        print("robot from coordinate ", self.coordinate, " assigning job ", job)
         self.job = job
 
         self.set_move_to_take_pod()
 
     def set_move_to_take_pod(self):
-        self.set_move(self.job.designated_pod, graph=self.universe.graph, need_neutralize_robot=False)
+        self.set_move(self.job.pod_coordinate, graph=self.universe.graph, need_neutralize_robot=False)
         self.current_state = "taking_pod"
 
     def set_move_to_station(self):
-        self.set_move(self.job.station, graph=self.universe.graph_pod, need_neutralize_robot=False)
+        self.set_move(self.job.station_coordinate, graph=self.universe.graph_pod, need_neutralize_robot=False)
 
-    def set_move(self, dest: Object, graph, need_neutralize_robot: bool):
+    def set_move(self, dest: NetLogoCoordinate, graph, need_neutralize_robot: bool):
         start = self.coordinate_to_string_key(self.pos_x, self.pos_y)
-        end = self.coordinate_to_string_key(dest.pos_x, dest.pos_y)
+        end = self.coordinate_to_string_key(dest.x, dest.y)
 
         if need_neutralize_robot:
             self.neutralizeRobotState()

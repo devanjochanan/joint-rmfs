@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from model.station import Station
 
@@ -6,7 +6,7 @@ from model.station import Station
 class StationManager:
     def __init__(self):
         self.stations: List[Station] = []
-        self.max_orders = 5
+        self.stations_by_id: Dict[int, Station] = {}
 
     def find_available_station(self) -> Optional[Station]:
         # Initialize the available station variable as None
@@ -16,13 +16,19 @@ class StationManager:
 
         # Iterate through each station to check the number of orders
         for station in self.stations:
-            if len(station.orders) < station.max_orders:
+            if len(station.order_ids) < station.max_orders:
                 # Check if this station has fewer orders than the current minimum
-                if len(station.orders) < min_orders:
-                    min_orders = len(station.orders)
+                if len(station.order_ids) < min_orders:
+                    min_orders = len(station.order_ids)
                     available_station = station
 
+        if available_station is not None:
+            print(available_station.coordinate)
         return available_station
 
     def add_station(self, station: Station):
         self.stations.append(station)
+        self.stations_by_id[station.station_id] = station
+
+    def get_station_by_id(self, station_id: int):
+        return self.stations_by_id[station_id]

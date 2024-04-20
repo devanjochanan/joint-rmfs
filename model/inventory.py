@@ -1,3 +1,5 @@
+from typing import Optional
+
 import pandas as pd
 
 from engine.landscape import Landscape
@@ -65,24 +67,22 @@ class Inventory(Universe):
             self.next_process_tick += 1
         if len(self.job_queue) > 0:
             current_distance = 1000000
-            current_id = -1
+            nearest_robot: Optional[Robot] = None
 
             for o in self.get_movable_objects():
                 if len(self.job_queue) > 0:
                     job: RobotJob = self.job_queue[0]
 
-                    if o.object_type == "robot" and o.job is None and o.current_state == 'idle':
-                        dist = calculateDistance(o.pos_x, o.pos_y, job.designated_pod.pos_x, job.designated_pod.pos_y)
+                    if o.object_type == "robot" and (o.job is None or o.job.is_finished) and o.current_state == 'idle':
+                        dist = calculateDistance(o.pos_x, o.pos_y, job.pod_coordinate.x, job.pod_coordinate.y)
                         if dist < current_distance:
-                            current_id = o.id
+                            nearest_robot = o
                             current_distance = dist
 
-                        if current_id != -1:
-                            self.job_queue.pop(0)
-
-                        for movableObject in self.get_movable_objects():
-                            if movableObject.id == current_id:
-                                movableObject.assign_job_and_set_move_to_take_pod(job)
+            if nearest_robot is not None:
+                job: RobotJob = self.job_queue.pop(0)
+                print("object", nearest_robot.object_type, "taking job", job.orders)
+                nearest_robot.assign_job_and_set_move_to_take_pod(job)
 
         total_energy = 0
         total_turning = 0
@@ -95,10 +95,24 @@ class Inventory(Universe):
                 if o.velocity == 0 and initial_velocity > 0:
                     self.stop_and_go += 1
 
+                if o.job is not None and not o.job.is_active and not o.job.is_finished:
+                    self.finish_orders_in_job(o.job)
+
         self.total_energy = total_energy
         self.total_turning = total_turning
 
         self._tick += self.tick_to_second
+
+    def finish_orders_in_job(self, job: RobotJob):
+        for order_id, sku, quantity in job.orders:
+            order: Order = self.order_manager.get_order_by_id(order_id)
+            order.deliver_quantity(sku, quantity)
+
+            if order.is_order_completed():
+                station = self.station_manager.get_station_by_id(order.station_id)
+                station.remove_order(order_id)
+
+            job.is_finished = True
 
     def find_new_orders(self):
         orders_df = pd.read_csv('generated_order.csv')
@@ -129,8 +143,8 @@ class Inventory(Universe):
         current_id = -1
 
         for o in self.get_movable_objects():
-            if isinstance(o, Robot) and o.job is None and o.current_state == 'idle':
-                dist = calculateDistance(o.pos_x, o.pos_y, job.designated_pod.pos_x, job.designated_pod.pos_y)
+            if isinstance(o, Robot) and (o.job is None or o.job.is_active is False) and o.current_state == 'idle':
+                dist = calculateDistance(o.pos_x, o.pos_y, job.pod_coordinate.x, job.pod_coordinate.y)
                 if dist < current_distance:
                     current_id = o.id
                     current_distance = dist
@@ -153,10 +167,11 @@ class Inventory(Universe):
 
     def process_orders(self):
         for order in self.order_manager.orders:
-            if order.station is None:
+            if order.station_id is None:
                 available_station = self.station_manager.find_available_station()
                 if available_station is not None:
-                    order.assign_station(available_station)
+                    order.assign_station(available_station.station_id)
+                    available_station.add_order(order.order_id)
                 else:
                     break
 
@@ -172,6 +187,7 @@ class Inventory(Universe):
                 quantity_to_take = order.get_quantity_left_for_sku(sku)
                 order.commit_quantity(sku, quantity_to_take)
 
-                job = RobotJob(available_pod, order.station, order_manager=self.order_manager)
+                order_station = self.station_manager.get_station_by_id(order.station_id)
+                job = RobotJob(available_pod.coordinate, station_coordinate=order_station.coordinate)
                 job.add_picking_task(order.order_id, sku, quantity_to_take)
                 self.job_queue.append(job)

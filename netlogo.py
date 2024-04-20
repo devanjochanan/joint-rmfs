@@ -151,7 +151,7 @@ def initStation(universe: Inventory):
     # Assuming 'stations' is a list of tuples/lists where each item contains the x and y coordinates of a station
     for s in stations:
         # Create a new Station object
-        station = Station()
+        station = Station(1)
 
         # Set the x and y positions from the station data
         station.pos_x = s[0]
@@ -173,8 +173,8 @@ def initStation(universe: Inventory):
 def initRobots(universe: Inventory):
     robots = [
         {'velocity': 0, 'heading': 180, 'x': 7, 'y': 11},
-        {'velocity': 0, 'heading': 180, 'x': 14, 'y': 8},
-        {'velocity': 0, 'heading': 180, 'x': 10, 'y': 5},
+        {'velocity': 0, 'heading': 180, 'x': 5, 'y': 0},
+        {'velocity': 0, 'heading': 180, 'x': 5, 'y': 1},
         # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
         # {'velocity': 0, 'heading': 180, 'x': 45, 'y': 26},
         # {'velocity': 0, 'heading': 0, 'x': 48, 'y': 10},
@@ -229,7 +229,6 @@ def generate_and_draw_layout(universe: Inventory):
     destinations = [
         [pod.pos_x, pod.pos_y, 0]
     ]
-    # assign_jobs(universe, destinations)
 
 
 def assign_backlog_orders(universe: Inventory):
@@ -239,6 +238,7 @@ def assign_backlog_orders(universe: Inventory):
 
 
 def draw_from_generated_file(universe: Inventory, layout):
+    station_counter = 1
     graph = DirectedGraph()
     graph_pod = DirectedGraph()
     graph_pod.key = 'pod'
@@ -359,7 +359,8 @@ def draw_from_generated_file(universe: Inventory, layout):
                 obj.heading = 90
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 15:
-                obj = Station()
+                obj = Station(station_counter)
+                station_counter += 1
                 obj.pos_x = x
                 obj.pos_y = y
                 obj.coordinate = NetLogoCoordinate(x, y)
@@ -405,7 +406,7 @@ def assign_jobs(universe: Inventory, destinations: list):
     for destination in destinations:
         pod = universe.pod_manager.get_pod_by_coordinate(destination[0], destination[1])
         station = universe.station_manager.stations[destination[2]]
-        job = RobotJob(pod, station)
+        job = RobotJob(pod, station.coordinate)
         job.picking_delay = 10
 
         universe.assign_job_to_available_robot(job)
@@ -431,7 +432,7 @@ def assign_skus_to_pods(pod_manager):
     for pod in pod_manager.pods:
         for _ in range(5):
             if sku_index < total_skus:
-                pod.add_sku(skus[sku_index], limit_qty=10, current_qty=10, threshold=5)  # Example values
+                pod.add_sku(skus[sku_index], limit_qty=999, current_qty=999, threshold=5)  # Example values
                 pod_manager.add_sku_to_pod(skus[sku_index], pod)
                 sku_index += 1
 

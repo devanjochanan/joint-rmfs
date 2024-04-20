@@ -4,11 +4,11 @@ class Order:
         self.order_arrival = order_arrival
         self.process_start_time = -1
         self.order_complete_time = -1
-        self.station = None
+        self.station_id = None
         self.skus = {}
 
-    def assign_station(self, station):
-        self.station = station
+    def assign_station(self, station_id: int):
+        self.station_id = station_id
 
     def add_sku(self, sku, total_quantity):
         self.skus[sku] = {
