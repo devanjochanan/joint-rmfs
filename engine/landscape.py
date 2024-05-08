@@ -30,17 +30,17 @@ class Landscape:
             'state': state,
         }
 
-        self._map[int(x)][int(y)].append(self._objects[label])
+        self._map[round(x)][round(y)].append(self._objects[label])
 
     def setObject(self, label, x, y, speed, acceleration, heading, state):
         if label not in self._objects:
             return self._setObjectNew(label, x, y, speed, acceleration, heading, state)
         
-        old_x = int(self._objects[label]['x'])
-        old_y = int(self._objects[label]['y'])
+        old_x = round(self._objects[label]['x'])
+        old_y = round(self._objects[label]['y'])
         
         # check if x or y has changed
-        if int(x) != old_x or int(y) != old_y:
+        if round(x) != old_x or round(y) != old_y:
             # remove from old position
             to_iter = self._map[old_x][old_y] 
             for index, e in enumerate(to_iter):
@@ -49,7 +49,7 @@ class Landscape:
                     break
 
             # add to new position
-            self._map[int(x)][int(y)].append(self._objects[label])
+            self._map[round(x)][round(y)].append(self._objects[label])
 
         movement = 'vertical'
         if heading == 270 or heading == 90:

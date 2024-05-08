@@ -1,7 +1,6 @@
 import csv
 import pickle
 import os
-import random
 import traceback
 from typing import List
 
@@ -16,7 +15,6 @@ from model.order import Order
 from model.pod import Pod
 from model.pod_manager import PodManager
 from model.robot import Robot
-from model.robot_job import RobotJob
 from model.station import Station
 from model.layout import Layout
 from model.pod_generator import PodGenerator
@@ -64,18 +62,33 @@ class DirectedGraph:
         if self.node_valid(start) and self.node_valid(end):
             self.graph.add_edge(start, end, weight=weight)
 
-    def dijkstra(self, start, end):
-        """Find the shortest path between two nodes using Dijkstra's algorithm.
+    def dijkstra(self, start, end, avoid=None):
+        """Find the shortest path between two nodes using Dijkstra's algorithm, avoiding specified nodes.
 
         Args:
             start (str): The start node.
             end (str): The end node.
+            avoid (list, optional): Nodes to avoid in the path.
 
         Returns:
             list or None: The path from start to end if one exists, otherwise None.
         """
+        # Create a copy of the graph so we can modify it without affecting the original
+        G = self.graph.copy()
+
+        # Increase the weight of the edges leading to and from the nodes to avoid
+        if avoid:
+            for node in avoid:
+                for neighbor in list(G.neighbors(node)) + list(G.predecessors(node)):
+                    # Increase the weight significantly to discourage using these paths
+                    if G.has_edge(neighbor, node):
+                        G[neighbor][node]['weight'] += 1000
+                    if G.has_edge(node, neighbor):
+                        G[node][neighbor]['weight'] += 1000
+
         try:
-            path = nx.shortest_path(self.graph, source=start, target=end, weight='weight', method='bellman-ford')
+            # Use Dijkstra's algorithm to find the shortest path
+            path = nx.shortest_path(G, source=start, target=end, weight='weight', method='bellman-ford')
             return path
         except nx.NetworkXNoPath:
             return None
@@ -186,6 +199,16 @@ def initRobots(universe: Inventory):
         {'velocity': 0, 'heading': 0, 'x': 46, 'y': 5},
         {'velocity': 0, 'heading': 0, 'x': 47, 'y': 5},
         {'velocity': 0, 'heading': 0, 'x': 48, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 9},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 43, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 44, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 45, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 45, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 47, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 5},
         # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 22},
         # {'velocity': 0, 'heading': 180, 'x': 45, 'y': 27},
         # {'velocity': 0, 'heading': 0, 'x': 48, 'y': 11},
@@ -221,7 +244,7 @@ def draw_layout(universe):
 
 
 def draw_layout_from_generated_file(universe: Inventory):
-    draw_from_generated_file(universe)
+    draw_storage_from_generated_file(universe)
     assign_skus_to_pods(universe.pod_manager)
     initRobots(universe)
     assign_backlog_orders(universe)
@@ -238,8 +261,7 @@ def assign_backlog_orders(universe: Inventory):
     universe.order_manager.add_order(order)
 
 
-def draw_from_generated_file(universe: Inventory):
-    horizontal_direction_switch = True
+def draw_storage_from_generated_file(universe: Inventory):
     station_counter = 1
     pod_counter = 1
     graph = DirectedGraph()
@@ -250,8 +272,6 @@ def draw_from_generated_file(universe: Inventory):
     data = pd.read_csv("generated_pod.csv", header=None)
     total_rows = len(data)
     for y, row in data.iterrows():
-        horizontal_direction_switch = not horizontal_direction_switch
-        vertical_direction_switch = True
         # Invert Y only to draw
         for x, value in row.items():
             obj = Object()
@@ -269,19 +289,11 @@ def draw_from_generated_file(universe: Inventory):
             obj_below_value = data.iloc[y + 1, x] if y < total_rows - 1 else None
 
             weight = 1
+            if x <= 7:
+                weight = 3
 
             if value == 0 or value == 1:
-                if horizontal_direction_switch:
-                    graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
-                elif not horizontal_direction_switch:
-                    graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
-
-                # if vertical_direction_switch:
-                #     graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
-                # elif not vertical_direction_switch:
-                #     graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
-
-                vertical_direction_switch = not vertical_direction_switch
+                add_all_direction_paths(graph, obj_key, weight)
 
                 if value == 0:
                     obj.shape = 'empty-space'
@@ -297,16 +309,12 @@ def draw_from_generated_file(universe: Inventory):
 
                 if obj_left_value != 1:
                     graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
-                    graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 if obj_right_value != 1:
                     graph_pod.add_edge(obj_key, obj_right_coordinate, weight=100)
-                    graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 if obj_above_value != 1:
                     graph_pod.add_edge(obj_key, obj_above_coordinate, weight=100)
-                    graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
                 if obj_below_value != 1:
                     graph_pod.add_edge(obj_key, obj_below_coordinate, weight=100)
-                    graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 3:
                 obj.shape = 'empty-space'
                 intersections.append([obj.pos_x, obj.pos_y])
@@ -370,10 +378,10 @@ def draw_from_generated_file(universe: Inventory):
             elif value == 11:
                 obj.shape = 'person-red'
             elif value == 12:
-                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 obj.shape = 'rail'
             elif value == 13:
-                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 obj.shape = 'rail'
             elif value == 14:
                 if obj_left_value == 11:
@@ -387,21 +395,21 @@ def draw_from_generated_file(universe: Inventory):
 
                 obj.shape = 'rail'
                 obj.heading = 90
-                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
 
             elif value == 16:
                 obj.shape = 'rail-corner'
                 obj.heading = 270
-                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
             elif value == 17:
                 obj.shape = 'rail-corner'
-                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
             elif value == 99:
                 obj.shape = 'empty-space'
             else:
                 continue
 
-            if obj_left_coordinate == 12:
+            if obj_left_coordinate == 13:
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
 
             obj.pos_x = x
@@ -411,35 +419,33 @@ def draw_from_generated_file(universe: Inventory):
 
 def construct_station_path(data: DataFrame, start_x, start_y):
     station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
-    print(station_path)
-
-    # go to bottom
-    y, x = start_y + 1, start_x
-    while data.iloc[y, x] == 14 or data.iloc[y, x] == 17:
-        station_path.append(NetLogoCoordinate(x, y))
-
-        if data.iloc[y, x] == 17:
-            x += 1
-            while data.iloc[y, x] == 13:
-                station_path.append(NetLogoCoordinate(x, y))
-                x += 1
-
-        y += 1
 
     # go to top
     y, x = start_y - 1, start_x
     while data.iloc[y, x] == 14 or data.iloc[y, x] == 16:
-        station_path.insert(0, NetLogoCoordinate(x, y))
+        station_path.append(NetLogoCoordinate(x, y))
 
         if data.iloc[y, x] == 16:
             x += 1
             while data.iloc[y, x] == 12:
-                station_path.insert(0, NetLogoCoordinate(x, y))
+                station_path.append(NetLogoCoordinate(x, y))
                 x += 1
 
         y -= 1
 
-    print(station_path)
+        # go to bottom
+        y, x = start_y + 1, start_x
+        while data.iloc[y, x] == 14 or data.iloc[y, x] == 17:
+            station_path.insert(0, NetLogoCoordinate(x, y))
+
+            if data.iloc[y, x] == 17:
+                x += 1
+                while data.iloc[y, x] == 13:
+                    station_path.insert(0, NetLogoCoordinate(x, y))
+                    x += 1
+
+            y += 1
+
     return station_path
 
 
@@ -480,157 +486,6 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             pod: Pod = pod_manager.get_pod_by_id(pod_id)
             pod.add_sku(sku, limit_qty=limit_qty, current_qty=current_qty, threshold=threshold)
             pod_manager.add_sku_to_pod(sku, pod)
-
-
-def draw_layout_from_file(universe):
-    initWays(universe)
-    initStation(universe)
-    initRobots(universe)
-    initPod(universe)
-
-
-def initWays(universe):
-    # Example Usage
-    graph = DirectedGraph()
-    graph_pod = DirectedGraph()
-    graph_pod.key = 'pod'
-    universe.graph = graph
-    universe.graph_pod = graph_pod
-
-    for i in range(universe.dimension + 1):
-        if i > 33:
-            break
-        for j in range(universe.dimension + 1):
-            obj = Object()
-            obj.object_type = 'way-direction'
-            obj.pos_x = j
-            obj.pos_y = i
-            obj_key = str(j) + "," + str(i)
-            graph.add_node(obj_key)
-            obj.shape = 'empty-space'
-            shape_modification = 0
-
-            weight = 1
-            obj_key_neighbor = str(j - 1) + "," + str(i)
-            if i % 2 == 0:
-                obj_key_neighbor = str(j + 1) + "," + str(i)
-            if j < 5 and i % 3 != 0:
-                weight = 20
-            graph.add_edge(obj_key, obj_key_neighbor, weight=weight)
-
-            obj_key_neighbor_2 = str(j) + "," + str(i - 1)
-            if j % 2 == 0:
-                obj_key_neighbor_2 = str(j) + "," + str(i + 1)
-                if j == 2:
-                    obj_key_neighbor_2 = str(j) + "," + str(i - 1)
-            graph.add_edge(obj_key, obj_key_neighbor_2, weight=1)
-
-            if i % 3 == 0:
-                obj.shape = 'arrow-left'
-                shape_modification += 1
-                if i % 6 == 0:
-                    obj.shape = 'arrow-right'
-                    shape_modification += 1
-
-            if (j - 9) % 5 == 0 and j > 9:
-                obj.shape = 'arrow-up'
-                shape_modification += 1
-            if (j - 9) % 10 == 0 and j > 9:
-                obj.shape = 'arrow-down'
-                shape_modification += 1
-
-            # draw hallway
-            if j < 10:
-                if j % 2 == 1:
-                    obj.shape = 'arrow-down'
-                    shape_modification += 1
-                else:
-                    obj.shape = 'arrow-up'
-                    shape_modification += 1
-
-            if j < 5:
-                obj.shape = 'empty-space'
-            if j == 9:
-                obj.shape = 'arrow-down'
-
-            if shape_modification:
-                if j > 9 and (((j - 9) % 6 == 0) == False):
-                    shape_modification = 1
-                if j > 9 and (i % 3 != 0):
-                    shape_modification = 1
-            if shape_modification > 1 or (j < 10 and i % 3 == 0) or (j == 5):
-                # obj.shape = 'full square'
-                intersections.append([obj.pos_x, obj.pos_y])
-
-            if 5 > j >= 2 and i < 34:
-                if i % 3 == 0:
-                    obj.shape = 'rail'
-                    if j == 2:
-                        if i % 6 == 0:
-                            obj.heading = 270
-                        obj.shape = 'rail-corner'
-                else:
-                    if j == 2 and i not in [4, 5, 10, 11, 16, 17, 22, 23, 28, 29, 34, 35]:
-                        obj.shape = 'rail'
-                        obj.heading = 90
-                    else:
-                        obj.shape = 'empty-space'
-
-            if j == 1:
-                if i % 3 == 0:
-                    if i % 6 != 0:
-                        obj.pos_y -= 2
-                        obj.shape = 'person-red'
-
-            if i == 35:
-                obj.shape = "empty-space"
-
-            if j > 44:
-                if j % 2 == 0:
-                    obj.shape = 'arrow-up'
-                else:
-                    obj.shape = 'arrow-down'
-
-            if j > 49:
-                obj.shape = 'empty-space'
-
-            if i % 3 == 0:
-                obj_key_neighbor = str(j - 1) + "," + str(i)
-                if i % 6 == 0:
-                    obj_key_neighbor = str(j + 1) + "," + str(i)
-                graph_pod.add_edge(obj_key, obj_key_neighbor, weight=1)
-
-            weight = 1
-            if j < 10:
-                weight = 3
-
-            if obj.shape == 'arrow-up':
-                obj_key_neighbor = str(j) + "," + str(i + 1)
-                graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
-            elif obj.shape == 'arrow-down':
-                obj_key_neighbor = str(j) + "," + str(i - 1)
-                graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
-
-            if j < 5:
-                if (i - 3) % 6 == 0:
-                    obj_key_neighbor = str(j - 1) + "," + str(i)
-                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
-                if i % 6 == 0:
-                    obj_key_neighbor = str(j + 1) + "," + str(i)
-                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
-                if j == 2:
-                    obj_key_neighbor = str(j) + "," + str(i - 1)
-                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
-                    obj_key_neighbor = str(j) + "," + str(i - 2)
-                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=weight)
-
-            universe.addObject(obj)
-    # Visualization (optional)
-    # pos = nx.spring_layout(graph.graph)
-    # nx.draw(graph.graph, pos, with_labels=True, node_size=700, node_color="skyblue", font_size=10, font_color="black", font_weight="bold", arrows=True, connectionstyle="arc3,rad=0.1")
-    # labels = nx.get_edge_attributes(graph.graph, 'weight')
-    # nx.draw_networkx_edge_labels(graph.graph, pos, edge_labels=labels)
-    # plt.show()
 
 
 def setup():

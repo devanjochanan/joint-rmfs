@@ -28,6 +28,8 @@ class Layout(object):
             for col in range(self.total_cols()):
                 if col < self.reserved_column_station:
                     current_row.append(self.get_value_for_order_picking(row, col, order_picker_positions))
+                # elif col >= self.total_cols() - self.reserved_column_station:
+                #     current_row.append(self.get_value_for_order_replenish(row, col, order_picker_positions))
                 else:
                     if self.reserved_column_start <= col < (self.total_cols() - self.reserved_column_end):
                         if row % (self.pod_batch_vertical + 1) == 0:
@@ -96,6 +98,10 @@ class Layout(object):
         return start_index, start_index + self.pod_batch_vertical + 1
 
     @staticmethod
+    def get_value_for_order_replenish(row, col, ranges):
+        return 1
+
+    @staticmethod
     def get_value_for_order_picking(row, col, ranges):
         for start, end in ranges:
             if row == start:
@@ -116,7 +122,7 @@ class Layout(object):
                     return 99
             elif start < row < end:
                 # Middle row
-                if row == end - 1:
+                if row == start + 1:
                     if col == 1:
                         return 11
                     if col == 2:

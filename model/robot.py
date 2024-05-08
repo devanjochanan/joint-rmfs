@@ -45,6 +45,7 @@ class Robot(Object):
         self.turning_delay = 0
         self.picking_pod_delay = 0
         self.delay_per_task = 10
+        self.idle_time = 0
         super().__init__()
 
     @staticmethod
@@ -143,6 +144,9 @@ class Robot(Object):
                 neighbor_robot = self.get_robot_by_name(neighbor['label'])
                 if neighbor_robot == self:
                     continue
+
+                # if neighbor['velocity'] == 0:
+                #     continue
 
                 neighbor_next_step_coords = self._calculate_next_blocks(round(neighbor['x']), round(neighbor['y']),
                                                                         neighbor['heading'], search_area,
@@ -275,6 +279,14 @@ class Robot(Object):
             self.advance_state_if_needed()
             return
 
+        if self.idle_time > 100 and not self.is_in_station_path():
+            if self.current_state == "taking_pod":
+                self.set_move(self.route_stop_points[-1], self.universe.graph, avoid_front=True)
+            elif self.current_state == "delivering_pod" or self.current_state == "returning_pod":
+                self.set_move(self.route_stop_points[-1], self.universe.graph_pod, avoid_front=True)
+
+            self.idle_time = 0
+
         next_destination_coordinate = self.route_stop_points[0]
 
         if isinstance(next_destination_coordinate, Heading):
@@ -282,6 +294,12 @@ class Robot(Object):
             return
 
         if self.not_able_to_move(next_destination_coordinate):
+            self.idle_time += 1
+            self.velocity = 0
+            self.acceleration = 0
+            self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity,
+                                              self.acceleration,
+                                              self.heading, self.current_state)
             return
 
         candidate_conflict_coordinate = None
@@ -294,7 +312,7 @@ class Robot(Object):
             nearest_conflict_candidates = self.get_nearest_robot_conflict_candidate(next_step_coordinates, search_area)
             if nearest_conflict_candidates is not None:
                 for candidate, meeting_coordinate in nearest_conflict_candidates:
-                    if candidate['state'] == "picking" or candidate['state'] == 'idle':
+                    if candidate['state'] == "picking" or candidate['state'] == 'idle' or candidate['velocity'] == 0:
                         continue
 
                     neighbor_coord = NetLogoCoordinate(candidate['x'], candidate['y'])
@@ -306,16 +324,20 @@ class Robot(Object):
                     if candidate['heading'] == self.heading:
                         for x, y in next_step_coordinates:
                             if round(candidate['x']) == x and round(candidate['y']) == y:
-                                candidate_conflict_coordinate = self.calculate_next_movement_from_conflict(meeting_coordinate, next_destination_coordinate)
+                                candidate_conflict_coordinate = self.calculate_next_movement_from_conflict(
+                                    meeting_coordinate, next_destination_coordinate)
                                 break
 
                     elif priority_diff < 0:
-                        candidate_conflict_coordinate = self.calculate_next_movement_from_conflict(meeting_coordinate, next_destination_coordinate)
+                        candidate_conflict_coordinate = self.calculate_next_movement_from_conflict(meeting_coordinate,
+                                                                                                   next_destination_coordinate)
 
                     elif priority_diff == 0:
                         if self_distance_to_meeting_block > neighbor_distance_to_meeting_block:
-                            candidate_conflict_coordinate = self.calculate_next_movement_from_conflict(meeting_coordinate, next_destination_coordinate)
+                            candidate_conflict_coordinate = self.calculate_next_movement_from_conflict(
+                                meeting_coordinate, next_destination_coordinate)
 
+        self.idle_time = 0
         if candidate_conflict_coordinate is not None and candidate_conflict_coordinate != next_destination_coordinate:
             self.handle_next_movement(candidate_conflict_coordinate, False)
         else:
@@ -350,7 +372,7 @@ class Robot(Object):
         if self.is_in_station_path():
             return 1
 
-        return 4
+        return 3
 
     def not_able_to_move(self, next_destination_coordinate: NetLogoCoordinate):
         if self.turning_delay > 0:
@@ -380,23 +402,17 @@ class Robot(Object):
 
             near_robot_coord = NetLogoCoordinate(neighbor['x'], neighbor['y'])
 
-            for x, y in next_step_coordinates:
-                x_difference = abs(near_robot_coord.x - x)
-                y_difference = abs(near_robot_coord.y - y)
-                if x_difference <= 1 and y_difference <= 1 and self.close_enough(near_robot_coord, 1):
-                    self_distance_to_conflict = abs(self.pos_x - x) + abs(self.pos_y - y)
-                    neighbor_robot_distance_to_conflict = abs(near_robot_coord.x - x) + abs(near_robot_coord.y - y)
+            for next_x, next_y in next_step_coordinates:
+                x_difference = abs(neighbor['x'] - next_x)
+                y_difference = abs(neighbor['y'] - next_y)
+                if x_difference < 1 and y_difference < 1 and self.close_enough(near_robot_coord, 1):
+                    self_distance_to_conflict = abs(self.pos_x - next_x) + abs(self.pos_y - next_y)
+                    neighbor_robot_distance_to_conflict = abs(neighbor['x'] - next_x) + abs(neighbor['y'] - next_y)
 
-                    priority_diff = self.get_priority_diff(neighbor)
-
-                    if priority_diff < 0:
-                        if self_distance_to_conflict < neighbor_robot_distance_to_conflict:
-                            return False
-                        else:
-                            return True
-
-                    if priority_diff >= 0 and self.close_enough(near_robot_coord, 1):
-                        return self_distance_to_conflict > neighbor_robot_distance_to_conflict
+                    if neighbor_robot_distance_to_conflict < self_distance_to_conflict:
+                        return True
+                    else:
+                        continue
 
         return False
 
@@ -427,7 +443,6 @@ class Robot(Object):
                 return round(self.pos_x) == step_x
             elif self.heading in (90, 270):  # Horizontal movement
                 return round(self.pos_y) == step_y
-            return True  # Default case to handle unexpected headings
 
     def get_robots_by_coords(self, coords):
         robots = []
@@ -532,14 +547,20 @@ class Robot(Object):
     def set_move_to_station_gate(self):
         self.set_move(self.job.station_path[0], graph=self.universe.graph_pod, need_neutralize_robot=False)
 
-    def set_move(self, dest: NetLogoCoordinate, graph, need_neutralize_robot: bool):
-        start = self.coordinate_to_string_key(self.pos_x, self.pos_y)
+    def set_move(self, dest: NetLogoCoordinate, graph, need_neutralize_robot: bool = False, avoid_front: bool = False):
+        start = self.coordinate_to_string_key(round(self.pos_x), round(self.pos_y))
         end = self.coordinate_to_string_key(dest.x, dest.y)
 
         if need_neutralize_robot:
             self.neutralizeRobotState()
 
-        node_routes = graph.dijkstra(start, end)
+        nodes_to_avoid = []
+        if avoid_front:
+            avoid_coord = self._calculate_next_blocks(round(self.pos_x), round(self.pos_y),
+                                                      self.heading, 1, include_self=False)
+            nodes_to_avoid.append(self.coordinate_to_string_key(*avoid_coord[0]))
+
+        node_routes = graph.dijkstra(start, end, nodes_to_avoid)
         self.setPath(self._transformRouteToList(node_routes))
 
     # utility functions
