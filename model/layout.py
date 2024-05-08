@@ -120,7 +120,7 @@ class Layout(object):
                     if col == 1:
                         return 11
                     if col == 2:
-                        return 15
+                        return 14
                     else:
                         return 99
                 if col == 2:

@@ -3,19 +3,23 @@ import pickle
 import os
 import random
 import traceback
+from typing import List
 
 import networkx as nx
 import pandas as pd
+from pandas import DataFrame
 
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
 from model.inventory import Inventory
 from model.order import Order
 from model.pod import Pod
+from model.pod_manager import PodManager
 from model.robot import Robot
 from model.robot_job import RobotJob
 from model.station import Station
 from model.layout import Layout
+from model.pod_generator import PodGenerator
 
 from pip._internal import main as pipmain
 
@@ -109,7 +113,7 @@ def initPod(universe: Inventory):
                 # Check if the cell indicates a Pod location
                 if cell_value == '1':
                     # Create a new Pod object and set its position and coordinates
-                    pod = Pod()
+                    pod = Pod(1)
                     pod.pos_x = current_x - 1
                     pod.pos_y = line_count
                     pod.coordinate = NetLogoCoordinate(pod.pos_x, pod.pos_y)
@@ -172,16 +176,16 @@ def initStation(universe: Inventory):
 
 def initRobots(universe: Inventory):
     robots = [
-        {'velocity': 0, 'heading': 180, 'x': 7, 'y': 11},
-        {'velocity': 0, 'heading': 180, 'x': 5, 'y': 0},
-        {'velocity': 0, 'heading': 180, 'x': 5, 'y': 1},
-        # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 21},
-        # {'velocity': 0, 'heading': 180, 'x': 45, 'y': 26},
-        # {'velocity': 0, 'heading': 0, 'x': 48, 'y': 10},
-        # {'velocity': 0, 'heading': 0, 'x': 46, 'y': 2},
-        # {'velocity': 0, 'heading': 180, 'x': 9, 'y': 14},
-        # {'velocity': 0, 'heading': 180, 'x': 7, 'y': 14},
-        # {'velocity': 0, 'heading': 180, 'x': 7, 'y': 6},
+        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 9},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 43, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 44, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 45, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 45, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 47, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 5},
         # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 22},
         # {'velocity': 0, 'heading': 180, 'x': 45, 'y': 27},
         # {'velocity': 0, 'heading': 0, 'x': 48, 'y': 11},
@@ -208,19 +212,16 @@ def initRobots(universe: Inventory):
 
 def draw_layout(universe):
     # Check if pod.csv exists in the current directory
-    if os.path.exists('pod.csv'):
-        # If the file exists, call the method to draw layout from the file
-        # should call draw_layout_from_file, but still doing testing
-        generate_and_draw_layout(universe)
+    if os.path.exists('generated_pod.csv'):
+        draw_layout_from_generated_file(universe)
     else:
-        # If the file does not exist, generate and draw the layout
-        generate_and_draw_layout(universe)
+        layout = Layout()
+        layout.generate()
+        draw_layout_from_generated_file(universe)
 
 
-def generate_and_draw_layout(universe: Inventory):
-    layout = Layout()
-    layout.generate()
-    draw_from_generated_file(universe, layout)
+def draw_layout_from_generated_file(universe: Inventory):
+    draw_from_generated_file(universe)
     assign_skus_to_pods(universe.pod_manager)
     initRobots(universe)
     assign_backlog_orders(universe)
@@ -237,8 +238,10 @@ def assign_backlog_orders(universe: Inventory):
     universe.order_manager.add_order(order)
 
 
-def draw_from_generated_file(universe: Inventory, layout):
+def draw_from_generated_file(universe: Inventory):
+    horizontal_direction_switch = True
     station_counter = 1
+    pod_counter = 1
     graph = DirectedGraph()
     graph_pod = DirectedGraph()
     graph_pod.key = 'pod'
@@ -247,6 +250,8 @@ def draw_from_generated_file(universe: Inventory, layout):
     data = pd.read_csv("generated_pod.csv", header=None)
     total_rows = len(data)
     for y, row in data.iterrows():
+        horizontal_direction_switch = not horizontal_direction_switch
+        vertical_direction_switch = True
         # Invert Y only to draw
         for x, value in row.items():
             obj = Object()
@@ -266,11 +271,23 @@ def draw_from_generated_file(universe: Inventory, layout):
             weight = 1
 
             if value == 0 or value == 1:
-                add_all_direction_paths(graph, obj_key, weight=weight)
+                if horizontal_direction_switch:
+                    graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                elif not horizontal_direction_switch:
+                    graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
+
+                # if vertical_direction_switch:
+                #     graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                # elif not vertical_direction_switch:
+                #     graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
+
+                vertical_direction_switch = not vertical_direction_switch
+
                 if value == 0:
                     obj.shape = 'empty-space'
                 elif value == 1:
-                    obj = Pod()
+                    obj = Pod(pod_counter)
+                    pod_counter += 1
                     obj.coordinate = NetLogoCoordinate(x, y)
                     obj.pos_x = x
                     obj.pos_y = y
@@ -280,12 +297,16 @@ def draw_from_generated_file(universe: Inventory, layout):
 
                 if obj_left_value != 1:
                     graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
+                    graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 if obj_right_value != 1:
                     graph_pod.add_edge(obj_key, obj_right_coordinate, weight=100)
+                    graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 if obj_above_value != 1:
                     graph_pod.add_edge(obj_key, obj_above_coordinate, weight=100)
+                    graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
                 if obj_below_value != 1:
                     graph_pod.add_edge(obj_key, obj_below_coordinate, weight=100)
+                    graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 3:
                 obj.shape = 'empty-space'
                 intersections.append([obj.pos_x, obj.pos_y])
@@ -355,19 +376,19 @@ def draw_from_generated_file(universe: Inventory, layout):
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 obj.shape = 'rail'
             elif value == 14:
+                if obj_left_value == 11:
+                    obj = Station(station_counter)
+                    station_counter += 1
+                    obj.pos_x = x
+                    obj.pos_y = y
+                    obj.coordinate = NetLogoCoordinate(x, y)
+                    obj.path = construct_station_path(data, x, y)
+                    universe.station_manager.add_station(obj)
+
                 obj.shape = 'rail'
                 obj.heading = 90
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
-            elif value == 15:
-                obj = Station(station_counter)
-                station_counter += 1
-                obj.pos_x = x
-                obj.pos_y = y
-                obj.coordinate = NetLogoCoordinate(x, y)
-                obj.shape = 'rail'
-                obj.heading = 90
-                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
-                universe.station_manager.add_station(obj)
+
             elif value == 16:
                 obj.shape = 'rail-corner'
                 obj.heading = 270
@@ -388,6 +409,40 @@ def draw_from_generated_file(universe: Inventory, layout):
             universe.addObject(obj)
 
 
+def construct_station_path(data: DataFrame, start_x, start_y):
+    station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
+    print(station_path)
+
+    # go to bottom
+    y, x = start_y + 1, start_x
+    while data.iloc[y, x] == 14 or data.iloc[y, x] == 17:
+        station_path.append(NetLogoCoordinate(x, y))
+
+        if data.iloc[y, x] == 17:
+            x += 1
+            while data.iloc[y, x] == 13:
+                station_path.append(NetLogoCoordinate(x, y))
+                x += 1
+
+        y += 1
+
+    # go to top
+    y, x = start_y - 1, start_x
+    while data.iloc[y, x] == 14 or data.iloc[y, x] == 16:
+        station_path.insert(0, NetLogoCoordinate(x, y))
+
+        if data.iloc[y, x] == 16:
+            x += 1
+            while data.iloc[y, x] == 12:
+                station_path.insert(0, NetLogoCoordinate(x, y))
+                x += 1
+
+        y -= 1
+
+    print(station_path)
+    return station_path
+
+
 def add_all_direction_paths(graph, obj_key, weight):
     x, y = map(int, obj_key.split(','))
     directions = {
@@ -402,39 +457,30 @@ def add_all_direction_paths(graph, obj_key, weight):
         graph.add_edge(obj_key, neighbor_key, weight=weight)
 
 
-def assign_jobs(universe: Inventory, destinations: list):
-    for destination in destinations:
-        pod = universe.pod_manager.get_pod_by_coordinate(destination[0], destination[1])
-        station = universe.station_manager.stations[destination[2]]
-        job = RobotJob(pod, station.coordinate)
-        job.picking_delay = 10
-
-        universe.assign_job_to_available_robot(job)
-
-        # Create a visual representation of the order as an Object
-        visual_obj = Object()
-        visual_obj.pos_x = destination[0]
-        visual_obj.pos_y = destination[1]
-        visual_obj.shape = 'box'  # Assuming this is a fixed shape for all orders
-        visual_obj.object_type = 'order'
-
-        # Add the visual object to the universe
-        universe.addObject(visual_obj)
-
-
 def assign_skus_to_pods(pod_manager):
-    total_skus = 1000  # Total number of SKUs from 0 to 999
-    skus = list(range(total_skus))  # List of all SKUs
-    random.shuffle(skus)  # Shuffle the list of SKUs for random distribution
+    # Check if pod.csv exists in the current directory
+    if os.path.exists('pod_sku.csv'):
+        assign_skus_to_pods_from_file(pod_manager)
+    else:
+        PodGenerator(pod_manager).generate()
+        assign_skus_to_pods_from_file(pod_manager)
 
-    # Assign 5 SKUs to each pod
-    sku_index = 0
-    for pod in pod_manager.pods:
-        for _ in range(5):
-            if sku_index < total_skus:
-                pod.add_sku(skus[sku_index], limit_qty=999, current_qty=999, threshold=5)  # Example values
-                pod_manager.add_sku_to_pod(skus[sku_index], pod)
-                sku_index += 1
+
+def assign_skus_to_pods_from_file(pod_manager: PodManager):
+    with open('pod_sku.csv', mode='r', newline='') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            pod_id = int(row['pod_id'])
+            sku = int(row['sku'])
+            limit_qty = int(row['limit_qty'])
+            current_qty = int(row['current_qty'])
+            threshold = int(row['threshold'])
+
+            # Find the pod by id
+            pod: Pod = pod_manager.get_pod_by_id(pod_id)
+            pod.add_sku(sku, limit_qty=limit_qty, current_qty=current_qty, threshold=threshold)
+            pod_manager.add_sku_to_pod(sku, pod)
+
 
 def draw_layout_from_file(universe):
     initWays(universe)
@@ -593,7 +639,6 @@ def setup():
         universe = Inventory()
 
         # Populate the universe with objects and connections
-        Layout().generate()
         draw_layout(universe)
 
         # Set simulation parameters

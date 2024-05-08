@@ -12,7 +12,7 @@ class Landscape:
                 one_row.append([])
             self._map.append(one_row)
     
-    def _setObjectNew(self, label, x, y, speed, acceleration, heading):
+    def _setObjectNew(self, label, x, y, speed, acceleration, heading, state):
         self.total_objects += 1
 
         movement = 'vertical'
@@ -27,13 +27,14 @@ class Landscape:
             'acceleration': acceleration,
             'heading': heading,
             'movement': movement,
+            'state': state,
         }
 
         self._map[int(x)][int(y)].append(self._objects[label])
 
-    def setObject(self, label, x, y, speed, acceleration, heading):
+    def setObject(self, label, x, y, speed, acceleration, heading, state):
         if label not in self._objects:
-            return self._setObjectNew(label, x, y, speed, acceleration, heading)
+            return self._setObjectNew(label, x, y, speed, acceleration, heading, state)
         
         old_x = int(self._objects[label]['x'])
         old_y = int(self._objects[label]['y'])
@@ -62,6 +63,7 @@ class Landscape:
             'acceleration': acceleration,
             'heading': heading,
             'movement': movement,
+            'state': state
         }
 
     def getNeighborObject(self, x, y, radius):
@@ -78,12 +80,12 @@ class Landscape:
                         points_to_check.append([i, j])
                 j -= 1
             i += 1
-        
+
         for p in points_to_check:
             s = self._map[p[0]][p[1]]
             if len(s) > 0:
                 for obj in s:
                     result.append(self._objects[obj['label']])
-                    
+
         return result
         

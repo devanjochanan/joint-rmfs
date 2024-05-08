@@ -22,8 +22,6 @@ class StationManager:
                     min_orders = len(station.order_ids)
                     available_station = station
 
-        if available_station is not None:
-            print(available_station.coordinate)
         return available_station
 
     def add_station(self, station: Station):

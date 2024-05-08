@@ -3,7 +3,8 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 
 
 class Pod(Object):
-    def __init__(self):
+    def __init__(self, pod_id: int):
+        self.pod_id = pod_id
         self.shape = 'full square'
         self.object_type = 'pod'
         self.coordinate = NetLogoCoordinate()

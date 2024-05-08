@@ -1,6 +1,7 @@
 from typing import List
 
 from engine.object import Object
+from engine.netlogo_coordinate import NetLogoCoordinate
 
 
 class Station(Object):
@@ -10,6 +11,7 @@ class Station(Object):
         self.object_type = 'station'
         self.mass = 1
         self.coordinate = None
+        self.path: List[NetLogoCoordinate] = []
         self.order_ids: List[int] = []
         self.max_orders = 2
         super().__init__()

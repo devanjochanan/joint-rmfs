@@ -81,7 +81,6 @@ class Inventory(Universe):
 
             if nearest_robot is not None:
                 job: RobotJob = self.job_queue.pop(0)
-                print("object", nearest_robot.object_type, "taking job", job.orders)
                 nearest_robot.assign_job_and_set_move_to_take_pod(job)
 
         total_energy = 0
@@ -95,8 +94,12 @@ class Inventory(Universe):
                 if o.velocity == 0 and initial_velocity > 0:
                     self.stop_and_go += 1
 
-                if o.job is not None and not o.job.is_active and not o.job.is_finished:
+                if o.job is not None and o.job.picking_delay == 0 and not o.job.is_finished:
                     self.finish_orders_in_job(o.job)
+
+                if o.current_state == 'idle' and o.job is not None:
+                    self.pod_manager.mark_pod_available(o.job.pod_coordinate)
+                    o.job = None
 
         self.total_energy = total_energy
         self.total_turning = total_turning
@@ -143,7 +146,7 @@ class Inventory(Universe):
         current_id = -1
 
         for o in self.get_movable_objects():
-            if isinstance(o, Robot) and (o.job is None or o.job.is_active is False) and o.current_state == 'idle':
+            if isinstance(o, Robot) and (o.job is None or o.job.is_finished) and o.current_state == 'idle':
                 dist = calculateDistance(o.pos_x, o.pos_y, job.pod_coordinate.x, job.pod_coordinate.y)
                 if dist < current_distance:
                     current_id = o.id
@@ -188,6 +191,8 @@ class Inventory(Universe):
                 order.commit_quantity(sku, quantity_to_take)
 
                 order_station = self.station_manager.get_station_by_id(order.station_id)
-                job = RobotJob(available_pod.coordinate, station_coordinate=order_station.coordinate)
+                job = RobotJob(available_pod.coordinate, station_coordinate=order_station.coordinate,
+                               station_path=order_station.path)
+                self.pod_manager.mark_pod_not_available(available_pod.coordinate)
                 job.add_picking_task(order.order_id, sku, quantity_to_take)
                 self.job_queue.append(job)
