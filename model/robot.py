@@ -354,6 +354,9 @@ class Robot(Object):
             if robot_front and robot_front['heading'] != self.heading:
                 priority_diff = self.get_priority_diff(robot_front)
 
+                if robot_front['state'] == "idle":
+                    return True
+
                 if priority_diff > 0:
                     return False
                 elif priority_diff < 0:
