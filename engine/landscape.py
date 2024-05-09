@@ -88,4 +88,12 @@ class Landscape:
                     result.append(self._objects[obj['label']])
 
         return result
+
+    def get_neighbor_object(self, x, y):
+        s = self._map[round(x)][round(y)]
+        if len(s) > 0:
+            for obj in s:
+                return self._objects[obj['label']]
+        return None
+
         

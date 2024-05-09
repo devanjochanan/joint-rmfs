@@ -279,7 +279,7 @@ class Robot(Object):
             self.advance_state_if_needed()
             return
 
-        if self.idle_time > 100 and not self.is_in_station_path():
+        if self.eligible_to_reroute():
             if self.current_state == "taking_pod":
                 self.set_move(self.route_stop_points[-1], self.universe.graph, avoid_front=True)
             elif self.current_state == "delivering_pod" or self.current_state == "returning_pod":
@@ -344,6 +344,18 @@ class Robot(Object):
             self.handle_next_movement(next_destination_coordinate, True)
 
         self.drawNextPosition()
+
+    def eligible_to_reroute(self):
+        if self.idle_time > 100 and not self.is_in_station_path():
+            next_step_coordinates = self._calculate_next_blocks(round(self.pos_x), round(self.pos_y),
+                                                                self.heading, 1, include_self=False)
+            robot_front = self.universe.landscape.get_neighbor_object(*next_step_coordinates[0])
+            if robot_front and robot_front['heading'] != self.heading:
+                return True
+
+            return False
+        else:
+            return False
 
     def calculate_next_movement_from_conflict(self, conflict_coordinate: NetLogoCoordinate,
                                               next_destination_coordinate: NetLogoCoordinate):
