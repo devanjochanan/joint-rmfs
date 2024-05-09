@@ -76,20 +76,6 @@ class Coordinate:
         self.y = y
         self.landscape = landscape
 
-    @staticmethod
-    def fromNetLogoCoordinate(landscape, coor: NetLogoCoordinate):
-        n = Coordinate()
-        n.x = coor.x
-        n.y = landscape.dimension-coor.y
-        n.landscape = landscape
-        return n
-
-    def toNetLogoCoordinate(self):
-        nl = NetLogoCoordinate()
-        nl.x = self.x
-        nl.y = self.landscape.dimension-self.y
-        return nl
-
 class Landscape:
     dimension = 0
     _map = []
@@ -114,34 +100,6 @@ class Landscape:
             print(str(idx) + " ", end="")
             print(i)
             idx += 1
-    
-    def setObject(self, coor: NetLogoCoordinate, obj):
-        p = Coordinate.fromNetLogoCoordinate(self, coor)
-        self._map[p.y][p.x] = obj
-    
-    def getRoutes(self, _from: NetLogoCoordinate, _to: NetLogoCoordinate):
-        to = Coordinate.fromNetLogoCoordinate(self, _to)
-        origin = Coordinate.fromNetLogoCoordinate(self, _from)
-
-        # build list based map for a star
-        aStarMap = self.cloneMap()
-
-        # set destination and origin
-        aStarMap[to.y][to.x] = 0
-        aStarMap[origin.y][origin.x] = 0
-
-        self.printMap(aStarMap)
-
-        start = (origin.x, origin.y)
-        end = (to.x, to.y)
-
-        path = astar(aStarMap, start, end)
-        res = []
-        for p in path:
-            q = Coordinate(p[0], p[1], self)
-            res.append(q.toNetLogoCoordinate())
-
-        return res
     
 pods = [
     [12, 2],
@@ -193,6 +151,4 @@ for p in pods:
 
 _from = NetLogoCoordinate(23, 6)
 _to = NetLogoCoordinate(12, 2)
-r = landscape.getRoutes(_from, _to)
-print(r)
 

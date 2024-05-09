@@ -11,17 +11,3 @@ class Coordinate:
 
     def __repr__(self):
         return "({},{})".format(self.x, self.y)
-
-    @staticmethod
-    def fromNetLogoCoordinate(landscape, coor: NetLogoCoordinate):
-        n = Coordinate()
-        n.x = coor.x
-        n.y = landscape.dimension-coor.y
-        n.landscape = landscape
-        return n
-
-    def toNetLogoCoordinate(self):
-        nl = NetLogoCoordinate()
-        nl.x = self.x
-        nl.y = self.landscape.dimension-self.y
-        return nl

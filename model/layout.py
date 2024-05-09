@@ -63,8 +63,7 @@ class Layout(object):
 
     def total_cols(self):
         # Total columns include reserved columns, pods, and spaces between pods
-        total_pod_space = (
-                                  self.pod_batch_horizontal * self.pod_batch_horizontal_max) + self.pod_batch_horizontal_max - 1
+        total_pod_space = (self.pod_batch_horizontal * self.pod_batch_horizontal_max) + self.pod_batch_horizontal_max - 1
         return (self.reserved_column_start + 1) + total_pod_space + (self.reserved_column_end + 1)
 
     def determine_order_picker_limits(self):

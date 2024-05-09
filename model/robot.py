@@ -346,12 +346,21 @@ class Robot(Object):
         self.drawNextPosition()
 
     def eligible_to_reroute(self):
-        if self.idle_time > 100 and not self.is_in_station_path():
+        if self.idle_time > 100 and not self.is_in_station_path() and self.current_state != "delivering_pod":
             next_step_coordinates = self._calculate_next_blocks(round(self.pos_x), round(self.pos_y),
                                                                 self.heading, 1, include_self=False)
             robot_front = self.universe.landscape.get_neighbor_object(*next_step_coordinates[0])
+
             if robot_front and robot_front['heading'] != self.heading:
-                return True
+                priority_diff = self.get_priority_diff(robot_front)
+
+                if priority_diff > 0:
+                    return False
+                elif priority_diff < 0:
+                    return True
+                else:
+                    # find the smallest ID to resolve who to reroute
+                    return self.robotID(self.robotName()) < self.robotID(robot_front['label'])
 
             return False
         else:
@@ -406,6 +415,9 @@ class Robot(Object):
 
         if not self.is_aligned_with_heading(next_step_coordinates):
             return False
+
+        if round(self.pos_y) == 58:
+            print(self.robotName())
 
         neighbors = self.universe.landscape.getNeighborObject(round(self.pos_x), round(self.pos_y), 2)
         for neighbor in neighbors:
