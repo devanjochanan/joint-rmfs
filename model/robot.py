@@ -346,28 +346,35 @@ class Robot(Object):
         self.drawNextPosition()
 
     def eligible_to_reroute(self):
-        if self.idle_time > 100 and not self.is_in_station_path() and self.current_state != "delivering_pod":
-            next_step_coordinates = self._calculate_next_blocks(round(self.pos_x), round(self.pos_y),
-                                                                self.heading, 1, include_self=False)
-            robot_front = self.universe.landscape.get_neighbor_object(*next_step_coordinates[0])
-
-            if robot_front and robot_front['heading'] != self.heading:
-                priority_diff = self.get_priority_diff(robot_front)
-
-                if robot_front['state'] == "idle":
-                    return True
-
-                if priority_diff > 0:
-                    return False
-                elif priority_diff < 0:
-                    return True
-                else:
-                    # find the smallest ID to resolve who to reroute
-                    return self.robotID(self.robotName()) < self.robotID(robot_front['label'])
-
+        if self.idle_time <= 100 or self.is_in_station_path() or self.current_state == "delivering_pod":
             return False
-        else:
+
+        # Calculate next step coordinates
+        next_step_coordinates = self._calculate_next_blocks(
+            round(self.pos_x), round(self.pos_y), self.heading, 1, include_self=False)
+        robot_front = self.universe.landscape.get_neighbor_object(*next_step_coordinates[0])
+
+        # Check if there is no robot in front
+        if not robot_front:
             return False
+
+        # Check if the robot in front is idle
+        if robot_front['state'] == "idle":
+            return True
+
+        # Check if the robot in front is heading in the same direction
+        if robot_front['heading'] == self.heading:
+            return False
+
+        # Compare priorities
+        priority_diff = self.get_priority_diff(robot_front)
+        if priority_diff > 0:
+            return False
+        elif priority_diff < 0:
+            return True
+
+        # Resolve ties by ID
+        return self.robotID(self.robotName()) < self.robotID(robot_front['label'])
 
     def calculate_next_movement_from_conflict(self, conflict_coordinate: NetLogoCoordinate,
                                               next_destination_coordinate: NetLogoCoordinate):
