@@ -102,6 +102,8 @@ class Robot(Object):
             self.color = 15  # red
         elif self.current_state == "returning_pod":
             self.color = 46  # yellow
+        elif self.current_state == "station_processing":
+            self.color = 94  # brown
         elif self.current_state == "idle":
             self.color = 0  # black
 
