@@ -435,37 +435,19 @@ def draw_storage_from_generated_file(universe: Inventory):
 
 def construct_station_path(data: DataFrame, start_x, start_y):
     station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
-    vertical_path = 14
-    horizontal_entrance_path = 13
-    horizontal_exit_path = 12
-    entrance_corner = 17
-    exit_corner = 16
 
-    # go to top
-    y, x = start_y - 1, start_x
-    while data.iloc[y, x] == vertical_path or data.iloc[y, x] == exit_corner:
-        station_path.append(NetLogoCoordinate(x, y))
+    # go to bottom
+    y, x = start_y + 1, start_x
+    while data.iloc[y, x] == 14 or data.iloc[y, x] == 17:
+        station_path.insert(0, NetLogoCoordinate(x, y))
 
-        if data.iloc[y, x] == exit_corner:
+        if data.iloc[y, x] == 17:
             x += 1
-            while data.iloc[y, x] == horizontal_exit_path:
-                station_path.append(NetLogoCoordinate(x, y))
+            while data.iloc[y, x] == 13:
+                station_path.insert(0, NetLogoCoordinate(x, y))
                 x += 1
 
-        y -= 1
-
-        # go to bottom
-        y, x = start_y + 1, start_x
-        while data.iloc[y, x] == vertical_path or data.iloc[y, x] == entrance_corner:
-            station_path.insert(0, NetLogoCoordinate(x, y))
-
-            if data.iloc[y, x] == entrance_corner:
-                x += 1
-                while data.iloc[y, x] == horizontal_entrance_path:
-                    station_path.insert(0, NetLogoCoordinate(x, y))
-                    x += 1
-
-            y += 1
+        y += 1
 
     return station_path
 
