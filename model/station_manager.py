@@ -6,16 +6,18 @@ from model.station import Station
 class StationManager:
     def __init__(self):
         self.stations: List[Station] = []
+        self.picking_stations: List[Station] = []
+        self.replenishment_stations: List[Station] = []
         self.stations_by_id: Dict[int, Station] = {}
 
-    def find_available_station(self) -> Optional[Station]:
+    def find_available_picking_station(self) -> Optional[Station]:
         # Initialize the available station variable as None
         available_station = None
         # Initialize the minimum number of orders to a high value to find the station with the least orders
         min_orders = float('inf')
 
         # Iterate through each station to check the number of orders
-        for station in self.stations:
+        for station in self.picking_stations:
             if len(station.order_ids) < station.max_orders:
                 # Check if this station has fewer orders than the current minimum
                 if len(station.order_ids) < min_orders:
@@ -27,6 +29,11 @@ class StationManager:
     def add_station(self, station: Station):
         self.stations.append(station)
         self.stations_by_id[station.station_id] = station
+
+        if station.is_picker_station():
+            self.picking_stations.append(station)
+        elif station.is_replenishment_station():
+            self.replenishment_stations.append(station)
 
     def get_station_by_id(self, station_id: int):
         return self.stations_by_id[station_id]

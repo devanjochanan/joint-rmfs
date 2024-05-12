@@ -5,8 +5,9 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 
 
 class Station(Object):
-    def __init__(self, station_id: int):
-        self.station_id = station_id
+    def __init__(self, station_id: int, station_type: str):
+        self.station_id = f"{station_type}-{station_id}"
+        self.station_type = station_type
         self.shape = 'empty-space'
         self.object_type = 'station'
         self.mass = 1
@@ -21,3 +22,9 @@ class Station(Object):
 
     def remove_order(self, order_id: int):
         self.order_ids.remove(order_id)
+
+    def is_picker_station(self) -> bool:
+        return self.station_type == "picker"
+
+    def is_replenishment_station(self) -> bool:
+        return self.station_type == "replenishment"

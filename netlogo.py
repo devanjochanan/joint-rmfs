@@ -168,7 +168,7 @@ def initStation(universe: Inventory):
     # Assuming 'stations' is a list of tuples/lists where each item contains the x and y coordinates of a station
     for s in stations:
         # Create a new Station object
-        station = Station(1)
+        station = Station(1, "picker")
 
         # Set the x and y positions from the station data
         station.pos_x = s[0]
@@ -189,26 +189,26 @@ def initStation(universe: Inventory):
 
 def initRobots(universe: Inventory):
     robots = [
-        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 9},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 9},
         {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 43, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 44, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 45, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 45, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 47, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 9},
         {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 43, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 44, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 45, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 45, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 46, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 47, 'y': 5},
-        {'velocity': 0, 'heading': 0, 'x': 48, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 9},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
+        {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
         # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 22},
         # {'velocity': 0, 'heading': 180, 'x': 45, 'y': 27},
         # {'velocity': 0, 'heading': 0, 'x': 48, 'y': 11},
@@ -262,7 +262,8 @@ def assign_backlog_orders(universe: Inventory):
 
 
 def draw_storage_from_generated_file(universe: Inventory):
-    station_counter = 1
+    station_picker_counter = 1
+    station_replenish_counter = 1
     pod_counter = 1
     graph = DirectedGraph()
     graph_pod = DirectedGraph()
@@ -375,28 +376,35 @@ def draw_storage_from_generated_file(universe: Inventory):
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=100)
-            elif value == 11:
+            elif value == 11 or value == 21:
                 obj.shape = 'person-red'
-            elif value == 12:
+            elif value == 12 or value == 23:
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 obj.shape = 'rail'
-            elif value == 13:
+            elif value == 13 or value == 22:
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 obj.shape = 'rail'
-            elif value == 14:
+            elif value == 14 or value == 24:
                 if obj_left_value == 11:
-                    obj = Station(station_counter)
-                    station_counter += 1
+                    obj = Station(station_picker_counter, "picker")
+                    station_picker_counter += 1
                     obj.pos_x = x
                     obj.pos_y = y
                     obj.coordinate = NetLogoCoordinate(x, y)
                     obj.path = construct_station_path(data, x, y)
                     universe.station_manager.add_station(obj)
+                elif obj_right_value == 21:
+                    obj = Station(station_replenish_counter, "replenishment")
+                    station_replenish_counter += 1
+                    obj.pos_x = x
+                    obj.pos_y = y
+                    obj.coordinate = NetLogoCoordinate(x, y)
+                    # obj.path = construct_station_path(data, x, y)
+                    universe.station_manager.add_station(obj)
 
                 obj.shape = 'rail'
                 obj.heading = 90
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
-
             elif value == 16:
                 obj.shape = 'rail-corner'
                 obj.heading = 270
@@ -404,6 +412,14 @@ def draw_storage_from_generated_file(universe: Inventory):
             elif value == 17:
                 obj.shape = 'rail-corner'
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+            elif value == 26:
+                obj.shape = 'rail-corner'
+                obj.heading = 180
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+            elif value == 27:
+                obj.shape = 'rail-corner'
+                obj.heading = 90
+                graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
             elif value == 99:
                 obj.shape = 'empty-space'
             else:

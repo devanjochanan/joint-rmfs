@@ -171,7 +171,7 @@ class Inventory(Universe):
     def process_orders(self):
         for order in self.order_manager.orders:
             if order.station_id is None:
-                available_station = self.station_manager.find_available_station()
+                available_station = self.station_manager.find_available_picking_station()
                 if available_station is not None:
                     order.assign_station(available_station.station_id)
                     available_station.add_order(order.order_id)

@@ -13,12 +13,15 @@ class Layout(object):
         self.reserved_column_end = 9
         self.reserved_column_station = 5
         self.order_picker_total = 3
+        self.order_replenishment_total = 2
         self.horizontal_direction_switch = False
         self.vertical_direction_switch = False
         self.total_pods_active = 400
 
     def generate(self):
-        order_picker_positions = self.get_order_picker_indexes(self.get_order_picker_positions())
+        order_picker_positions = self.calculate_station_positions(self.order_picker_total)
+        order_replenishment_positions = self.calculate_station_positions(self.order_replenishment_total)
+        print(order_picker_positions)
 
         data_matrix = []
 
@@ -26,10 +29,10 @@ class Layout(object):
             current_row = []
             self.vertical_direction_switch = False
             for col in range(self.total_cols()):
-                if col < self.reserved_column_station:
-                    current_row.append(self.get_value_for_order_picking(row, col, order_picker_positions))
-                # elif col >= self.total_cols() - self.reserved_column_station:
-                #     current_row.append(self.get_value_for_order_replenish(row, col, order_picker_positions))
+                value_to_append = self.append_station_value(row, col, order_picker_positions,
+                                                            order_replenishment_positions)
+                if value_to_append is not None:
+                    current_row.append(value_to_append)
                 else:
                     if self.reserved_column_start <= col < (self.total_cols() - self.reserved_column_end):
                         if row % (self.pod_batch_vertical + 1) == 0:
@@ -58,6 +61,18 @@ class Layout(object):
             writer = csv.writer(csvfile)
             writer.writerows(data_matrix)
 
+    def append_station_value(self, row, col, order_positions, replenish_positions):
+        if col < self.reserved_column_station:
+            return self.get_value_for_station(row, col, order_positions)
+        elif col >= self.total_cols() - self.reserved_column_station:
+            return self.get_value_for_station(row, col, replenish_positions, start_col=self.total_cols() - 1,
+                                              mirrored=True)
+        else:
+            return None
+
+    def calculate_station_positions(self, total_stations):
+        return self.get_station_row_indexes(self.get_station_positions(total_stations))
+
     def total_rows(self):
         return (self.pod_batch_vertical_max * self.pod_batch_vertical) + self.pod_batch_vertical_max + 1
 
@@ -66,16 +81,16 @@ class Layout(object):
         total_pod_space = (self.pod_batch_horizontal * self.pod_batch_horizontal_max) + self.pod_batch_horizontal_max - 1
         return (self.reserved_column_start + 1) + total_pod_space + (self.reserved_column_end + 1)
 
-    def determine_order_picker_limits(self):
+    def determine_station_limits(self):
         return int((self.pod_batch_vertical_max + 1) / 2)
 
-    def get_order_picker_positions(self):
-        total_numbers = self.determine_order_picker_limits()
+    def get_station_positions(self, total_station):
+        total_numbers = self.determine_station_limits()
         numbers = list(range(1, total_numbers + 1))
         selected_sequence = []
         middle_index = len(numbers) // 2
 
-        for i in range(self.order_picker_total):
+        for i in range(total_station):
             if i % 2 == 0:
                 offset = (i // 2)
             else:
@@ -85,54 +100,60 @@ class Layout(object):
 
         return sorted(selected_sequence)
 
-    def get_order_picker_indexes(self, order_picker_positions):
+    def get_station_row_indexes(self, order_picker_positions):
         result = []
         for i in order_picker_positions:
-            result.append(self.get_order_picker_index(i))
+            result.append(self.get_station_row_index(i))
 
         return result
 
-    def get_order_picker_index(self, order_picker_position):
+    def get_station_row_index(self, order_picker_position):
         start_index = (order_picker_position - 1) * (2 * self.pod_batch_vertical + 2)
         return start_index, start_index + self.pod_batch_vertical + 1
 
     @staticmethod
-    def get_value_for_order_replenish(row, col, ranges):
-        return 1
+    def get_value_for_station(current_row, current_col, ranges, start_col=0, mirrored=False):
+        blank_space = 99
+        rail_middle_value = 24 if mirrored else 14
+        rail_exit_value = 22 if mirrored else 12
+        rail_entrance_value = 23 if mirrored else 13
+        corner_exit_value = 26 if mirrored else 16
+        corner_entrance_value = 27 if mirrored else 17
+        station_picker_value = 21 if mirrored else 11
 
-    @staticmethod
-    def get_value_for_order_picking(row, col, ranges):
+        offset = -1 if mirrored else 1
+
         for start, end in ranges:
-            if row == start:
+            if current_row == start:
                 # First row
-                if col == 2:
-                    return 16
-                elif col == 3 or col == 4:
-                    return 12
+                if current_col == start_col + 2 * offset:
+                    return corner_exit_value
+                elif current_col == start_col + 3 * offset or current_col == start_col + 4 * offset:
+                    return rail_exit_value
                 else:
-                    return 99
-            elif row == end:
+                    return blank_space
+            elif current_row == end:
                 # Last row
-                if col == 2:
-                    return 17
-                elif col == 3 or col == 4:
-                    return 13
+                if current_col == start_col + 2 * offset:
+                    return corner_entrance_value
+                elif current_col == start_col + 3 * offset or current_col == start_col + 4 * offset:
+                    return rail_entrance_value
                 else:
-                    return 99
-            elif start < row < end:
+                    return blank_space
+            elif start < current_row < end:
                 # Middle row
-                if row == start + 1:
-                    if col == 1:
-                        return 11
-                    if col == 2:
-                        return 14
+                if current_row == start + 1:
+                    if current_col == start_col + 1 * offset:
+                        return station_picker_value
+                    if current_col == start_col + 2 * offset:
+                        return rail_middle_value
                     else:
-                        return 99
-                if col == 2:
-                    return 14
+                        return blank_space
+                if current_col == start_col + 2 * offset:
+                    return rail_middle_value
                 else:
-                    return 99
-        return 99
+                    return blank_space
+        return blank_space
 
     def adjust_pod_availability(self, matrix):
         # Count the current total number of active pods
