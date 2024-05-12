@@ -293,7 +293,7 @@ def draw_storage_from_generated_file(universe: Inventory):
             if x <= 7:
                 weight = 3
 
-            if value == 0 or value == 1:
+            if value == 0 or value == 1 or value == 2:
                 add_all_direction_paths(graph, obj_key, weight)
 
                 if value == 0:
@@ -307,6 +307,8 @@ def draw_storage_from_generated_file(universe: Inventory):
 
                     graph_pod.add_node(obj_key)
                     universe.pod_manager.add_pod(obj)
+                elif value == 2:
+                    obj.shape = 'square 2'
 
                 if obj_left_value != 1:
                     graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)

@@ -17,6 +17,7 @@ class Layout(object):
         self.horizontal_direction_switch = False
         self.vertical_direction_switch = False
         self.total_pods_active = 400
+        self.total_charging_stations = 10
 
     def generate(self):
         order_picker_positions = self.calculate_station_positions(self.order_picker_total)
@@ -159,11 +160,13 @@ class Layout(object):
         # Count the current total number of active pods
         current_total_pods = sum(row.count(1) for row in matrix)
 
-        # Calculate how many pods need to be deactivated
+        # Calculate how many pods need to be deactivated and converted
         if current_total_pods > self.total_pods_active:
-            pods_to_deactivate = current_total_pods - self.total_pods_active
+            pods_to_deactivate = current_total_pods - (self.total_pods_active + self.total_charging_stations)
+            pods_to_convert = self.total_charging_stations
         else:
             pods_to_deactivate = 0
+            pods_to_convert = 0
 
         # List of all pod positions in matrix that are currently active
         pod_positions = [(r, c) for r in range(len(matrix)) for c in range(len(matrix[r])) if matrix[r][c] == 1]
@@ -171,4 +174,10 @@ class Layout(object):
         # Randomly select and deactivate pods if there are any to deactivate
         if pods_to_deactivate > 0:
             for r, c in random.sample(pod_positions, pods_to_deactivate):
-                matrix[r][c] = 0
+                matrix[r][c] = 0  # Mark this position as deactivated
+                pod_positions.remove((r, c))  # Remove this position from available pods
+
+        # Randomly select and convert remaining active pods to charging stations if needed
+        if pods_to_convert > 0:
+            for r, c in random.sample(pod_positions, pods_to_convert):
+                matrix[r][c] = 2  # Mark this position as a charging station
