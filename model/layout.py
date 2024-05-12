@@ -114,7 +114,7 @@ class Layout(object):
     @staticmethod
     def get_value_for_station(current_row, current_col, ranges, start_col=0, mirrored=False):
         blank_space = 99
-        rail_middle_value = 24 if mirrored else 14
+        rail_vertical_value = 24 if mirrored else 14
         rail_exit_value = 22 if mirrored else 12
         rail_entrance_value = 23 if mirrored else 13
         corner_exit_value = 26 if mirrored else 16
@@ -146,11 +146,11 @@ class Layout(object):
                     if current_col == start_col + 1 * offset:
                         return station_picker_value
                     if current_col == start_col + 2 * offset:
-                        return rail_middle_value
+                        return rail_vertical_value
                     else:
                         return blank_space
                 if current_col == start_col + 2 * offset:
-                    return rail_middle_value
+                    return rail_vertical_value
                 else:
                     return blank_space
         return blank_space
