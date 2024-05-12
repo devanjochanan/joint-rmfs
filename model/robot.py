@@ -43,7 +43,7 @@ class Robot(Object):
         self.traffic_policy = []
         self.job: Optional[RobotJob] = None
         self.turning_delay = 0
-        self.picking_pod_delay = 0
+        self.taking_pod_delay = 0
         self.delay_per_task = 10
         self.idle_time = 0
         super().__init__()
@@ -107,14 +107,14 @@ class Robot(Object):
 
     def advance_state(self):
         if self.current_state == "taking_pod":
-            self.picking_pod_delay += self.delay_per_task
+            self.taking_pod_delay += self.delay_per_task
             self.current_state = "delivering_pod"
         elif self.current_state == "delivering_pod":
-            self.current_state = "picking"
-        elif self.current_state == "picking":
+            self.current_state = "station_processing"
+        elif self.current_state == "station_processing":
             self.current_state = "returning_pod"
         elif self.current_state == "returning_pod":
-            self.picking_pod_delay += self.delay_per_task
+            self.taking_pod_delay += self.delay_per_task
             self.current_state = "idle"
 
     def decideCollision(self, collision_block, o, collide_distance):
@@ -159,7 +159,7 @@ class Robot(Object):
 
     def get_priority_diff(self, object):
         state_priority = {
-            'picking': 3,
+            'station_processing': 3,
             'delivering_pod': 3,
             'returning_pod': 2,
             'taking_pod': 1,
@@ -263,14 +263,6 @@ class Robot(Object):
     def is_being_process_on_station(self):
         return self.job.picking_delay > 0 and self.close_enough(self.job.station_coordinate, 0.1)
 
-    def is_in_station_start_gate(self):
-        gate_coord = self.job.station_path[0]
-        return self.pos_x is gate_coord.x and self.pos_y is gate_coord.y
-
-    def is_in_station_finish_gate(self):
-        gate_coord = self.job.station_path[-1]
-        return self.pos_x is gate_coord.x and self.pos_y is gate_coord.y
-
     def movementPlan(self):
         if self.picking_item_in_pod():
             return
@@ -312,7 +304,7 @@ class Robot(Object):
             nearest_conflict_candidates = self.get_nearest_robot_conflict_candidate(next_step_coordinates, search_area)
             if nearest_conflict_candidates is not None:
                 for candidate, meeting_coordinate in nearest_conflict_candidates:
-                    if candidate['state'] == "picking" or candidate['state'] == 'idle' or candidate['velocity'] == 0:
+                    if candidate['state'] == "station_processing" or candidate['state'] == 'idle' or candidate['velocity'] == 0:
                         continue
 
                     neighbor_coord = NetLogoCoordinate(candidate['x'], candidate['y'])
@@ -410,8 +402,8 @@ class Robot(Object):
             self.turning_delay -= 1
             return True
 
-        if self.picking_pod_delay > 0:
-            self.picking_pod_delay -= 1
+        if self.taking_pod_delay > 0:
+            self.taking_pod_delay -= 1
             return True
 
         if next_destination_coordinate.x == round(self.pos_x) and next_destination_coordinate.y == round(self.pos_y):
@@ -522,7 +514,7 @@ class Robot(Object):
                 self.set_move_to_station_gate()
             elif self.current_state == "returning_pod":
                 self.set_move(self.job.pod_coordinate, self.universe.graph_pod, need_neutralize_robot=True)
-            elif self.current_state == "picking":
+            elif self.current_state == "station_processing":
                 self.setPath(self.transform_coords_to_list(self.job.station_path))
 
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
