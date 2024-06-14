@@ -12,7 +12,7 @@ class Station(Object):
         self.object_type = 'station'
         self.mass = 1
         self.coordinate = None
-        self.path: List[NetLogoCoordinate] = []
+        self.short_path: List[NetLogoCoordinate] = []
         self.order_ids: List[int] = []
         self.max_orders = 2
         super().__init__()
@@ -28,3 +28,6 @@ class Station(Object):
 
     def is_replenishment_station(self) -> bool:
         return self.station_type == "replenishment"
+
+    def get_path(self):
+        return self.short_path

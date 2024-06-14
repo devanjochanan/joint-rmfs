@@ -419,7 +419,7 @@ def draw_storage_from_generated_file(universe: Inventory):
                     obj.pos_x = x
                     obj.pos_y = y
                     obj.coordinate = NetLogoCoordinate(x, y)
-                    obj.path = construct_station_path(data, x, y)
+                    obj.short_path = construct_station_path(data, x, y)
                     universe.station_manager.add_station(obj)
                 elif obj_right_value == 21:
                     obj = Station(station_replenish_counter, "replenishment")
@@ -430,8 +430,11 @@ def draw_storage_from_generated_file(universe: Inventory):
                     # obj.path = construct_station_path(data, x, y)
                     universe.station_manager.add_station(obj)
 
-                obj.shape = 'rail'
-                obj.heading = 90
+                obj.shape = 'rail-triangle'
+                if value == 14:
+                    obj.heading = 270
+                elif value == 24:
+                    obj.heading = 90
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
             elif value == 16:
                 obj.shape = 'rail-corner'
