@@ -1,3 +1,5 @@
+from datetime import datetime
+
 class Landscape:
     dimension = 0
     total_objects = 0
@@ -6,6 +8,7 @@ class Landscape:
 
     def __init__(self, dimension):
         self.dimension = dimension
+        self.current_date_string = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         for i in range(self.dimension+1):
             one_row = []
             for j in range(self.dimension+1):
@@ -95,5 +98,9 @@ class Landscape:
             for obj in s:
                 return self._objects[obj['label']]
         return None
+
+    @property
+    def objects(self):
+        return self._objects
 
         

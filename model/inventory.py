@@ -1,11 +1,13 @@
-from typing import Optional
+import csv
+import os
+from typing import Optional, List
 
 import pandas as pd
 
 from engine.landscape import Landscape
 from engine.universe import Universe
 from engine.util import *
-from . import order_manager
+from .intersection_manager import IntersectionManager
 from .order import Order
 from .order_manager import OrderManager
 from .pod import Pod
@@ -37,6 +39,8 @@ class Inventory(Universe):
         self.station_manager = StationManager()
         self.order_manager = OrderManager()
         self.next_process_tick = 0
+        self.intersection_manager = IntersectionManager()
+        self.update_intersection_using_RL = False
 
         super().__init__()
 
@@ -64,7 +68,8 @@ class Inventory(Universe):
         if int(self._tick) == self.next_process_tick:
             self.find_new_orders()
             self.process_orders()
-            self.next_process_tick += 1
+            if self.update_intersection_using_RL:
+                self.intersection_manager.update_allowed_direction_using_q_model(int(self._tick))
         if len(self.job_queue) > 0:
             current_distance = 1000000
             nearest_robot: Optional[Robot] = None
@@ -104,6 +109,11 @@ class Inventory(Universe):
         self.total_energy = total_energy
         self.total_turning = total_turning
 
+        if int(self._tick) == self.next_process_tick:
+            if self.update_intersection_using_RL:
+                self.intersection_manager.update_model_after_execution(self._tick)
+
+        self.next_process_tick += 1
         self._tick += self.tick_to_second
 
     def finish_orders_in_job(self, job: RobotJob):
@@ -112,10 +122,19 @@ class Inventory(Universe):
             order.deliver_quantity(sku, quantity)
 
             if order.is_order_completed():
+                order.complete_order(int(self._tick))
                 station = self.station_manager.get_station_by_id(order.station_id)
                 station.remove_order(order_id)
+                self.insert_finished_order_to_csv(order)
 
             job.is_finished = True
+
+    def insert_finished_order_to_csv(self, order: Order):
+        header = ["order_id", "order_arrival", "process_start_time", "order_complete_time", "station_id"]
+        data = [order.order_id, order.order_arrival, order.process_start_time, order.order_complete_time,
+                order.station_id]
+
+        self.write_to_csv("order-finished.csv", header, data)
 
     def find_new_orders(self):
         orders_df = pd.read_csv('generated_order.csv')
@@ -196,3 +215,19 @@ class Inventory(Universe):
                 self.pod_manager.mark_pod_not_available(available_pod.coordinate)
                 job.add_picking_task(order.order_id, sku, quantity_to_take)
                 self.job_queue.append(job)
+
+    def write_to_csv(self, filename, header, data):
+        folder_path = os.path.join("result", self.landscape.current_date_string)
+
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        filename = os.path.join(folder_path, filename)
+        file_exists = os.path.exists(filename)
+
+        with open(filename, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            if not file_exists:
+                writer.writerow(header)
+
+            writer.writerow(data)

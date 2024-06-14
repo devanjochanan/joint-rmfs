@@ -5,6 +5,7 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 
 class RobotJob:
     def __init__(self, pod_coordinate: NetLogoCoordinate, station_coordinate: NetLogoCoordinate, station_path: List[NetLogoCoordinate]):
+        self.job_id = id
         self.pod_coordinate = pod_coordinate
         self.station_coordinate = station_coordinate
         self.station_path = station_path

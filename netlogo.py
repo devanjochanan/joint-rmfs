@@ -10,6 +10,7 @@ from pandas import DataFrame
 
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
+from model.intersection import Intersection
 from model.inventory import Inventory
 from model.order import Order
 from model.pod import Pod
@@ -94,7 +95,7 @@ class DirectedGraph:
             return None
 
 
-intersections = []
+intersections: List[Intersection] = []
 
 stations = [
     [2, 33],
@@ -264,6 +265,8 @@ def assign_backlog_orders(universe: Inventory):
 def draw_storage_from_generated_file(universe: Inventory):
     station_picker_counter = 1
     station_replenish_counter = 1
+    pods_horizontal_length = 5
+    pods_vertical_length = 2
     pod_counter = 1
     graph = DirectedGraph()
     graph_pod = DirectedGraph()
@@ -278,6 +281,8 @@ def draw_storage_from_generated_file(universe: Inventory):
             obj = Object()
             obj.object_type = 'way-direction'
             obj_key = f"{x},{y}"
+            obj.pos_x = x
+            obj.pos_y = y
 
             obj_left_coordinate = f"{x - 1},{y}"
             obj_right_coordinate = f"{x + 1},{y}"
@@ -320,7 +325,28 @@ def draw_storage_from_generated_file(universe: Inventory):
                     graph_pod.add_edge(obj_key, obj_below_coordinate, weight=100)
             elif value == 3:
                 obj.shape = 'empty-space'
-                intersections.append([obj.pos_x, obj.pos_y])
+
+                if obj.pos_x == 15 and (obj.pos_y == 15 or obj.pos_y == 12):
+                    intersection = Intersection(NetLogoCoordinate(x, y))
+                    approaching_path_coordinates = []
+
+                    if obj_right_value == 4:
+                        for right_x in range(x + 1, (x + pods_horizontal_length) + 1):
+                            approaching_path_coordinates.append((right_x, y))
+                    if obj_left_value == 5:
+                        for left_x in range(x - 1, (x - pods_horizontal_length) - 1, - 1):
+                            approaching_path_coordinates.append((left_x, y))
+                    if obj_below_value == 6:
+                        for below_y in range(y + 1, (y + pods_vertical_length) + 1):
+                            approaching_path_coordinates.append((x, below_y))
+                    if obj_above_value == 7:
+                        for above_y in range(y - 1, (y - pods_vertical_length) - 1, - 1):
+                            approaching_path_coordinates.append((x, above_y))
+
+                    for each_approaching_coordinate in approaching_path_coordinates:
+                        intersection.approaching_path_coordinates.append(each_approaching_coordinate)
+
+                    universe.intersection_manager.add_intersection(intersection)
 
                 if obj_left_value == 4 or obj_right_value == 4:
                     graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
@@ -503,7 +529,7 @@ def setup():
 
         # Set simulation parameters
         universe.tick_to_second = 0.15
-        universe.intersections = intersections  # Ensure 'intersections' is defined earlier
+        # print(universe.intersection_manager.intersections[0].intersection_coordinate)
 
         # Generate initial results
         next_result = universe.generateResult()
@@ -522,7 +548,7 @@ def setup():
 
 def tick():
     try:
-        print("========tick========")
+        # print("========tick========")
 
         # Load the simulation state
         with open('netlogo.state', 'rb') as file:

@@ -516,6 +516,12 @@ true
 Rectangle -16777216 true false 135 135 315 165
 Rectangle -16777216 true false 135 135 165 330
 
+rail-triangle
+true
+0
+Rectangle -16777216 true false 0 135 315 165
+Rectangle -16777216 true false 135 135 165 330
+
 sheep
 false
 15

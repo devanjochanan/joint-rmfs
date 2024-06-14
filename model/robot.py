@@ -4,6 +4,7 @@ from typing import Optional, List
 from engine.heading import Heading
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
+from .intersection import Intersection
 from .robot_job import RobotJob
 from .traffic_policy import TrafficPolicy
 
@@ -46,6 +47,10 @@ class Robot(Object):
         self.taking_pod_delay = 0
         self.delay_per_task = 10
         self.idle_time = 0
+        self.current_intersection_id = None
+        self.current_intersection_energy_consumption = 0
+        self.current_intersection_start_time = None
+        self.current_intersection_finish_time = None
         super().__init__()
 
     @staticmethod
@@ -288,14 +293,22 @@ class Robot(Object):
             return
 
         if self.not_able_to_move(next_destination_coordinate):
-            self.idle_time += 1
-            self.velocity = 0
-            self.acceleration = 0
-            self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity,
-                                              self.acceleration,
-                                              self.heading, self.current_state)
+            self.update_idle_state()
             return
 
+        candidate_conflict_coordinate = self.handle_conflicts(next_destination_coordinate)
+
+        self.execute_move(candidate_conflict_coordinate, next_destination_coordinate)
+
+    def update_idle_state(self):
+        self.idle_time += 1
+        self.velocity = 0
+        self.acceleration = 0
+        self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity,
+                                          self.acceleration, self.heading, self.current_state)
+        self.universe.landscape.objects.values()
+
+    def handle_conflicts(self, next_destination_coordinate):
         candidate_conflict_coordinate = None
         if isinstance(next_destination_coordinate, NetLogoCoordinate) and not self.is_in_station_path():
             self_coord = NetLogoCoordinate(self.pos_x, self.pos_y)
@@ -306,7 +319,8 @@ class Robot(Object):
             nearest_conflict_candidates = self.get_nearest_robot_conflict_candidate(next_step_coordinates, search_area)
             if nearest_conflict_candidates is not None:
                 for candidate, meeting_coordinate in nearest_conflict_candidates:
-                    if candidate['state'] == "station_processing" or candidate['state'] == 'idle' or candidate['velocity'] == 0:
+                    if (candidate['state'] == "station_processing" or candidate['state'] == 'idle'
+                            or candidate['velocity'] == 0):
                         continue
 
                     neighbor_coord = NetLogoCoordinate(candidate['x'], candidate['y'])
@@ -331,11 +345,14 @@ class Robot(Object):
                             candidate_conflict_coordinate = self.calculate_next_movement_from_conflict(
                                 meeting_coordinate, next_destination_coordinate)
 
+        return candidate_conflict_coordinate
+
+    def execute_move(self, candidate_conflict_coordinate, next_destination_coordinate):
         self.idle_time = 0
-        if candidate_conflict_coordinate is not None and candidate_conflict_coordinate != next_destination_coordinate:
-            self.handle_next_movement(candidate_conflict_coordinate, False)
+        if candidate_conflict_coordinate and candidate_conflict_coordinate != next_destination_coordinate:
+            self.handle_next_movement(candidate_conflict_coordinate, is_next_route_stop=False)
         else:
-            self.handle_next_movement(next_destination_coordinate, True)
+            self.handle_next_movement(next_destination_coordinate, is_next_route_stop=True)
 
         self.drawNextPosition()
 
@@ -411,17 +428,29 @@ class Robot(Object):
         if next_destination_coordinate.x == round(self.pos_x) and next_destination_coordinate.y == round(self.pos_y):
             return False
 
-        return self.path_blocked_by_robot()
+        return self.path_blocked()
 
-    def path_blocked_by_robot(self):
+    def path_blocked(self):
         next_step_coordinates = self._calculate_next_blocks(round(self.pos_x), round(self.pos_y),
                                                             self.heading, 1, include_self=False)
 
         if not self.is_aligned_with_heading(next_step_coordinates):
             return False
 
-        if round(self.pos_y) == 58:
-            print(self.robotName())
+        return (self.path_blocked_by_intersection(next_step_coordinates)
+                or self.path_blocked_by_robot(next_step_coordinates))
+
+    def path_blocked_by_intersection(self, next_step_coordinates):
+        for next_x, next_y in next_step_coordinates:
+            intersection = self.universe.intersection_manager.get_intersection_by_coordinate(next_x, next_y)
+            if (intersection and self.close_enough(intersection.intersection_coordinate, 1)
+                    and not intersection.is_allowed_to_move(self.heading)):
+                return True
+        return False
+
+    def path_blocked_by_robot(self, next_step_coordinates):
+        # if round(self.pos_y) == 58:
+        #     print(self.robotName())
 
         neighbors = self.universe.landscape.getNeighborObject(round(self.pos_x), round(self.pos_y), 2)
         for neighbor in neighbors:
@@ -500,7 +529,7 @@ class Robot(Object):
             self.update_motion_parameters(current_coord, next_destination_coordinate)
 
     def update_position(self, coordinate):
-        # Update robot's position and movement parameters to match the coordinate
+        # Update robot's position and movement parameters to match the intersection_coordinate
         self.pos_x = round(coordinate.x)
         self.pos_y = round(coordinate.y)
         self.coordinate = NetLogoCoordinate(self.pos_x, self.pos_y)
@@ -523,7 +552,7 @@ class Robot(Object):
                                           self.heading, self.current_state)
 
     def update_motion_parameters(self, current_coord, next_destination_coordinate):
-        # Adjust robot's acceleration based on proximity to the next coordinate
+        # Adjust robot's acceleration based on proximity to the next intersection_coordinate
         self.acceleration = 1
         deceleration_buffer = 0.5
         distance_to_stop = self._calculateTwoPoint(current_coord, next_destination_coordinate)
@@ -541,7 +570,10 @@ class Robot(Object):
         initial_velocity = self.velocity
         initial_acceleration = self.acceleration
 
-        self.energy_consumption += self.calculateEnergy(initial_velocity, initial_acceleration)
+        energy = self.calculateEnergy(initial_velocity, initial_acceleration)
+        if self.robotName() == 'robot-1':
+            print(energy)
+        self.energy_consumption += energy
 
         if self.velocity != 0:
             distance_delta = self.velocity * self.universe.tick_to_second
@@ -562,6 +594,72 @@ class Robot(Object):
         # for traffic policy purposes, report states to the manager
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
                                           self.heading, self.current_state)
+        self.update_intersection_information(energy)
+
+    def update_intersection_information(self, energy):
+        intersection_id = self.universe.intersection_manager.find_intersection_by_path_coordinate(round(self.pos_x),
+                                                                                                  round(self.pos_y))
+        if intersection_id:
+            if self.current_intersection_id == intersection_id:
+                self.update_current_intersection(energy)
+            else:
+                self.finalize_current_intersection()
+
+                self.start_new_intersection(intersection_id)
+        else:
+            self.finalize_current_intersection()
+
+            self.reset_intersection_tracking()
+
+    def update_current_intersection(self, energy):
+        self.current_intersection_energy_consumption += energy
+
+        intersection: Intersection = self.universe.intersection_manager.find_intersection_by_id(
+            self.current_intersection_id)
+        intersection.update_robot(self)
+
+    def finalize_current_intersection(self):
+        if self.current_intersection_id is None:
+            return
+
+        # Mark the finish time for the current intersection
+        self.current_intersection_finish_time = self.universe._tick
+        # Log the intersection information to CSV
+
+        intersection: Intersection = self.universe.intersection_manager.find_intersection_by_id(
+            self.current_intersection_id)
+
+        self.insert_robot_intersection_information_to_csv(intersection)
+
+        intersection.remove_robot(self)
+
+    def start_new_intersection(self, intersection_id):
+        # Set the new intersection ID and reset the energy consumption
+        self.current_intersection_id = intersection_id
+        self.current_intersection_energy_consumption = 0
+        self.current_intersection_start_time = self.universe._tick
+
+        intersection: Intersection = self.universe.intersection_manager.find_intersection_by_id(
+            self.current_intersection_id)
+        intersection.add_robot(self)
+
+    def reset_intersection_tracking(self):
+        # Reset all intersection-related data
+        self.current_intersection_id = None
+        self.current_intersection_energy_consumption = 0
+        self.current_intersection_start_time = 0
+        self.current_intersection_finish_time = 0
+
+    def insert_robot_intersection_information_to_csv(self, intersection: Intersection):
+        header = ["robot_name", "robot_state", "robot_destination", "intersection_start_time",
+                  "intersection_finish_time", "intersection_id",
+                  "energy_consumption_intersection", "queueing_robot"]
+        data = [self.robotName(), self.current_state, self.route_stop_points[-1], self.current_intersection_start_time,
+                self.current_intersection_finish_time, self.current_intersection_id,
+                self.current_intersection_energy_consumption,
+                intersection.robot_count()]
+
+        self.universe.write_to_csv("intersection-energy-consumption.csv", header, data)
 
     def assign_job_and_set_move_to_take_pod(self, job: RobotJob):
         self.job = job
