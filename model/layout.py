@@ -22,7 +22,6 @@ class Layout(object):
     def generate(self):
         order_picker_positions = self.calculate_station_positions(self.order_picker_total)
         order_replenishment_positions = self.calculate_station_positions(self.order_replenishment_total)
-        print(order_picker_positions)
 
         data_matrix = []
 
@@ -115,11 +114,13 @@ class Layout(object):
     @staticmethod
     def get_value_for_station(current_row, current_col, ranges, start_col=0, mirrored=False):
         blank_space = 99
-        rail_vertical_value = 24 if mirrored else 14
-        rail_exit_value = 22 if mirrored else 12
-        rail_entrance_value = 23 if mirrored else 13
-        corner_exit_value = 26 if mirrored else 16
-        corner_entrance_value = 27 if mirrored else 17
+        rail_triangle = 24 if mirrored else 14
+        rail_0 = 22 if mirrored else 12
+        rail_1 = 23 if mirrored else 13
+        corner_0 = 26 if mirrored else 16
+        corner_1 = 27 if mirrored else 17
+        corner_2 = 28 if mirrored else 18
+        corner_3 = 29 if mirrored else 19
         station_picker_value = 21 if mirrored else 11
 
         offset = -1 if mirrored else 1
@@ -128,17 +129,17 @@ class Layout(object):
             if current_row == start:
                 # First row
                 if current_col == start_col + 2 * offset:
-                    return corner_exit_value
+                    return corner_0
                 elif current_col == start_col + 3 * offset or current_col == start_col + 4 * offset:
-                    return rail_exit_value
+                    return rail_0
                 else:
                     return blank_space
             elif current_row == end:
                 # Last row
                 if current_col == start_col + 2 * offset:
-                    return corner_entrance_value
+                    return corner_1
                 elif current_col == start_col + 3 * offset or current_col == start_col + 4 * offset:
-                    return rail_entrance_value
+                    return rail_1
                 else:
                     return blank_space
             elif start < current_row < end:
@@ -146,12 +147,23 @@ class Layout(object):
                 if current_row == start + 1:
                     if current_col == start_col + 1 * offset:
                         return station_picker_value
-                    if current_col == start_col + 2 * offset:
-                        return rail_vertical_value
+                    elif current_col == start_col + 2 * offset:
+                        return rail_triangle
+                    elif current_col == start_col + 3 * offset:
+                        return rail_1
+                    elif current_col == start_col + 4 * offset:
+                        return corner_2
                     else:
                         return blank_space
-                if current_col == start_col + 2 * offset:
-                    return rail_vertical_value
+                if current_row == start + 2:
+                    if current_col == start_col + 2 * offset:
+                        return rail_triangle
+                    elif current_col == start_col + 3 * offset:
+                        return rail_0
+                    elif current_col == start_col + 4 * offset:
+                        return corner_3
+                    else:
+                        return blank_space
                 else:
                     return blank_space
         return blank_space

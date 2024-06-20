@@ -35,5 +35,5 @@ class StationManager:
         elif station.is_replenishment_station():
             self.replenishment_stations.append(station)
 
-    def get_station_by_id(self, station_id: int):
+    def get_station_by_id(self, station_id):
         return self.stations_by_id[station_id]

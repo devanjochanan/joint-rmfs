@@ -6,6 +6,7 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
 from .intersection import Intersection
 from .robot_job import RobotJob
+from .station import Station
 from .traffic_policy import TrafficPolicy
 
 
@@ -263,12 +264,14 @@ class Robot(Object):
 
     def is_in_station_path(self):
         if self.job is not None:
-            for coord in self.job.station_path:
+            station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+            for coord in station.get_path():
                 if round(self.pos_x) == coord.x and round(self.pos_y) == coord.y:
                     return True
 
     def is_being_process_on_station(self):
-        return self.job.picking_delay > 0 and self.close_enough(self.job.station_coordinate, 0.1)
+        station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+        return self.job.picking_delay > 0 and self.close_enough(station.coordinate, 0.1)
 
     def movementPlan(self):
         if self.picking_item_in_pod():
@@ -283,6 +286,11 @@ class Robot(Object):
                 self.set_move(self.route_stop_points[-1], self.universe.graph, avoid_front=True)
             elif self.current_state == "delivering_pod" or self.current_state == "returning_pod":
                 self.set_move(self.route_stop_points[-1], self.universe.graph_pod, avoid_front=True)
+            elif self.current_state == "station_processing":
+                station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+                path = station.get_sub_path(round(self.pos_x), round(self.pos_y))
+                self.setPath(self.transform_coords_to_list(path))
+                station.update_robot_route_type(self.robotName())
 
             self.idle_time = 0
 
@@ -357,8 +365,16 @@ class Robot(Object):
         self.drawNextPosition()
 
     def eligible_to_reroute(self):
-        if self.idle_time <= 100 or self.is_in_station_path() or self.current_state == "delivering_pod":
+        if self.idle_time <= 100 or self.current_state == "delivering_pod":
             return False
+
+        if self.is_in_station_path():
+            station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+
+            if self.current_state == "station_processing" and station.has_route_changed(self.robotName()):
+                return True
+            else:
+                return False
 
         # Calculate next step coordinates
         next_step_coordinates = self._calculate_next_blocks(
@@ -544,9 +560,13 @@ class Robot(Object):
             if self.current_state == "delivering_pod":
                 self.set_move_to_station_gate()
             elif self.current_state == "returning_pod":
+                station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+                station.remove_robot(self.robotName())
                 self.set_move(self.job.pod_coordinate, self.universe.graph_pod, need_neutralize_robot=True)
             elif self.current_state == "station_processing":
-                self.setPath(self.transform_coords_to_list(self.job.station_path))
+                station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+                station.add_robot(self.robotName())
+                self.setPath(self.transform_coords_to_list(station.get_path()))
 
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
                                           self.heading, self.current_state)
@@ -671,7 +691,8 @@ class Robot(Object):
         self.current_state = "taking_pod"
 
     def set_move_to_station_gate(self):
-        self.set_move(self.job.station_path[0], graph=self.universe.graph_pod, need_neutralize_robot=False)
+        station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+        self.set_move(station.get_path()[0], graph=self.universe.graph_pod, need_neutralize_robot=False)
 
     def set_move(self, dest: NetLogoCoordinate, graph, need_neutralize_robot: bool = False, avoid_front: bool = False):
         start = self.coordinate_to_string_key(round(self.pos_x), round(self.pos_y))

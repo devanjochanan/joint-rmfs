@@ -68,7 +68,6 @@ class Inventory(Universe):
         if int(self._tick) == self.next_process_tick:
             self.find_new_orders()
             self.process_orders()
-            print(self.update_intersection_using_RL)
             if self.update_intersection_using_RL:
                 self.intersection_manager.update_allowed_direction_using_q_model(int(self._tick))
         if len(self.job_queue) > 0:
@@ -210,9 +209,7 @@ class Inventory(Universe):
                 quantity_to_take = order.get_quantity_left_for_sku(sku)
                 order.commit_quantity(sku, quantity_to_take)
 
-                order_station = self.station_manager.get_station_by_id(order.station_id)
-                job = RobotJob(available_pod.coordinate, station_coordinate=order_station.coordinate,
-                               station_path=order_station.get_path())
+                job = RobotJob(available_pod.coordinate, station_id=order.station_id)
                 self.pod_manager.mark_pod_not_available(available_pod.coordinate)
                 job.add_picking_task(order.order_id, sku, quantity_to_take)
                 self.job_queue.append(job)

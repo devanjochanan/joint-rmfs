@@ -7,7 +7,7 @@ class Order:
         self.station_id = None
         self.skus = {}
 
-    def assign_station(self, station_id: int):
+    def assign_station(self, station_id):
         self.station_id = station_id
 
     def add_sku(self, sku, total_quantity):

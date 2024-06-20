@@ -420,6 +420,7 @@ def draw_storage_from_generated_file(universe: Inventory):
                     obj.pos_y = y
                     obj.coordinate = NetLogoCoordinate(x, y)
                     obj.short_path = construct_station_path(data, x, y)
+                    obj.long_path = construct_station_path(data, x, y, short_path=False)
                     universe.station_manager.add_station(obj)
                 elif obj_right_value == 21:
                     obj = Station(station_replenish_counter, "replenishment")
@@ -443,6 +444,14 @@ def draw_storage_from_generated_file(universe: Inventory):
             elif value == 17:
                 obj.shape = 'rail-corner'
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+            elif value == 18:
+                obj.shape = 'rail-corner'
+                obj.heading = 180
+                graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+            elif value == 19:
+                obj.shape = 'rail-corner'
+                obj.heading = 90
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
             elif value == 26:
                 obj.shape = 'rail-corner'
                 obj.heading = 180
@@ -451,6 +460,14 @@ def draw_storage_from_generated_file(universe: Inventory):
                 obj.shape = 'rail-corner'
                 obj.heading = 90
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
+            elif value == 28:
+                obj.shape = 'rail-corner'
+                obj.heading = 270
+                graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
+            elif value == 29:
+                obj.shape = 'rail-corner'
+                obj.heading = 0
+                graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
             elif value == 99:
                 obj.shape = 'empty-space'
             else:
@@ -464,12 +481,18 @@ def draw_storage_from_generated_file(universe: Inventory):
             universe.addObject(obj)
 
 
-def construct_station_path(data: DataFrame, start_x, start_y):
+def construct_station_path(data: DataFrame, start_x, start_y, short_path=True):
     station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
+
+    if not short_path:
+        station_path.insert(0, NetLogoCoordinate(start_x + 1, start_y))
+        station_path.insert(0, NetLogoCoordinate(start_x + 2, start_y))
+        station_path.insert(0, NetLogoCoordinate(start_x + 2, start_y + 1))
+        station_path.insert(0, NetLogoCoordinate(start_x + 1, start_y + 1))
 
     # go to bottom
     y, x = start_y + 1, start_x
-    while data.iloc[y, x] == 14 or data.iloc[y, x] == 17:
+    while data.iloc[y, x] in (14, 17):
         station_path.insert(0, NetLogoCoordinate(x, y))
 
         if data.iloc[y, x] == 17:
