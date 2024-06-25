@@ -326,27 +326,50 @@ def draw_storage_from_generated_file(universe: Inventory):
             elif value == 3:
                 obj.shape = 'empty-space'
 
-                if obj.pos_x == 15 and (obj.pos_y == 15 or obj.pos_y == 12):
-                    intersection = Intersection(NetLogoCoordinate(x, y))
-                    approaching_path_coordinates = []
+                intersection = Intersection(NetLogoCoordinate(x, y))
+                approaching_path_coordinates = []
 
-                    if obj_right_value == 4:
-                        for right_x in range(x + 1, (x + pods_horizontal_length) + 1):
-                            approaching_path_coordinates.append((right_x, y))
-                    if obj_left_value == 5:
-                        for left_x in range(x - 1, (x - pods_horizontal_length) - 1, - 1):
-                            approaching_path_coordinates.append((left_x, y))
-                    if obj_below_value == 6:
-                        for below_y in range(y + 1, (y + pods_vertical_length) + 1):
-                            approaching_path_coordinates.append((x, below_y))
-                    if obj_above_value == 7:
-                        for above_y in range(y - 1, (y - pods_vertical_length) - 1, - 1):
-                            approaching_path_coordinates.append((x, above_y))
+                if obj_right_value in [4, 6, 7]:
+                    right_x = x + 1
+                    while data.iloc[y, right_x] in [4, 6, 7]:
+                        approaching_path_coordinates.append((right_x, y))
+                        right_x += 1
 
-                    for each_approaching_coordinate in approaching_path_coordinates:
-                        intersection.approaching_path_coordinates.append(each_approaching_coordinate)
+                    if data.iloc[y, right_x] == 3:
+                        intersection.add_connected_intersection_id(right_x, y)
+                if obj_left_value in [5, 6, 7]:
+                    left_x = x - 1
+                    while data.iloc[y, left_x] in [5, 6, 7]:
+                        approaching_path_coordinates.append((left_x, y))
+                        left_x -= 1
 
-                    universe.intersection_manager.add_intersection(intersection)
+                    if data.iloc[y, left_x] == 3:
+                        intersection.add_connected_intersection_id(left_x, y)
+                if obj_below_value == 6:
+                    below_y = y + 1
+                    while data.iloc[below_y, x] == 6:
+                        approaching_path_coordinates.append((x, below_y))
+                        below_y += 1
+
+                    if data.iloc[below_y, x] == 3:
+                        intersection.add_connected_intersection_id(x, below_y)
+                if obj_above_value == 7:
+                    above_y = y - 1
+                    while data.iloc[above_y, x] == 7:
+                        approaching_path_coordinates.append((x, above_y))
+                        above_y -= 1
+
+                    if data.iloc[above_y, x] == 3:
+                        intersection.add_connected_intersection_id(x, above_y)
+
+                for each_approaching_coordinate in approaching_path_coordinates:
+                    intersection.approaching_path_coordinates.append(each_approaching_coordinate)
+
+                if obj.pos_x == 15:
+                    intersection.set_RL_model_name(intersection.intersection_id)
+                    intersection.use_reinforcement_learning = True
+
+                universe.intersection_manager.add_intersection(intersection)
 
                 if obj_left_value == 4 or obj_right_value == 4:
                     graph.add_edge(obj_key, obj_left_coordinate, weight=weight)

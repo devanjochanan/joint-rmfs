@@ -2,7 +2,7 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 
 
 class Intersection:
-    def __init__(self, intersection_coordinate: NetLogoCoordinate):
+    def __init__(self, intersection_coordinate: NetLogoCoordinate, use_reinforcement_learning=False):
         self.intersection_id = f"{intersection_coordinate.x}-{intersection_coordinate.y}"
         self.intersection_coordinate = intersection_coordinate
         self.approaching_path_coordinates = [(intersection_coordinate.x, intersection_coordinate.y)]
@@ -10,6 +10,9 @@ class Intersection:
         self.vertical_robots = {}
         self.horizontal_robots = {}
         self.last_changed_tick = 0
+        self.use_reinforcement_learning = use_reinforcement_learning
+        self.RL_model_name = None
+        self.connected_intersection_ids = []
 
     def duration_since_last_change(self, tick):
         return tick - self.last_changed_tick
@@ -114,3 +117,16 @@ class Intersection:
     def print_info(self):
         print("Current Allowed Direction:", self.allowed_direction)
         print("Last Updated Tick:", self.last_changed_tick)
+
+    def add_connected_intersection_id(self, x, y):
+        intersection_id = f"{x}-{y}"
+        self.connected_intersection_ids.append(intersection_id)
+
+    def should_save_robot_info(self):
+        if self.intersection_coordinate.x == 15:
+            return True
+        else:
+            return False
+
+    def set_RL_model_name(self, model_name):
+        self.RL_model_name = f"IntersectionModel_{model_name}"

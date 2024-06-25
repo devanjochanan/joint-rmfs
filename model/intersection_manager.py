@@ -10,8 +10,8 @@ class IntersectionManager:
         self.coordinate_to_intersection = {}
         self.intersection_id_to_intersection = {}
         self.q_models = {}
-        self.previous_state = None
-        self.previous_action = None
+        self.previous_state = {}
+        self.previous_action = {}
 
     def add_intersection(self, intersection: Intersection):
         self.intersections.append(intersection)
@@ -23,24 +23,13 @@ class IntersectionManager:
         return self.coordinate_to_intersection.get((x, y), None)
 
     def get_connected_intersections(self, current_intersection: Intersection):
-        x, y = current_intersection.intersection_coordinate.x, current_intersection.intersection_coordinate.y
         connected_intersections = []
+        connected_intersection_ids = current_intersection.connected_intersection_ids
 
-        # Check the intersection to the right
-        if (x + 6, y) in self.coordinate_to_intersection:
-            connected_intersections.append(self.coordinate_to_intersection[(x + 6, y)])
-
-        # Check the intersection to the left
-        if (x - 6, y) in self.coordinate_to_intersection:
-            connected_intersections.append(self.coordinate_to_intersection[(x - 6, y)])
-
-        # Check the intersection above
-        if (x, y + 3) in self.coordinate_to_intersection:
-            connected_intersections.append(self.coordinate_to_intersection[(x, y + 3)])
-
-        # Check the intersection below
-        if (x, y - 3) in self.coordinate_to_intersection:
-            connected_intersections.append(self.coordinate_to_intersection[(x, y - 3)])
+        for intersection_id in connected_intersection_ids:
+            intersection = self.find_intersection_by_id(intersection_id)
+            if intersection is not None:
+                connected_intersections.append(intersection)
 
         return connected_intersections
 
@@ -67,50 +56,53 @@ class IntersectionManager:
 
     def handle_model(self, intersection: Intersection, tick):
         state = self.get_state(intersection, tick)
-        self.previous_state = state
-        if intersection.intersection_id not in self.q_models:
-            self.q_models[intersection.intersection_id] = self.create_new_model(intersection)
-        model = self.q_models[intersection.intersection_id]
+        self.previous_state[intersection.RL_model_name] = state
+        if intersection.RL_model_name not in self.q_models:
+            self.q_models[intersection.RL_model_name] = self.create_new_model(intersection)
+        model = self.q_models[intersection.RL_model_name]
         action = model.act(state)
-        self.previous_action = action
+        self.previous_action[intersection.RL_model_name] = action
         new_direction = intersection.get_allowed_direction_by_code(action)
         self.update_allowed_direction(intersection.intersection_id, new_direction, tick)
 
     def create_new_model(self, intersection: Intersection):
         connected_intersections = self.get_connected_intersections(intersection)
-        return DeepQNetwork(state_size=len(connected_intersections) * 10 + 10,
+        state_size = len(connected_intersections) * 10 + 10
+        return DeepQNetwork(state_size=state_size,
                             action_size=3,
-                            model_name=intersection.intersection_id)
+                            model_name=intersection.RL_model_name)
 
     def update_allowed_direction_using_q_model(self, tick):
         for intersection in self.intersections:
-            if intersection.robot_count() > 0:
+            if intersection.use_reinforcement_learning and intersection.robot_count() > 0:
                 self.handle_model(intersection, tick)
 
     def update_model_after_execution(self, tick):
         for intersection in self.intersections:
-            self.remember_and_replay(intersection, self.calculate_reward(intersection),
-                                     self.is_episode_done(intersection, tick), tick)
+            if intersection.use_reinforcement_learning and intersection.RL_model_name in self.q_models:
+                self.remember_and_replay(intersection, self.calculate_reward(intersection, tick),
+                                         self.is_episode_done(intersection, tick), tick)
 
     def remember_and_replay(self, intersection: Intersection, reward, done, tick):
-        if intersection.intersection_id not in self.q_models:
-            return
-
-        model = self.q_models[intersection.intersection_id]
-        if self.previous_state is not None and self.previous_action is not None:
+        model = self.q_models[intersection.RL_model_name]
+        if intersection.RL_model_name in self.previous_state and intersection.RL_model_name in self.previous_action:
             next_state = self.get_state(intersection, tick)
-            model.remember(self.previous_state, self.previous_action, reward, next_state, done)
+            model.remember(self.previous_state[intersection.RL_model_name],
+                           self.previous_action[intersection.RL_model_name], reward, next_state, done)
             if done:
                 model.replay(64)
 
-            self.reset_previous_state_and_action()
+            self.reset_previous_state_and_action(intersection)
 
         if tick % 1000 == 0 and tick != 0:
-            model.save_model(intersection.intersection_id, tick)
+            print("SAVING_MODEL")
+            model.save_model(intersection.RL_model_name, tick)
 
-    def reset_previous_state_and_action(self):
-        self.previous_state = None
-        self.previous_action = None
+    def reset_previous_state_and_action(self, intersection: Intersection):
+        if intersection.RL_model_name in self.previous_state:
+            del self.previous_state[intersection.RL_model_name]
+        if intersection.RL_model_name in self.previous_action:
+            del self.previous_action[intersection.RL_model_name]
 
     @staticmethod
     def is_episode_done(intersection: Intersection, tick):
@@ -122,11 +114,12 @@ class IntersectionManager:
             return False
 
     @staticmethod
-    def calculate_reward(intersection: Intersection):
+    def calculate_reward(intersection: Intersection, tick):
         total_energy_horizontal, total_energy_vertical = intersection.calculate_total_energy_per_direction()
         total_energy = total_energy_horizontal + total_energy_vertical
-        # Negative reward as we want to minimize energy consumption
-        reward = -total_energy
+        average_wait_horizontal, average_wait_vertical = intersection.calculate_average_waiting_time_per_direction(tick)
+        # Negative reward as we want to minimize energy consumption and waiting time
+        reward = -total_energy - average_wait_horizontal - average_wait_vertical
         return reward
 
     def update_allowed_direction(self, intersection_id, direction, tick):

@@ -112,7 +112,7 @@ class Inventory(Universe):
         if int(self._tick) == self.next_process_tick:
             self.next_process_tick += 1
             if self.update_intersection_using_RL:
-                self.intersection_manager.update_model_after_execution(self._tick)
+                self.intersection_manager.update_model_after_execution(int(self._tick))
 
         self._tick += self.tick_to_second
 

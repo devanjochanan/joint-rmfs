@@ -591,8 +591,6 @@ class Robot(Object):
         initial_acceleration = self.acceleration
 
         energy = self.calculateEnergy(initial_velocity, initial_acceleration)
-        if self.robotName() == 'robot-1':
-            print(energy)
         self.energy_consumption += energy
 
         if self.velocity != 0:
@@ -649,7 +647,8 @@ class Robot(Object):
         intersection: Intersection = self.universe.intersection_manager.find_intersection_by_id(
             self.current_intersection_id)
 
-        self.insert_robot_intersection_information_to_csv(intersection)
+        if intersection.should_save_robot_info():
+            self.insert_robot_intersection_information_to_csv(intersection)
 
         intersection.remove_robot(self)
 
