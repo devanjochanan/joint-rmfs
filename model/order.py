@@ -54,3 +54,9 @@ class Order:
     def get_processing_time(self):
         """Calculate and return the total processing time from start to completion, if available."""
         return self.order_complete_time - self.process_start_time
+
+    def __str__(self):
+        return f"Order(order_id={self.order_id}, order_arrival={self.order_arrival}, process_start_time={self.process_start_time}, order_complete_time={self.order_complete_time}, station_id={self.station_id}, skus={self.skus})"
+
+    def __repr__(self):
+        return self.__str__()

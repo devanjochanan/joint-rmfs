@@ -20,3 +20,9 @@ class RobotJob:
 
     def pop_order(self):
         return self.orders.pop(0)
+
+    def __str__(self):
+        return f"RobotJob: {self.job_id}, {self.pod_coordinate}, {self.station_id}, {self.orders}"
+
+    def __repr__(self):
+        return self.__str__()

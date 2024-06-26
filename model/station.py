@@ -39,10 +39,10 @@ class Station(Object):
         else:
             return self.long_path
 
-    def get_sub_path(self, x: int, y: int):
+    def get_sub_path(self, robot_id, x: int, y: int):
         sub_path = []
         start = False
-        for coord in self.get_path():
+        for coord in self.get_robot_route(robot_id):
             if (coord.x, coord.y) == (x, y):
                 start = True
             if start:

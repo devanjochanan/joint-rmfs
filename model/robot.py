@@ -288,9 +288,9 @@ class Robot(Object):
                 self.set_move(self.route_stop_points[-1], self.universe.graph_pod, avoid_front=True)
             elif self.current_state == "station_processing":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
-                path = station.get_sub_path(round(self.pos_x), round(self.pos_y))
-                self.setPath(self.transform_coords_to_list(path))
                 station.update_robot_route_type(self.robotName())
+                path = station.get_sub_path(self.robotName(), round(self.pos_x), round(self.pos_y))
+                self.setPath(self.transform_coords_to_list(path))
 
             self.idle_time = 0
 
@@ -465,9 +465,6 @@ class Robot(Object):
         return False
 
     def path_blocked_by_robot(self, next_step_coordinates):
-        # if round(self.pos_y) == 58:
-        #     print(self.robotName())
-
         neighbors = self.universe.landscape.getNeighborObject(round(self.pos_x), round(self.pos_y), 2)
         for neighbor in neighbors:
             if self.get_robot_by_name(neighbor['label']) == self:
@@ -566,7 +563,7 @@ class Robot(Object):
             elif self.current_state == "station_processing":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.add_robot(self.robotName())
-                self.setPath(self.transform_coords_to_list(station.get_path()))
+                self.setPath(self.transform_coords_to_list(station.get_robot_route(self.robotName())))
 
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
                                           self.heading, self.current_state)

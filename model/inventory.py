@@ -122,7 +122,7 @@ class Inventory(Universe):
             order.deliver_quantity(sku, quantity)
 
             if order.is_order_completed():
-                order.complete_order(int(self._tick))
+                self.order_manager.finish_order(order_id, int(self._tick))
                 station = self.station_manager.get_station_by_id(order.station_id)
                 station.remove_order(order_id)
                 self.insert_finished_order_to_csv(order)
@@ -188,7 +188,7 @@ class Inventory(Universe):
         return result
 
     def process_orders(self):
-        for order in self.order_manager.orders:
+        for order in self.order_manager.unfinished_orders:
             if order.station_id is None:
                 available_station = self.station_manager.find_available_picking_station()
                 if available_station is not None:
@@ -197,10 +197,8 @@ class Inventory(Universe):
                 else:
                     break
 
-            if order.process_start_time >= 0:
-                continue
-
-            order.start_processing(int(self._tick))
+            if order.process_start_time <= 0:
+                order.start_processing(int(self._tick))
 
             for sku in order.get_remaining_skus():
                 available_pod: Pod = self.pod_manager.get_available_pod(sku)
