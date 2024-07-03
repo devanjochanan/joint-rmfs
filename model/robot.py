@@ -289,9 +289,9 @@ class Robot(Object):
                 self.set_move(self.route_stop_points[-1], self.universe.graph_pod, avoid_front=True)
             elif self.current_state == "station_processing":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
-                path = station.get_sub_path(round(self.pos_x), round(self.pos_y))
-                self.setPath(self.transform_coords_to_list(path))
                 station.update_robot_route_type(self.robotName())
+                path = station.get_sub_path(self.robotName(), round(self.pos_x), round(self.pos_y))
+                self.setPath(self.transform_coords_to_list(path))
 
             self.idle_time = 0
 
@@ -573,7 +573,7 @@ class Robot(Object):
             elif self.current_state == "station_processing":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.add_robot(self.robotName())
-                self.setPath(self.transform_coords_to_list(station.get_path()))
+                self.setPath(self.transform_coords_to_list(station.get_robot_route(self.robotName())))
 
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
                                           self.heading, self.current_state)
@@ -716,7 +716,8 @@ class Robot(Object):
 
         robot_objects = self.universe.landscape.get_robot_object()
         robots_location = [[info['x'], info['y']] for info in robot_objects.values() if info['state'] != 'station_processing']
-
+        # print("Robot location")
+        # print(robots_location)
         robots_idle_time = []
         robot_list = []
         if len(robots_location) > 0:
@@ -725,11 +726,10 @@ class Robot(Object):
         for robot in robot_list:
             robots_idle_time.append(robot.idle_time)
 
-        zones = Zone(robots_location, self.universe.get_warehouse_size(), methods="kmeans")
+        zones = Zone(robots_location, self.universe.get_warehouse_size(), methods="route_cluster")
         penalties = zones.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
         zone_boundary = zones.get_boundary()
-        print("zone boundary:", zone_boundary)
-        print("penalties:", penalties)
+      
         # node_routes = graph.dijkstra(start, end, nodes_to_avoid)
         node_routes = graph.dijkstra_modified(start,end, penalties, zone_boundary, nodes_to_avoid)
         self.setPath(self._transformRouteToList(node_routes))

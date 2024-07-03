@@ -65,8 +65,8 @@ class Zone:
         robot_count = [1] * len(self.boundaries)
         warehouse_area = warehouse_size[0] * warehouse_size[1]
         
-        print("idle time: ", idle_time)
-        print("robot locations: ", robots_location)
+        # print("idle time: ", idle_time)
+        # print("robot locations: ", robots_location)
         
         for index, zone in enumerate(self.boundaries):
             area[index] = abs(zone[1][0] - zone[0][0]) * abs(zone[1][1] - zone [0][1])
@@ -106,16 +106,7 @@ class Zone:
         return self.penalty
     
         
-    def _silhouette_score(self, robots_location, min_cluster, max_cluster):
-        inertias = []
-        silhouette_scores = []
-        for k in range(min_cluster, max_cluster + 1):
-            kmeans = KMeans(n_clusters=k, random_state=0).fit(robots_location)
-            inertias.append(kmeans.inertia_)
-            silhouette_scores.append(silhouette_score(robots_location, kmeans.labels_))
-        
-        best_cluster = range(min_cluster, max_cluster + 1)[silhouette_scores.index(max(silhouette_scores))]
-        return best_cluster
+   
     
     @staticmethod
     def _minimum_bounding_rectangle(points):
@@ -142,8 +133,21 @@ class Zone:
             y_max = 30
         if x_max > 43:
             x_max = 43
-        return [[int(y_max), int(x_min)], [int(y_min), int(x_max)]]
+        return [ [int(y_min), int(x_max)],[int(y_max), int(x_min)],]
     
+    def _silhouette_score(self, robots_location, min_cluster, max_cluster):
+        inertias = []
+        silhouette_scores = []
+        for k in range(min_cluster, max_cluster + 1):
+            if k >= len(robots_location):
+                break
+            kmeans = KMeans(n_clusters=k, random_state=0).fit(robots_location)
+            inertias.append(kmeans.inertia_)
+            silhouette_scores.append(silhouette_score(robots_location, kmeans.labels_))
+        
+        best_cluster = range(min_cluster, max_cluster + 1)[silhouette_scores.index(max(silhouette_scores))]
+        return best_cluster
+
     def kmeans_clustering(self, robots_location):
         """Clustering using KMeans
 
@@ -156,7 +160,7 @@ class Zone:
             lists of zone boundaries
         """
         robots = np.array(robots_location)
-        if len(robots) != 0:
+        if len(robots) >= 2:
             self.cluster_num = self._silhouette_score(robots, min_cluster=2, max_cluster=9)
             kmeans = KMeans(n_clusters=self.cluster_num, random_state=0)
             labels = kmeans.fit_predict(robots)

@@ -69,6 +69,19 @@ class DirectedGraph:
         if self.node_valid(start) and self.node_valid(end):
             self.graph.add_edge(start, end, weight=weight)
 
+    @staticmethod
+    def get_heading(p1: NetLogoCoordinate, p2: NetLogoCoordinate):
+        if p1.x == p2.x:
+            if p1.y > p2.y:
+                return 180
+            else:
+                return 0
+        elif p1.y == p2.y:
+            if p1.x > p2.x:
+                return 270
+            else:
+                return 90
+
     def dijkstra_modified(self, start, end, penalties, zone_boundary, avoid=None):
         """Find the shortest path between two nodes using Dijkstra's algorithm, avoiding specified nodes.
 
@@ -93,13 +106,12 @@ class DirectedGraph:
                     if G.has_edge(node, neighbor):
                         G[node][neighbor]['weight'] += 10000
 
-
+        # Increase the weight of edges in every zone based on the penalty
         for index, zone in enumerate(zone_boundary):
             for row in range(zone[1][0], zone[0][0]):
                 for col in range(zone[0][1], zone[1][1]):
                     coordinate_str = f"{row},{col}"
                     for neighbor in list(G.neighbors(coordinate_str)) + list(G.predecessors(coordinate_str)):
-                        # Increase the weight based on the zone
                         if G.has_edge(neighbor, coordinate_str):
                             G[neighbor][coordinate_str]['weight'] = penalties[index]
                         if G.has_edge(coordinate_str, neighbor):
@@ -386,13 +398,9 @@ def cluster_backlog_orders(jaccard_similarities, total_station, station_capacity
 
 def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order, cluster_labels, station_capacity_df):
     order_dum_to_cluster = dict(zip(full_order.index, cluster_labels))
-    # print("BACKLOG ORDER")
-    # print(data_backlog_order_df)
     temp = float('inf')
-    # assign cluster labels to the 'station' 
     new_order = None
  
-    # print("data backlog ", data_backlog_order_df)
     orders_df = pd.read_csv('generated_order_new.csv')
     
     file_path = 'assign_order.csv'
@@ -423,7 +431,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
                 
                 if station_id is not None:
                     station = universe.station_manager.get_station_by_id(station_id)
-                    station.add_order(new_order.order_id)
+                    station.add_order(new_order.order_id, new_order)
 
                 universe.order_manager.add_order(new_order)
 
@@ -437,13 +445,10 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
     return station_capacity_df
 
 def assign_backlog_orders(universe: Inventory):
-    # order = Order("backlog", 0)
-    # order.add_sku(1, 10)
-    # universe.order_manager.add_order(order)
-
     # open file order
     order_path = "generated_order_new.csv"
     data_order_df = pd.read_csv(order_path)
+
     # filter order_id < 0
     unassigned_backlog_order = data_order_df.loc[(data_order_df['order_id'] < 0)].sort_values(by=['order_id']).reset_index(drop=True)
 
@@ -451,8 +456,6 @@ def assign_backlog_orders(universe: Inventory):
     station_id_cap_df = pd.DataFrame(columns=columns)
 
     for station in universe.station_manager.stations:
-        # mask = station.station_id.str.contains(r'^picker-\d+$', regex=True)
-        # if(mask):
         id = station.station_id
         cap = station.max_orders - len(station.order_ids)
 
@@ -508,6 +511,8 @@ def draw_storage_from_generated_file(universe: Inventory):
             obj_below_value = data.iloc[y + 1, x] if y < total_rows - 1 else None
 
             weight = 1
+            turning_weight = 5
+            intersection_weight = 4
             if x <= 7:
                 weight = 3
 
@@ -562,60 +567,60 @@ def draw_storage_from_generated_file(universe: Inventory):
                     universe.intersection_manager.add_intersection(intersection)
 
                 if obj_left_value == 4 or obj_right_value == 4:
-                    graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
-                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                    graph.add_edge(obj_key, obj_left_coordinate, weight=intersection_weight)
+                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=intersection_weight)
                 elif obj_left_value == 5 or obj_right_value == 5:
-                    graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
-                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                    graph.add_edge(obj_key, obj_right_coordinate, weight=intersection_weight)
+                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=intersection_weight)
 
                 if obj_above_value == 6 or obj_above_value == 6:
-                    graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
-                    graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                    graph.add_edge(obj_key, obj_above_coordinate, weight=intersection_weight)
+                    graph_pod.add_edge(obj_key, obj_above_coordinate, weight=intersection_weight)
                 elif obj_below_value == 7 or obj_below_value == 7:
-                    graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
-                    graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                    graph.add_edge(obj_key, obj_below_coordinate, weight=intersection_weight)
+                    graph_pod.add_edge(obj_key, obj_below_coordinate, weight=intersection_weight)
 
                 if obj_left_value == 6 or obj_left_value == 7:
-                    graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
-                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                    graph.add_edge(obj_key, obj_left_coordinate, weight=intersection_weight)
+                    graph_pod.add_edge(obj_key, obj_left_coordinate, weight=intersection_weight)
                 elif obj_right_value == 6 or obj_right_value == 7:
-                    graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
-                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                    graph.add_edge(obj_key, obj_right_coordinate, weight=intersection_weight)
+                    graph_pod.add_edge(obj_key, obj_right_coordinate, weight=intersection_weight)
             elif value == 4:
                 obj.shape = 'arrow-left'
                 graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=weight)
 
-                graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_above_coordinate, weight=turning_weight)
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=100)
-                graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_below_coordinate, weight=turning_weight)
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=100)
             elif value == 5:
                 obj.shape = 'arrow-right'
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=weight)
 
-                graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_above_coordinate, weight=turning_weight)
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=100)
-                graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_below_coordinate, weight=turning_weight)
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=100)
             elif value == 6:
                 obj.shape = 'arrow-up'
                 graph.add_edge(obj_key, obj_above_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_above_coordinate, weight=weight)
 
-                graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_left_coordinate, weight=turning_weight)
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
-                graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_right_coordinate, weight=turning_weight)
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=100)
             elif value == 7:
                 obj.shape = 'arrow-down'
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
 
-                graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_left_coordinate, weight=turning_weight)
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
-                graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
+                graph.add_edge(obj_key, obj_right_coordinate, weight=turning_weight)
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=100)
             elif value == 11 or value == 21:
                 obj.shape = 'person-red'

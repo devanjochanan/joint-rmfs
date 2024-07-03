@@ -3,7 +3,6 @@ from typing import List, Optional, Dict
 from engine.object import Object
 from engine.netlogo_coordinate import NetLogoCoordinate
 
-from .order_manager import OrderManager
 from .order import Order
 
 
@@ -18,20 +17,42 @@ class Station(Object):
         self.short_path: List[NetLogoCoordinate] = []
         self.long_path: List[NetLogoCoordinate] = []
         self.order_ids: List[int] = []
+        self.orders: List[Order] = []
         self.max_orders = 6
         self.short_path_threshold = 4
         self.robot_ids = {}
         self.is_using_short_route = True
         self.skus = {}
+        self.skus_in_station = {}
         self.incoming_pod: List[int] = []
         super().__init__()
 
-    def add_order(self, order_id: int):
+    def add_order(self, order_id: int, order:Order):
         self.order_ids.append(order_id)
+        self.orders.append(order)
 
-    def remove_order(self, order_id: int):
+        for sku, value in order.get_remaining_skus().items():
+            if sku not in self.skus_in_station:
+                self.skus_in_station[sku] = []
+            self.skus_in_station[sku].append(value)
+
+    def subtract_sku_in_station(self,sku, value):
+        self.skus_in_station[sku].remove(value)
+        if len(self.skus_in_station[sku]) == 0:
+            self.skus_in_station.pop(sku)
+
+
+    def remove_order(self, order_id: int, order: Order):
         if order_id in self.order_ids:
             self.order_ids.remove(order_id)
+        if order in self.orders:
+            self.orders.remove(order)
+            for sku, value in order.get_remaining_skus().items():
+                self.skus_in_station[sku].pop(value)
+                if len(self.skus_in_station[sku]) == 0:
+                    self.skus_in_station.pop(sku)
+    
+    
 
     def add_pod(self, pod):
         self.incoming_pod.append(pod)
@@ -51,10 +72,10 @@ class Station(Object):
         else:
             return self.long_path
 
-    def get_sub_path(self, x: int, y: int):
+    def get_sub_path(self, robot_id,x: int, y: int):
         sub_path = []
         start = False
-        for coord in self.get_path():
+        for coord in self.get_robot_route(robot_id):
             if (coord.x, coord.y) == (x, y):
                 start = True
             if start:
@@ -86,36 +107,17 @@ class Station(Object):
     def has_route_changed(self, robot_id):
         return self.get_path() != self.get_robot_route(robot_id)
     
-    def get_skus_in_station(self, order_manager: OrderManager):
-        self._skus_in_station(order_manager)
+    def get_skus_in_station(self):
+        for sku, value in self.skus_in_station.items():
+            self.skus[sku] = sum(value)
         return self.skus
     
-    def _skus_in_station(self, order_manager: OrderManager):
-        for order_id in self.order_ids:
-            order = order_manager.get_order_by_id(order_id)
-            for sku, value in order.get_remaining_skus().items():
-                if sku not in self.skus:
-                    self.skus[sku] = value
-                self.skus[sku] += value
-        return
     
-    def get_orders_in_station(self, order_manager: OrderManager) -> Optional[List[Order]]: 
-        orders = []
-        for order_id in self.order_ids:
-            order = order_manager.get_order_by_id(order_id)
-            orders.append(order)
-        return orders
+    def get_orders_in_station(self) -> Optional[List[Order]]: 
+        return self.orders
     
-    def get_skus_in_station_dict(self, order_manager: OrderManager) -> Optional[Dict]:
-        orders_sku = {}
-        for order_id in self.order_ids:
-            order = order_manager.get_order_by_id(order_id)
-            for sku, value in order.get_remaining_skus().items():
-                if sku not in orders_sku:
-                    orders_sku[sku] = []
-                orders_sku[sku].append(value)
-
-        return self._sort_order_set(orders_sku)
+    def get_skus_in_station_dict(self) -> Optional[Dict]:
+        return self._sort_order_set(self.skus_in_station)
 
     def _sort_order_set(self,order_set):
         sorted_order_set = {}

@@ -84,10 +84,10 @@ class PodManager:
         
         station_coordinate = [station_coordinate.x, station_coordinate.y]
         # print("THE SKU ", sku)
-        # print(skus_in_station_dictionary)
+        # print(skus_in_station_dict)
         if sku in self.sku_to_pods:
-            a = self.sku_to_pods[sku]
-            print("len of available pod ", len(a))
+            # a = self.sku_to_pods[sku]
+            # print("len of available pod ", len(a))
             for pod in self.sku_to_pods[sku]:
                 similarity_score = 0
 
@@ -107,15 +107,14 @@ class PodManager:
                     pod_coordinate = [pod.coordinate.x, pod.coordinate.y]
                     # D1
                     distance_to_station = manhattan_distances([pod_coordinate],[station_coordinate])[0][0]
-
                     # D2
                     distance_to_robot = self._distance_pod_to_robot(pod_coordinate, robots_coordinate)
                     # distance_to_robot = 1
                     # Inventory Score
                     # print("sku in dict, gabisa keknya")
-                    # print(skus_in_station_dictionary)
-                    # inventory_score = self._count_fulfillment(skus_in_station_dict, pod.skus)
-                    inventory_score = 1
+                    # print(skus_in_station_dict)
+                    inventory_score = self._count_fulfillment(skus_in_station_dict, pod.skus)
+                    # inventory_score = 1
                     pod_available_for_multiple_items = pd.concat([pod_available_for_multiple_items, 
                                                                 pd.DataFrame([[pod.pod_id, similarity_score,inventory_score, distance_to_station, distance_to_robot]], 
                                                                                                             columns=["pod_id", "similarity_score", "inventory_score","distance_to_station","distance_to_robot"])], ignore_index=True) 
@@ -156,15 +155,11 @@ class PodManager:
     
     def _count_fulfillment(self, skus_in_station_dict, pod_skus):
         total_fulfillment = 1
-        print("SKU DICT: ")
-        print(skus_in_station_dict)
-        print("POD: \n",pod_skus)
-      
+        pod_skus_copy = pod_skus.copy()
         for sku in skus_in_station_dict:
             for order_qty in skus_in_station_dict[sku]:
-                print("testo")
-                if sku in pod_skus and pod_skus[sku]["current_qty"] >= order_qty:
-                    pod_skus[sku]["current_qty"] -= order_qty
+                if sku in pod_skus_copy and pod_skus_copy[sku]["current_qty"] >= order_qty:
+                    pod_skus_copy[sku]["current_qty"] -= order_qty
                     total_fulfillment += 1
                 else: 
                     continue
