@@ -157,6 +157,7 @@ class Inventory(Universe):
     #         job.is_finished = True
 
     def finish_orders_in_job(self, job: RobotJob):
+        pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
         for order_id, sku, quantity in job.orders:
             order: Order = self.order_manager.get_order_by_id(order_id)
             order.deliver_quantity(sku, quantity)
@@ -164,7 +165,11 @@ class Inventory(Universe):
             # station = self.station_manager.get_station_by_id(order.station_id)  
             # # Suba stract the sku from the skus_in_station
             # station.subtract_sku_in_station(sku, quantity)
+            pod.pick_sku(sku, quantity)
 
+            assign_order_df = pd.read_csv('assign_order.csv')
+            assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
+            assign_order_df.to_csv('assign_order.csv', index=False)
             
             if order.is_order_completed():
                 self.order_manager.finish_order(order_id, int(self._tick))
@@ -256,8 +261,8 @@ class Inventory(Universe):
         for order in self.order_manager.unfinished_orders:
             assign_order_df = pd.read_csv('assign_order.csv')
             if order.station_id is None:
-                available_station = self.station_manager.find_available_picking_station()
-                # available_station = self.station_manager.find_highest_similarity_station(order.skus, self.pod_manager)
+                # available_station = self.station_manager.find_available_picking_station()
+                available_station = self.station_manager.find_highest_similarity_station(order.skus, self.pod_manager)
                 if available_station is not None:
                     order.assign_station(available_station.station_id)
                     available_station.add_order(order.order_id, order)
@@ -285,9 +290,9 @@ class Inventory(Universe):
             
             station_coordinate = order_station.coordinate
             for sku in order.get_remaining_skus():
-                available_pod: Pod = self.pod_manager.get_available_pod(sku)
+                # available_pod: Pod = self.pod_manager.get_available_pod(sku)
                 # available_pod: Pod = self.pod_manager.get_available_pod_similarity(sku, skus_in_station, station_coordinate)
-                # available_pod: Pod = self.pod_manager.get_available_pod_inventory(sku, skus_in_station_dict, station_coordinate, robots_location)
+                available_pod: Pod = self.pod_manager.get_available_pod_inventory(sku, skus_in_station_dict, station_coordinate, robots_location)
                 if available_pod is None:
                     continue
                 quantity_to_take = order.get_quantity_left_for_sku(sku)
