@@ -49,7 +49,10 @@ class Robot(Object):
         self.delay_per_task = 10
         self.idle_time = 0
         self.current_intersection_id = None
+        self.future_intersection_id = None
+        self.previous_intersection_id = None
         self.current_intersection_energy_consumption = 0
+        self.current_intersection_stop_and_go = 0
         self.current_intersection_start_time = None
         self.current_intersection_finish_time = None
         super().__init__()
@@ -274,6 +277,8 @@ class Robot(Object):
         return self.job.picking_delay > 0 and self.close_enough(station.coordinate, 0.1)
 
     def movementPlan(self):
+        # if self.robotName() == "robot-1":
+        #     print(self.route_stop_points)
         if self.picking_item_in_pod():
             return
 
@@ -283,9 +288,9 @@ class Robot(Object):
 
         if self.eligible_to_reroute():
             if self.current_state == "taking_pod":
-                self.set_move(self.route_stop_points[-1], self.universe.graph, avoid_front=True)
+                self.set_move(self.route_stop_points[-1], self.universe.graph, avoid_side=True)
             elif self.current_state == "delivering_pod" or self.current_state == "returning_pod":
-                self.set_move(self.route_stop_points[-1], self.universe.graph_pod, avoid_front=True)
+                self.set_move(self.route_stop_points[-1], self.universe.graph_pod, avoid_side=True)
             elif self.current_state == "station_processing":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.update_robot_route_type(self.robotName())
@@ -314,7 +319,9 @@ class Robot(Object):
         self.acceleration = 0
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity,
                                           self.acceleration, self.heading, self.current_state)
-        self.universe.landscape.objects.values()
+
+        if self.current_intersection_id:
+            self.current_intersection_stop_and_go += 1
 
     def handle_conflicts(self, next_destination_coordinate):
         candidate_conflict_coordinate = None
@@ -663,6 +670,7 @@ class Robot(Object):
         # Reset all intersection-related data
         self.current_intersection_id = None
         self.current_intersection_energy_consumption = 0
+        self.current_intersection_stop_and_go = 0
         self.current_intersection_start_time = 0
         self.current_intersection_finish_time = 0
 
@@ -690,7 +698,7 @@ class Robot(Object):
         station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
         self.set_move(station.get_path()[0], graph=self.universe.graph_pod, need_neutralize_robot=False)
 
-    def set_move(self, dest: NetLogoCoordinate, graph, need_neutralize_robot: bool = False, avoid_front: bool = False):
+    def set_move(self, dest: NetLogoCoordinate, graph, need_neutralize_robot: bool = False, avoid_side: bool = False):
         start = self.coordinate_to_string_key(round(self.pos_x), round(self.pos_y))
         end = self.coordinate_to_string_key(dest.x, dest.y)
 
@@ -698,10 +706,14 @@ class Robot(Object):
             self.neutralizeRobotState()
 
         nodes_to_avoid = []
-        if avoid_front:
-            avoid_coord = self._calculate_next_blocks(round(self.pos_x), round(self.pos_y),
-                                                      self.heading, 1, include_self=False)
-            nodes_to_avoid.append(self.coordinate_to_string_key(*avoid_coord[0]))
+        if avoid_side:
+            avoid_coords = self.calculate_all_directions_next_blocks(round(self.pos_x), round(self.pos_y), 1,
+                                                                     include_self=False)
+            for avoid_coord in avoid_coords:
+                if self.universe.landscape.get_neighbor_object(*avoid_coord) is None:
+                    continue
+
+                nodes_to_avoid.append(self.coordinate_to_string_key(*avoid_coord))
 
         node_routes = graph.dijkstra(start, end, nodes_to_avoid)
         self.setPath(self._transformRouteToList(node_routes))
@@ -748,6 +760,18 @@ class Robot(Object):
     @staticmethod
     def robotID(robot_name):
         return int(robot_name.split('-')[1])
+
+    @staticmethod
+    def calculate_all_directions_next_blocks(x, y, block_count=5, include_self=False):
+        headings = [0, 90, 180, 270]
+        result = []
+
+        for heading in headings:
+            blocks = Robot._calculate_next_blocks(x, y, heading, block_count, include_self)
+            for block in blocks:
+                result.append(block)
+
+        return result
 
     @staticmethod
     def _calculate_next_blocks(x, y, heading, block_count=5, include_self=False):

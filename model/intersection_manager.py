@@ -22,7 +22,7 @@ class IntersectionManager:
     def get_intersection_by_coordinate(self, x, y):
         return self.coordinate_to_intersection.get((x, y), None)
 
-    def get_connected_intersections(self, current_intersection: Intersection):
+    def get_connected_intersections(self, current_intersection: Intersection) -> List[Intersection]:
         connected_intersections = []
         connected_intersection_ids = current_intersection.connected_intersection_ids
 
@@ -34,48 +34,53 @@ class IntersectionManager:
         return connected_intersections
 
     def get_state(self, current_intersection: Intersection, tick):
-        state = []
-        connected_intersections = [current_intersection] + self.get_connected_intersections(current_intersection)
+        state = [
+            current_intersection.get_allowed_direction_code(),
+            current_intersection.duration_since_last_change(tick),
+            len(current_intersection.horizontal_robots),
+            len(current_intersection.get_robots_by_state_horizontal("delivering_pod")),
+            len(current_intersection.get_robots_by_state_horizontal("returning_pod")),
+            len(current_intersection.get_robots_by_state_horizontal("taking_pod")),
+            len(current_intersection.vertical_robots),
+            len(current_intersection.get_robots_by_state_vertical("delivering_pod")),
+            len(current_intersection.get_robots_by_state_vertical("returning_pod")),
+            len(current_intersection.get_robots_by_state_vertical("taking_pod")),
+        ]
+        connected_intersections = self.get_connected_intersections(current_intersection)
         for intersection in connected_intersections:
-            total_energy_horizontal, total_energy_vertical = intersection.calculate_total_energy_per_direction()
-            average_wait_horizontal, average_wait_vertical = intersection.calculate_average_waiting_time_per_direction(
-                tick)
-            state.extend([
-                intersection.get_allowed_direction_code(),
-                intersection.last_changed_tick,
-                intersection.duration_since_last_change(tick),
-                intersection.robot_count(),
-                len(intersection.horizontal_robots),
-                len(intersection.vertical_robots),
-                average_wait_horizontal,
-                average_wait_vertical,
-                total_energy_horizontal,
-                total_energy_vertical,
-            ])
+            state.append(intersection.get_allowed_direction_code())
+            state.append(intersection.robot_count())
         return state
 
     def handle_model(self, intersection: Intersection, tick):
         state = self.get_state(intersection, tick)
-        self.previous_state[intersection.RL_model_name] = state
+        self.previous_state[intersection.intersection_id] = state
         if intersection.RL_model_name not in self.q_models:
-            self.q_models[intersection.RL_model_name] = self.create_new_model(intersection)
+            self.q_models[intersection.RL_model_name] = self.create_new_model(intersection, state)
         model = self.q_models[intersection.RL_model_name]
         action = model.act(state)
-        self.previous_action[intersection.RL_model_name] = action
+        self.previous_action[intersection.intersection_id] = action
         new_direction = intersection.get_allowed_direction_by_code(action)
         self.update_allowed_direction(intersection.intersection_id, new_direction, tick)
 
-    def create_new_model(self, intersection: Intersection):
-        connected_intersections = self.get_connected_intersections(intersection)
-        state_size = len(connected_intersections) * 10 + 10
+    @staticmethod
+    def create_new_model(intersection: Intersection, state):
+        state_size = len(state)
         return DeepQNetwork(state_size=state_size,
                             action_size=3,
                             model_name=intersection.RL_model_name)
 
     def update_allowed_direction_using_q_model(self, tick):
         for intersection in self.intersections:
-            if intersection.use_reinforcement_learning and intersection.robot_count() > 0:
-                self.handle_model(intersection, tick)
+            connected_intersections = self.get_connected_intersections(intersection)
+
+            if intersection.use_reinforcement_learning:
+                # Check if the current intersection or any connected intersection has at least one robot
+                robots_present = (intersection.robot_count() > 0 or
+                                  any(connected.robot_count() > 0 for connected in connected_intersections))
+
+                if robots_present:
+                    self.handle_model(intersection, tick)
 
     def update_model_after_execution(self, tick):
         for intersection in self.intersections:
@@ -85,10 +90,10 @@ class IntersectionManager:
 
     def remember_and_replay(self, intersection: Intersection, reward, done, tick):
         model = self.q_models[intersection.RL_model_name]
-        if intersection.RL_model_name in self.previous_state and intersection.RL_model_name in self.previous_action:
+        if intersection.intersection_id in self.previous_state and intersection.intersection_id in self.previous_action:
             next_state = self.get_state(intersection, tick)
-            model.remember(self.previous_state[intersection.RL_model_name],
-                           self.previous_action[intersection.RL_model_name], reward, next_state, done)
+            model.remember(self.previous_state[intersection.intersection_id],
+                           self.previous_action[intersection.intersection_id], reward, next_state, done)
             if done:
                 model.replay(64)
 
@@ -96,13 +101,14 @@ class IntersectionManager:
 
         if tick % 1000 == 0 and tick != 0:
             print("SAVING_MODEL")
+            intersection.reset_totals()
             model.save_model(intersection.RL_model_name, tick)
 
     def reset_previous_state_and_action(self, intersection: Intersection):
         if intersection.RL_model_name in self.previous_state:
-            del self.previous_state[intersection.RL_model_name]
+            del self.previous_state[intersection.intersection_id]
         if intersection.RL_model_name in self.previous_action:
-            del self.previous_action[intersection.RL_model_name]
+            del self.previous_action[intersection.intersection_id]
 
     @staticmethod
     def is_episode_done(intersection: Intersection, tick):
@@ -113,14 +119,83 @@ class IntersectionManager:
         else:
             return False
 
-    @staticmethod
-    def calculate_reward(intersection: Intersection, tick):
-        total_energy_horizontal, total_energy_vertical = intersection.calculate_total_energy_per_direction()
-        total_energy = total_energy_horizontal + total_energy_vertical
-        average_wait_horizontal, average_wait_vertical = intersection.calculate_average_waiting_time_per_direction(tick)
-        # Negative reward as we want to minimize energy consumption and waiting time
-        reward = -total_energy - average_wait_horizontal - average_wait_vertical
+    def calculate_reward(self, intersection: Intersection, tick):
+        reward = 0
+
+        for each_robot in intersection.previous_vertical_robots:
+            reward += self.calculate_reward_for_passing_robot(each_robot, intersection, "vertical", 2)
+
+        for each_robot in intersection.previous_horizontal_robots:
+            reward += self.calculate_reward_for_passing_robot(each_robot, intersection, "horizontal", 1)
+
+        intersection.clear_previous_robots()
+
+        for each_robot in intersection.vertical_robots.values():
+            reward += self.calculate_reward_for_current_robot(each_robot, intersection, "vertical", 2, tick)
+
+        for each_robot in intersection.horizontal_robots.values():
+            reward += self.calculate_reward_for_current_robot(each_robot, intersection, "horizontal", 1, tick)
+
+        if intersection.allowed_direction is not None and intersection.robot_count() == 0:
+            reward += -0.1
+
         return reward
+
+    def calculate_reward_for_current_robot(self, robot, intersection, direction, multiplier, current_tick):
+        robot_state_multiplier = self.get_state_multiplier(robot)
+
+        total_waiting_time_current_robot = current_tick - robot.current_intersection_start_time
+        average_waiting_time = intersection.calculate_average_waiting_time(direction)
+
+        total_stop_n_go_current_robot = robot.current_intersection_stop_and_go
+        average_stop_n_go = intersection.calculate_average_stop_n_go(direction)
+
+        reward = 0
+        if total_waiting_time_current_robot > average_waiting_time:
+            wait_diff = total_waiting_time_current_robot - average_waiting_time
+            reward += -0.1 * wait_diff * robot_state_multiplier * multiplier
+
+        if total_stop_n_go_current_robot > average_stop_n_go:
+            stop_go_diff = total_stop_n_go_current_robot - average_stop_n_go
+            reward += -0.1 * stop_go_diff * robot_state_multiplier * multiplier
+
+        return reward
+
+    def calculate_reward_for_passing_robot(self, robot, intersection, direction, multiplier):
+        robot_state_multiplier = self.get_state_multiplier(robot)
+
+        previous_average_wait = intersection.calculate_average_waiting_time(direction)
+        previous_average_stop_n_go = intersection.calculate_average_stop_n_go(direction)
+
+        intersection.track_robot_intersection_data(robot, direction)
+
+        current_average_wait = intersection.calculate_average_waiting_time(direction)
+        current_average_stop_n_go = intersection.calculate_average_stop_n_go(direction)
+
+        reward = 0
+        if current_average_wait < previous_average_wait:
+            wait_diff = previous_average_wait - current_average_wait
+            reward += 0.3 * wait_diff * robot_state_multiplier * multiplier
+
+        if current_average_stop_n_go < previous_average_stop_n_go:
+            stop_go_diff = previous_average_stop_n_go - current_average_stop_n_go
+            reward += 0.3 * stop_go_diff * robot_state_multiplier * multiplier
+
+        # reward for passing the intersection
+        reward += 1 * robot_state_multiplier * multiplier
+
+        return reward
+
+    @staticmethod
+    def get_state_multiplier(robot):
+        if robot.current_state == 'delivering_pod':
+            return 1.5
+        elif robot.current_state == 'returning_pod':
+            return 1
+        elif robot.current_state == 'taking_pod':
+            return 0.75
+        else:
+            return 1
 
     def update_allowed_direction(self, intersection_id, direction, tick):
         intersection: Intersection = self.find_intersection_by_id(intersection_id)

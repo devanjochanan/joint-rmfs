@@ -40,7 +40,7 @@ class Inventory(Universe):
         self.order_manager = OrderManager()
         self.next_process_tick = 0
         self.intersection_manager = IntersectionManager()
-        self.update_intersection_using_RL = False
+        self.update_intersection_using_RL = True
 
         super().__init__()
 

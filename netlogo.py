@@ -366,8 +366,13 @@ def draw_storage_from_generated_file(universe: Inventory):
                     intersection.approaching_path_coordinates.append(each_approaching_coordinate)
 
                 if obj.pos_x == 15:
-                    intersection.set_RL_model_name(intersection.intersection_id)
                     intersection.use_reinforcement_learning = True
+                    if obj.pos_y == 0:
+                        intersection.set_RL_model_name("BOTTOM")
+                    elif obj.pos_y == 30:
+                        intersection.set_RL_model_name("TOP")
+                    else:
+                        intersection.set_RL_model_name("MIDDLE")
 
                 universe.intersection_manager.add_intersection(intersection)
 
