@@ -299,6 +299,9 @@ class Robot(Object):
 
             self.idle_time = 0
 
+        if not self.route_stop_points:
+            return
+
         next_destination_coordinate = self.route_stop_points[0]
 
         if isinstance(next_destination_coordinate, Heading):
