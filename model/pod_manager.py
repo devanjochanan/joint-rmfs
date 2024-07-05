@@ -13,6 +13,7 @@ class PodManager:
         self.id_to_pod = {}
         self.sku_to_pods = {}
         self.coordinate_to_pods = {}
+        self.skus_data = {}
 
     def add_pod(self, pod: Pod):
         self.pods.append(pod)
@@ -29,12 +30,34 @@ class PodManager:
             self.sku_to_pods[sku] = []
         self.sku_to_pods[sku].append(pod)
 
+    def add_sku_data(self,sku,current_qty,max_qty):
+        sku_key = sku
+
+        if sku_key not in self.skus_data:
+            self.skus_data[sku_key] = {
+                'current_global_qty': current_qty,
+                'max_global_qty': max_qty,
+                'global_inv_level': current_qty / max_qty
+            }
+        else:
+            self.skus_data[sku_key]['current_global_qty'] += current_qty
+            self.skus_data[sku_key]['max_global_qty'] += max_qty
+            self.skus_data[sku_key]['global_inv_level'] = self.skus_data[sku_key]['current_global_qty'] / self.skus_data[sku_key]['max_global_qty']
+
+    def reduce_sku_data(self,sku,quantity):
+         if sku in self.skus_data:
+            self.skus_data[sku]['current_global_qty'] =- quantity
+            self.skus_data[sku]['global_inv_level'] = self.skus_data[sku]['current_global_qty'] / self.skus_data[sku]['max_global_qty']
+
+    def get_all_skus_data(self):
+        return self.skus_data
+
     def get_available_pod(self, sku: str):
         if sku in self.sku_to_pods:
             for pod in self.sku_to_pods[sku]:
                 if pod.is_idle is True:
                     return pod
-  
+
     def get_available_pod_similarity(self, sku: str, skus_in_station, station_coordinate):
         # If SKU is available
         sku_in_station_list = [i for i in skus_in_station]
@@ -186,3 +209,4 @@ class PodManager:
 
     def get_pod_by_id(self, pod_id):
         return self.id_to_pod.get(pod_id, None)
+
