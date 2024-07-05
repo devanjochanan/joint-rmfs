@@ -274,33 +274,6 @@ def initRobots(universe: Inventory):
             robots.append(robot)
             used_coordinates.add((x, y))
 
-    # robots = [
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 9},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 9},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     {'velocity': 0, 'heading': 0, 'x': 42, 'y': 5},
-    #     # {'velocity': 0, 'heading': 270, 'x': 28, 'y': 22},
-    #     # {'velocity': 0, 'heading': 180, 'x': 45, 'y': 27},
-    #     # {'velocity': 0, 'heading': 0, 'x': 48, 'y': 11},
-    #     # {'velocity': 0, 'heading': 0, 'x': 46, 'y': 3},
-    # ]
-
     # Iterate through each robot in the list to initialize and add to the universe
     for r in robots:
         # Create a new Robot instance
@@ -769,6 +742,9 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
 def setup():
     try:
         # Initialize the simulation universe
+        assignment_path = "assign_order.csv"
+        if os.path.exists(assignment_path):
+            os.remove(assignment_path)
         universe = Inventory()
 
         # Populate the universe with objects and connections

@@ -297,10 +297,10 @@ class Inventory(Universe):
                 # available_pod: Pod = self.pod_manager.get_available_pod(sku) 
                 
                 # This is Emily's pod picking
-                available_pod: Pod = self.pod_manager.get_available_pod_similarity(sku, skus_in_station, station_coordinate) 
+                # available_pod: Pod = self.pod_manager.get_available_pod_similarity(sku, skus_in_station, station_coordinate) 
                 
                 # This is Jhen's pod picking
-                # available_pod: Pod = self.pod_manager.get_available_pod_inventory(sku, skus_in_station_dict, station_coordinate, robots_location) 
+                available_pod: Pod = self.pod_manager.get_available_pod_inventory(sku, skus_in_station_dict, station_coordinate, robots_location) 
                 if available_pod is None:
                     continue
                 quantity_to_take = order.get_quantity_left_for_sku(sku)

@@ -111,10 +111,7 @@ class PodManager:
                     distance_to_robot = self._distance_pod_to_robot(pod_coordinate, robots_coordinate)
                     # distance_to_robot = 1
                     # Inventory Score
-                    # print("sku in dict, gabisa keknya")
-                    # print(skus_in_station_dict)
                     inventory_score = self._count_fulfillment(skus_in_station_dict, pod.skus)
-                    # inventory_score = 1
                     pod_available_for_multiple_items = pd.concat([pod_available_for_multiple_items, 
                                                                 pd.DataFrame([[pod.pod_id, similarity_score,inventory_score, distance_to_station, distance_to_robot]], 
                                                                                                             columns=["pod_id", "similarity_score", "inventory_score","distance_to_station","distance_to_robot"])], ignore_index=True) 
@@ -148,8 +145,11 @@ class PodManager:
             distance = manhattan_distances(pod_coordinate, robot_coordinate)[0][0]
             distances.append(distance)
         
-        sorted_robot_distances = sorted(distances, key=lambda x: x[1])
-        distance_to_robot_score = sorted_robot_distances[0]
+        distance_to_robot_score = 100
+        
+        if len(distance) > 0:
+            sorted_robot_distances = sorted(distances, key=lambda x: x[1])
+            distance_to_robot_score = sorted_robot_distances[0]
         
         return distance_to_robot_score
     
