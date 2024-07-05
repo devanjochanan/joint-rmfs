@@ -253,7 +253,7 @@ def initStation(universe: Inventory):
 
 def initRobots(universe: Inventory):
 
-    num_robot = 20
+    num_robot = 20 # Number of robots
     
     robots = []
     x_range = (5,43)
@@ -295,11 +295,13 @@ def initRobots(universe: Inventory):
 
 
 def draw_layout(universe):
-    # Check if pod.csv exists in the current directory
+    # Check if generated_pod.csv exists in the current directory
     if os.path.exists('generated_pod.csv'):
+        print("Generated pod already exist, delete generated_pod.csv if you want to change")
         draw_layout_from_generated_file(universe)
     else:
         layout = Layout()
+        # This one to generate new configuration
         layout.generate()
         draw_layout_from_generated_file(universe)
 
@@ -389,34 +391,27 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
         assign_order_df['status'] = -3
         assign_order_df.to_csv('assign_order.csv', index=False)      
     
+    unique_orders = set()
     for index, row in data_backlog_order_df.iterrows():
         order_dum = row['order_id']
-        if(temp != order_dum or order_dum == -1):
-            # if(order_dum == -1):
-            #     print("test")
-            if(temp != float('inf')):
-                
-                new_order.station_id = station_id
-                print("order: ", new_order.order_id)
-                print("station: ", station_id)
-                assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'assigned_station'] = station_id
-                if(new_order.station_id is not None):
-                    assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'status'] = -1
-                assign_order_df.to_csv('assign_order.csv', index=False)  
-                
-                if station_id is not None:
-                    station = universe.station_manager.get_station_by_id(station_id)
-                    station.add_order(new_order.order_id, new_order)
-
-                    universe.order_manager.add_order(new_order)
-
-            new_order = Order(order_dum, 0)
-            temp = order_dum
- 
-        new_order.add_sku(row['item_id'], row['item_quantity'])
         station_id = order_dum_to_cluster[order_dum]
+        
+        if station_id is not None and order_dum not in unique_orders:
+            unique_orders.add(order_dum)
+            new_order = Order(order_dum, station_id)
+            print("order: ", new_order.order_id)
+            print("station: ", station_id)
+            
+            assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'assigned_station'] = station_id
+            assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'status'] = -1
+            
+            assign_order_df.to_csv('assign_order.csv', index=False)
+            
+            station = universe.station_manager.get_station_by_id(station_id)
+            station.add_order(new_order.order_id, new_order)
+            
+            universe.order_manager.add_order(new_order)
     
-  
     return station_capacity_df
 
 def assign_backlog_orders(universe: Inventory):
@@ -716,39 +711,16 @@ def add_all_direction_paths(graph, obj_key, weight):
 
 
 def assign_skus_to_pods(pod_manager):
-    # Check if pod.csv exists in the current directory
+    # Check if pods.csv exists in the current directory
     if os.path.exists('pods.csv'):
         assign_skus_to_pods_from_file(pod_manager)
     else:
+        # Fungsi generate pods.csv
         PodGenerator(pod_manager).generate()
         assign_skus_to_pods_from_file(pod_manager)
 
 
 def assign_skus_to_pods_from_file(pod_manager: PodManager):
-
-    # df = pd.read_csv(pods_csv_path)
-    # item_in_pod = df[['item', 'qty', 'max_qty']]
-
-    # total_current_qty_df = item_in_pod.groupby('item')['qty'].sum().reset_index()
-    # total_current_qty_df.rename(columns={'qty': 'total_current_qty_in_WH'})
-
-    # total_max_qty_df = item_in_pod.groupby('item')['max_qty'].sum()().reset_index()
-    # total_max_qty_df.rename(columns={'qty': 'total_max_qty_in_WH'})
-    # merged_df = pd.merge(total_current_qty_df, total_max_qty_df, on='item')
-
-    # sku_objects = []
-
-    # for _, row in merged_df.iterrows():
-    #     item_id = row['item']
-    #     total_current_qty = row['total_current_qty']
-    #     total_max_qty = row['total_max_qty_in_WH']
-    #     global_inventory_level = total_current_qty / total_max_qty
-
-    #     sku = SKU(sku_id=item_id, global_inv_level=global_inventory_level, pod_inv_level=0)
-    #     sku.current_global_qty = total_current_qty
-    #     sku.max_global_qty = total_max_qty
-    #     sku_objects.append(sku)
-
     with open('pods.csv', mode='r', newline='') as file:
         reader = csv.DictReader(file)
         for row in reader:
@@ -793,28 +765,26 @@ def setup():
             os.remove(assignment_path)
         universe = Inventory()
 
-        
-
         config_orders(
         initial_order=20, 
-        total_requested_item=500, 
-        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1},
-        quantity_range=[1, 12],
-        order_cycle_time=100,
+        total_requested_item=500, # Number of SKU in warehouse
+        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
+        quantity_range=[1, 12], # Quantity range of number of SKU in each order
+        order_cycle_time=100,  # Number of order per hour
         order_period_time=2,
-        order_start_arrival_time=5,
+        order_start_arrival_time=5, # Start time of order arrival  
         date=1,
         sim_ver=1,        
         dev_mode=False)
         
         config_orders(
-        initial_order=50, 
-        total_requested_item=500, 
-        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1},
-        quantity_range=[1, 12],
-        order_cycle_time=100,
-        order_period_time=3,
-        order_start_arrival_time=5,  
+        initial_order=50, # Initial order in backlog
+        total_requested_item=500, # Number of SKU in warehouse
+        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
+        quantity_range=[1, 12], # Quantity range of number of SKU in each order
+        order_cycle_time=100, # Number of order per hour
+        order_period_time=3, # the total hours
+        order_start_arrival_time=5, # Start time of order arrival
         date=1,  
         sim_ver=2, 
         dev_mode=True)

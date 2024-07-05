@@ -18,7 +18,7 @@ class Station(Object):
         self.long_path: List[NetLogoCoordinate] = []
         self.order_ids: List[int] = []
         self.orders: List[Order] = []
-        self.max_orders = 6
+        self.max_orders = 6 # Picking station capacity
         self.short_path_threshold = 4
         self.robot_ids = {}
         self.is_using_short_route = True

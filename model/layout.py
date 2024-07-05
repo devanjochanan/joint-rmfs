@@ -16,7 +16,7 @@ class Layout(object):
         self.order_replenishment_total = 2
         self.horizontal_direction_switch = False
         self.vertical_direction_switch = False
-        self.total_pods_active = 300
+        self.total_pods_active = 300 # Number of pods
         self.total_charging_stations = 10
 
     def generate(self):

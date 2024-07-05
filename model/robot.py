@@ -714,10 +714,9 @@ class Robot(Object):
                                                       self.heading, 1, include_self=False)
             nodes_to_avoid.append(self.coordinate_to_string_key(*avoid_coord[0]))
 
+
         robot_objects = self.universe.landscape.get_robot_object()
         robots_location = [[info['x'], info['y']] for info in robot_objects.values() if info['state'] != 'station_processing']
-        # print("Robot location")
-        # print(robots_location)
         robots_idle_time = []
         robot_list = []
         if len(robots_location) > 0:
@@ -729,10 +728,31 @@ class Robot(Object):
         zones = Zone(robots_location, self.universe.get_warehouse_size(), methods="default")
         penalties = zones.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
         zone_boundary = zones.get_boundary()
-      
-        # node_routes = graph.dijkstra(start, end, nodes_to_avoid)
-        node_routes = graph.dijkstra_modified(start,end, penalties, zone_boundary, nodes_to_avoid)
+
+        node_routes = None
+        if self.universe.zoning:
+            zone_boundary, penalties = self.create_zone()
+            node_routes = graph.dijkstra_modified(start,end, penalties, zone_boundary, nodes_to_avoid)
+        else:
+            node_routes = graph.dijkstra(start, end, nodes_to_avoid) # This one is baseline
+        
         self.setPath(self._transformRouteToList(node_routes))
+
+    def create_zone(self):
+        robot_objects = self.universe.landscape.get_robot_object()
+        robots_location = [[info['x'], info['y']] for info in robot_objects.values() if info['state'] != 'station_processing']
+        robots_idle_time = []
+        robot_list = []
+        if len(robots_location) > 0:
+            robot_list = self.get_robots_by_coords(robots_location)
+
+        for robot in robot_list:
+            robots_idle_time.append(robot.idle_time)
+        
+        zones = Zone(robots_location, self.universe.get_warehouse_size(), methods="default")
+        penalties = zones.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
+        zone_boundary = zones.get_boundary()
+        return zone_boundary, penalties
 
     # utility functions
     @staticmethod

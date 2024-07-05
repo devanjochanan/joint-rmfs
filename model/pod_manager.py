@@ -58,10 +58,10 @@ class PodManager:
                 if pod.is_idle is True:
                     return pod
 
-    def get_available_pod_similarity(self, sku: str, skus_in_station, station_coordinate):
+    def get_available_pod_similarity(self, sku: str, skus_in_station, station_coordinate, robots_coordinate):
         # If SKU is available
         sku_in_station_list = [i for i in skus_in_station]
-        pod_available_for_multiple_items = pd.DataFrame(columns=["pod_id", "similarity_score", "distance_to_station"])
+        pod_available_for_multiple_items = pd.DataFrame(columns=["pod_id", "similarity_score", "distance_to_station", "distance_to_robot"])
         
         station_coordinate = [station_coordinate.x, station_coordinate.y]
 
@@ -82,12 +82,14 @@ class PodManager:
                     
                     pod_coordinate = [pod.coordinate.x, pod.coordinate.y]
                     distance = manhattan_distances([pod_coordinate],[station_coordinate])[0][0]
+                    distance_to_robot = self._distance_pod_to_robot(pod_coordinate, robots_coordinate)
+                    
                     pod_available_for_multiple_items = pd.concat([pod_available_for_multiple_items, 
-                                                                pd.DataFrame([[pod.pod_id, similarity_score, distance]], 
+                                                                pd.DataFrame([[pod.pod_id, similarity_score, distance, distance_to_robot]], 
                                                                                                             columns=["pod_id", 
                                                                                                                     "similarity_score", 
-                                                                                                                    "distance_to_station"])], ignore_index=True) 
-            pod_available_for_multiple_items["distance_score"] = pod_available_for_multiple_items["distance_to_station"].max() - pod_available_for_multiple_items["distance_to_station"]
+                                                                                                                    "distance_to_station", "distance_to_robot"])], ignore_index=True) 
+            pod_available_for_multiple_items["distance_score"] = pod_available_for_multiple_items["distance_to_station"].max() - pod_available_for_multiple_items["distance_to_station"] + pod_available_for_multiple_items["distance_to_robot"].max() - pod_available_for_multiple_items["distance_to_robot"]
             pod_available_for_multiple_items.sort_values(by=["similarity_score", "distance_score"], ascending=[False, False], inplace=True)
             pod_available_for_multiple_items.reset_index(drop=True, inplace=True)
             pod_available_for_multiple_items = pod_available_for_multiple_items[pod_available_for_multiple_items["similarity_score"] > 0]
@@ -140,7 +142,8 @@ class PodManager:
                                                                                                             columns=["pod_id", "similarity_score", "inventory_score","distance_to_station","distance_to_robot"])], ignore_index=True) 
             
             pod_available_for_multiple_items["station_distance_score"] = pod_available_for_multiple_items["distance_to_station"].max() - pod_available_for_multiple_items["distance_to_station"]
-            pod_available_for_multiple_items["cost"] = (pod_available_for_multiple_items["station_distance_score"] + pod_available_for_multiple_items["distance_to_robot"]) * pod_available_for_multiple_items["similarity_score"] * (len(sku_in_station_list) / pod_available_for_multiple_items["inventory_score"]) 
+            pod_available_for_multiple_items["robot_distance_score"] = pod_available_for_multiple_items["distance_to_robot"].max() - pod_available_for_multiple_items["distance_to_robot"]
+            pod_available_for_multiple_items["cost"] = (pod_available_for_multiple_items["station_distance_score"] + pod_available_for_multiple_items["robot_distance_score"]) * pod_available_for_multiple_items["similarity_score"] * (len(sku_in_station_list) / pod_available_for_multiple_items["inventory_score"]) 
             pod_available_for_multiple_items.sort_values(by=["cost"], ascending=[True], inplace=True)
             pod_available_for_multiple_items.reset_index(drop=True, inplace=True)
             pod_available_for_multiple_items = pod_available_for_multiple_items[pod_available_for_multiple_items["similarity_score"] > 0]

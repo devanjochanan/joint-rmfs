@@ -316,67 +316,6 @@ def gen_order(order_cycle_time,
         print("Please provide a total SKU that is equal to or less than the total items in the items.csv")
         return None
 
-# def config_backlogs(
-#         initial_order=50, 
-#         total_requested_item=500, 
-#         date=1,
-#         dev_mode=False
-#         ):
-        
-#     ## This function only for simulation versi 1
-
-#     items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}
-#     quantity_range=[1, 12]
-
-#     print("Generate backlog orders...")\
-    
-#     backlogs_path = os.path.join(parent_directory, 'generated_backlog.csv')
-#     if not os.path.exists(backlogs_path):
-
-#         print("    Generated backlog orders is not found. We will generate backlog orders.")
-#         backlogs = gen_backlog(initial_order=initial_order, total_requested_item=total_requested_item, 
-#                                items_orders_class_configuration=items_orders_class_configuration,
-#                                quantity_range=quantity_range,
-#                                dev_mode=dev_mode)
-
-#     else:
-#         backlogs = pd.read_csv(backlogs_path, index_col=False)
-#         backlogs_id_list = backlogs["order_id"].unique().tolist()
-        
-#         if initial_order == len(backlogs_id_list):
-#             print("    Initial order is the same as the number of orders in the backlog file.")
-#             print("    We will use the existing items file.")
-        
-#         else:
-#             print("    Initial order is different from the number of orders in the backlog file.")
-#             print("    We will re-generate backlog orders using the new intial order.")
-#             backlogs = gen_backlog(initial_order=initial_order, total_requested_item=total_requested_item, 
-#                                     items_orders_class_configuration=items_orders_class_configuration,
-#                                     quantity_range=quantity_range,
-#                                     dev_mode=dev_mode)
-    
-
-#     orders_path = os.path.join(parent_directory, 'orders.csv')
-#     orders = pd.read_csv(orders_path, names=backlogs.columns, index_col=False)
-    
-#     if orders.shape[0] > 0:
-#         backlogs["order_id"] = np.arange(orders["order_id"].max() + 1, orders["order_id"].max() + 1 + backlogs.shape[0])
-#         orders = pd.concat([orders, backlogs], axis=0)
-#         orders.reset_index(drop=True, inplace=True)   
-#         orders.to_csv(orders_path, index=False, header=False)     
-#     else:
-#         backlogs.to_csv(orders_path, index=False, header=False)
-#     print("    Generate backlog orders is done. If you want to reconfigure the backlog orders, please delete the generated_backlog.csv file.")
-
-
-#     database_order_path = os.path.join(parent_directory, 'generated_database_order.csv')
-#     database_order = pd.read_csv(database_order_path, index_col=False)
-#     database_order = database_order.loc[database_order['date'] == date]
-
-#     nextordertime = database_order['time_gen'].min()
-#     result = nextordertime
-
-#     return result
 
 def config_orders(initial_order, total_requested_item, items_orders_class_configuration,quantity_range,order_cycle_time,order_period_time,order_start_arrival_time,date,sim_ver,dev_mode):
     if sim_ver == 1:
@@ -444,7 +383,7 @@ def config_orders(initial_order, total_requested_item, items_orders_class_config
             print("    If you want to reconfigure the orders, please delete the generated_order.csv file.")  
     
         if backlog_generated:
-            csv_files = ['generated_order.csv', 'generated_backlog.csv']
+            csv_files = ['generated_backlog.csv','generated_order.csv']
             dataframes = [pd.read_csv(file) for file in csv_files]
             merged_df = pd.concat(dataframes, ignore_index=True)
             merged_df['sequence_id'] = range(1, len(merged_df) + 1)
