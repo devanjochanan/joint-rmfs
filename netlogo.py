@@ -19,6 +19,8 @@ from engine.object import Object
 from model.intersection import Intersection
 from model.inventory import Inventory
 from model.order import Order
+from model.order_generator import *
+from model.replenishment import *
 from model.pod import Pod
 from model.pod_manager import PodManager
 from model.robot import Robot
@@ -374,7 +376,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
     temp = float('inf')
     new_order = None
  
-    orders_df = pd.read_csv('generated_order_new.csv')
+    orders_df = pd.read_csv('generated_order.csv')
     
     file_path = 'assign_order.csv'
     if os.path.exists(file_path):
@@ -419,7 +421,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
 
 def assign_backlog_orders(universe: Inventory):
     # open file order
-    order_path = "generated_order_new.csv"
+    order_path = "generated_order.csv"
     data_order_df = pd.read_csv(order_path)
 
     # filter order_id < 0
@@ -723,6 +725,30 @@ def assign_skus_to_pods(pod_manager):
 
 
 def assign_skus_to_pods_from_file(pod_manager: PodManager):
+
+    # df = pd.read_csv(pods_csv_path)
+    # item_in_pod = df[['item', 'qty', 'max_qty']]
+
+    # total_current_qty_df = item_in_pod.groupby('item')['qty'].sum().reset_index()
+    # total_current_qty_df.rename(columns={'qty': 'total_current_qty_in_WH'})
+
+    # total_max_qty_df = item_in_pod.groupby('item')['max_qty'].sum()().reset_index()
+    # total_max_qty_df.rename(columns={'qty': 'total_max_qty_in_WH'})
+    # merged_df = pd.merge(total_current_qty_df, total_max_qty_df, on='item')
+
+    # sku_objects = []
+
+    # for _, row in merged_df.iterrows():
+    #     item_id = row['item']
+    #     total_current_qty = row['total_current_qty']
+    #     total_max_qty = row['total_max_qty_in_WH']
+    #     global_inventory_level = total_current_qty / total_max_qty
+
+    #     sku = SKU(sku_id=item_id, global_inv_level=global_inventory_level, pod_inv_level=0)
+    #     sku.current_global_qty = total_current_qty
+    #     sku.max_global_qty = total_max_qty
+    #     sku_objects.append(sku)
+
     with open('pods.csv', mode='r', newline='') as file:
         reader = csv.DictReader(file)
         for row in reader:
@@ -737,6 +763,26 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             pod: Pod = pod_manager.get_pod_by_id(pod_id)
             pod.add_sku(sku, limit_qty=limit_qty, current_qty=current_qty, threshold=threshold)
             pod_manager.add_sku_to_pod(sku, pod)
+             
+            # Add SKU Data of level
+            pod_manager.add_sku_data(sku,current_qty,limit_qty)
+
+    csv_file = 'skus_data.csv'
+    if os.path.exists(csv_file):
+        os.remove(csv_file)
+    skus_data = pod_manager.get_all_skus_data()
+    
+    with open(csv_file, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['item_id', 'current_global_qty', 'max_global_qty', 'global_inv_level'])
+        for key, value in skus_data.items():
+            writer.writerow([key, value['current_global_qty'], value['max_global_qty'], value['global_inv_level']])
+
+    print(f"Data has been saved to {csv_file}")
+    df = pd.read_csv(csv_file)
+    df_sorted = df.sort_values(by='item_id')
+    sorted_csv_file = 'sorted_skus_data.csv'
+    df_sorted.to_csv(sorted_csv_file, index=False)
 
 
 def setup():
@@ -746,6 +792,33 @@ def setup():
         if os.path.exists(assignment_path):
             os.remove(assignment_path)
         universe = Inventory()
+
+        
+
+        config_orders(
+        initial_order=20, 
+        total_requested_item=500, 
+        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1},
+        quantity_range=[1, 12],
+        order_cycle_time=100,
+        order_period_time=2,
+        order_start_arrival_time=5,
+        date=1,
+        sim_ver=1,        
+        dev_mode=False)
+        
+        config_orders(
+        initial_order=50, 
+        total_requested_item=500, 
+        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1},
+        quantity_range=[1, 12],
+        order_cycle_time=100,
+        order_period_time=3,
+        order_start_arrival_time=5,  
+        date=1,  
+        sim_ver=2, 
+        dev_mode=True)
+
 
         # Populate the universe with objects and connections
         draw_layout(universe)

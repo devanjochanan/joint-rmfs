@@ -165,6 +165,7 @@ class Inventory(Universe):
             
             # This one is for replenishment
             pod.pick_sku(sku, quantity)
+            # self.pod_manager.reduce_sku_data(sku, quantity)
 
             assign_order_df = pd.read_csv('assign_order.csv')
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
@@ -178,6 +179,7 @@ class Inventory(Universe):
                 station.remove_order(order_id,order)
                 self.insert_finished_order_to_csv(order)
 
+        #trigger Check replenishment
         job.is_finished = True
 
     def insert_finished_order_to_csv(self, order: Order):
@@ -188,7 +190,7 @@ class Inventory(Universe):
         self.write_to_csv("order-finished.csv", header, data)
 
     def find_new_orders(self):
-        orders_df = pd.read_csv('generated_order_new.csv')
+        orders_df = pd.read_csv('generated_order.csv')
 
         file_path = 'assign_order.csv'
         if os.path.exists(file_path):
