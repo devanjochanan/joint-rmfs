@@ -392,25 +392,37 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
         assign_order_df.to_csv('assign_order.csv', index=False)      
     
     unique_orders = set()
+    order_sku_map = {}
+    new_order = None
     for index, row in data_backlog_order_df.iterrows():
         order_dum = row['order_id']
         station_id = order_dum_to_cluster[order_dum]
-        
+       
         if station_id is not None and order_dum not in unique_orders:
             unique_orders.add(order_dum)
-            new_order = Order(order_dum, station_id)
-            print("order: ", new_order.order_id)
-            print("station: ", station_id)
+            new_order = Order(order_dum, 0)
+            # print("order: ", new_order.order_id)
+            # print("station: ", station_id)
             
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'assigned_station'] = station_id
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'status'] = -1
             
             assign_order_df.to_csv('assign_order.csv', index=False)
-            
+            new_order.assign_station(station_id)
             station = universe.station_manager.get_station_by_id(station_id)
-            station.add_order(new_order.order_id, new_order)
-            
             universe.order_manager.add_order(new_order)
+            
+            order_sku_map[order_dum] = 0
+
+        if order_dum in unique_orders:
+            order = universe.order_manager.get_order_by_id(order_dum)
+            order.add_sku(row['item_id'], row['item_quantity'])
+            order_sku_map[order_dum] += 1
+        if order_dum in order_sku_map:
+            order = universe.order_manager.get_order_by_id(order_dum)
+            expected_sku_count = data_backlog_order_df[data_backlog_order_df['order_id'] == order_dum].shape[0]
+            if order_sku_map[order_dum] == expected_sku_count:
+                station.add_order(order_dum, order)
     
     return station_capacity_df
 
@@ -428,9 +440,10 @@ def assign_backlog_orders(universe: Inventory):
     for station in universe.station_manager.stations:
         id = station.station_id
         cap = station.max_orders - len(station.order_ids)
-
-        station_id_cap_df = station_id_cap_df.append({'id_station': id, 'capacity_left': cap}, ignore_index=True)
-
+        
+        new_row = pd.DataFrame({'id_station': [id], 'capacity_left': [cap]})
+        # station_id_cap_df = station_id_cap_df.append({'id_station': id, 'capacity_left': cap}, ignore_index=True)
+        station_id_cap_df = pd.concat([station_id_cap_df, new_row], ignore_index=True)
     is_picker = station_id_cap_df['id_station'].str.startswith('picker')
 
     station_id_cap_df = station_id_cap_df[is_picker]

@@ -67,8 +67,7 @@ class PodManager:
 
         if sku in self.sku_to_pods:
             for pod in self.sku_to_pods[sku]:
-                similarity_score = 0
-
+                similarity_score = 1
                 if pod.is_idle is True:
                     pod_skus = [i for i in pod.skus]
                     pod_skus_in_station_skus_mask = np.isin(sku_in_station_list, pod_skus)
@@ -159,23 +158,14 @@ class PodManager:
         return
     
     def _distance_pod_to_robot(self, pod_coordinate, robots_coordinate):
-        pod_coordinate = [pod_coordinate]
-        distances = []
+        pod_coordinate = np.array(pod_coordinate).reshape(1, -1)
         distance_to_robot_score = float('inf')
-        
+        robots_coordinate = np.array(robots_coordinate)
         if len(robots_coordinate) == 0:
             return distance_to_robot_score
 
-        for robot in robots_coordinate:
-            robot_coordinate = [robot]
-            distance = manhattan_distances(pod_coordinate, robot_coordinate)[0][0]
-            distances.append(distance)
-        
-        distance_to_robot_score = 100
-        
-        if len(distance) > 0:
-            sorted_robot_distances = sorted(distances, key=lambda x: x[1])
-            distance_to_robot_score = sorted_robot_distances[0]
+        distances = manhattan_distances(pod_coordinate, robots_coordinate)
+        distance_to_robot_score = np.argmin(distances)
         
         return distance_to_robot_score
     

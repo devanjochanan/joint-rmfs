@@ -120,8 +120,6 @@ class Inventory(Universe):
         pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
         for order_id, sku, quantity in job.orders:
             order: Order = self.order_manager.get_order_by_id(order_id)
-            print(f"Order id in process {order_id}")
-            print("The order are: ", order.skus)
             order.deliver_quantity(sku, quantity)
             
             # This one is for replenishment
@@ -236,12 +234,11 @@ class Inventory(Universe):
                     assign_order_df.loc[assign_order_df['order_id'] == order.order_id, 'status'] = -1
                 else:
                     break
-
+                
             if order.process_start_time <= 0:
                 order.start_processing(int(self._tick))
 
             assign_order_df.to_csv('assign_order.csv', index=False)
-
             
             # Get the station assigned to this order and orders in that station
             order_station = self.station_manager.get_station_by_id(order.station_id)
@@ -249,10 +246,8 @@ class Inventory(Universe):
 
             # For Emily {A:10, B:5, C:12}
             skus_in_station = order_station.get_skus_in_station()
-
             # For Jhen {A:[5,5], B:[5], C:[3,4,5]}
             skus_in_station_dict = order_station.get_skus_in_station_dict()
-            print(f"order id {order.order_id} has {order.skus.keys()}")
             station_coordinate = order_station.coordinate
             for sku in order.get_remaining_skus():
                 # This is the baseline
@@ -260,7 +255,6 @@ class Inventory(Universe):
                 
                 # This is Emily's pod picking
                 available_pod: Pod = self.pod_manager.get_available_pod_similarity(sku, skus_in_station, station_coordinate, robots_location) 
-                
                 # This is Jhen's pod picking
                 # available_pod: Pod = self.pod_manager.get_available_pod_inventory(sku, skus_in_station_dict, station_coordinate, robots_location) 
                 if available_pod is None:
@@ -283,7 +277,6 @@ class Inventory(Universe):
 
                 job = RobotJob(available_pod.coordinate, station_id=order.station_id)
                 self.pod_manager.mark_pod_not_available(available_pod.coordinate)
-                # print(f"sku {sku} quantity {quantity_to_take}")
 
                 job.add_picking_task(order.order_id, sku, quantity_to_take) # Simple kan disini ya beb
                 pod_skus = [i for i in available_pod.skus]
