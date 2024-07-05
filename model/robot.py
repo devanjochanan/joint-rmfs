@@ -726,12 +726,12 @@ class Robot(Object):
         for robot in robot_list:
             robots_idle_time.append(robot.idle_time)
 
-        # zones = Zone(robots_location, self.universe.get_warehouse_size(), methods="affinity_propagation")
-        # penalties = zones.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
-        # zone_boundary = zones.get_boundary()
+        zones = Zone(robots_location, self.universe.get_warehouse_size(), methods="default")
+        penalties = zones.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
+        zone_boundary = zones.get_boundary()
       
-        node_routes = graph.dijkstra(start, end, nodes_to_avoid)
-        # node_routes = graph.dijkstra_modified(start,end, penalties, zone_boundary, nodes_to_avoid)
+        # node_routes = graph.dijkstra(start, end, nodes_to_avoid)
+        node_routes = graph.dijkstra_modified(start,end, penalties, zone_boundary, nodes_to_avoid)
         self.setPath(self._transformRouteToList(node_routes))
 
     # utility functions

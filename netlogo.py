@@ -433,7 +433,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
                     station = universe.station_manager.get_station_by_id(station_id)
                     station.add_order(new_order.order_id, new_order)
 
-                universe.order_manager.add_order(new_order)
+                    universe.order_manager.add_order(new_order)
 
             new_order = Order(order_dum, 0)
             temp = order_dum

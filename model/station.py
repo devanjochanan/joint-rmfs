@@ -22,8 +22,8 @@ class Station(Object):
         self.short_path_threshold = 4
         self.robot_ids = {}
         self.is_using_short_route = True
-        self.skus = {}
-        self.skus_in_station = {}
+        self.skus = {} # {A:15, B: 10}
+        self.skus_in_station = {} # {A:[5,10], B:[10]}
         self.incoming_pod: List[int] = []
         super().__init__()
 
@@ -36,23 +36,17 @@ class Station(Object):
                 self.skus_in_station[sku] = []
             self.skus_in_station[sku].append(value)
 
-    def subtract_sku_in_station(self,sku, value):
-        self.skus_in_station[sku].remove(value)
-        if len(self.skus_in_station[sku]) == 0:
-            self.skus_in_station.pop(sku)
-
+    def reduce_sku_from_station(self, sku, value):
+        if sku in self.skus_in_station and value in self.skus_in_station[sku]:
+            self.skus_in_station[sku].remove(value)
+            if len(self.skus_in_station[sku]) == 0:
+                self.skus_in_station.pop(sku)
 
     def remove_order(self, order_id: int, order: Order):
         if order_id in self.order_ids:
             self.order_ids.remove(order_id)
         if order in self.orders:
             self.orders.remove(order)
-            for sku, value in order.get_remaining_skus().items():
-                self.skus_in_station[sku].pop(value)
-                if len(self.skus_in_station[sku]) == 0:
-                    self.skus_in_station.pop(sku)
-    
-    
 
     def add_pod(self, pod):
         self.incoming_pod.append(pod)
@@ -111,7 +105,6 @@ class Station(Object):
         for sku, value in self.skus_in_station.items():
             self.skus[sku] = sum(value)
         return self.skus
-    
     
     def get_orders_in_station(self) -> Optional[List[Order]]: 
         return self.orders
