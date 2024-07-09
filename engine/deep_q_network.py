@@ -28,11 +28,6 @@ class DeepQNetwork:
         self.model.to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
-        if torch.cuda.is_available():
-            print("PyTorch is using GPU")
-        else:
-            print("PyTorch is using CPU")
-
     def load_model(self):
         """Load model from file if exists."""
         model_path = f"saved_models/{self.model_name}.pt"
