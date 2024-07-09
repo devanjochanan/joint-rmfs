@@ -70,11 +70,12 @@ class IntersectionManager:
 
     def insert_robot_intersection_information_to_csv(self, intersection, action, tick):
         previous_allowed_direction = intersection.allowed_direction
-        previous_allowed_direction = previous_allowed_direction if previous_allowed_direction is not None else "None"
         new_allowed_direction = intersection.get_allowed_direction_by_code(action)
-        new_allowed_direction = new_allowed_direction if new_allowed_direction is not None else "None"
         if previous_allowed_direction == new_allowed_direction:
             return
+
+        previous_allowed_direction = previous_allowed_direction if previous_allowed_direction is not None else "None"
+        new_allowed_direction = new_allowed_direction if new_allowed_direction is not None else "None"
 
         header = ["intersection_id", "previous_action", "action_decided", "tick_changed", "duration_since_last_change"]
         data = [
