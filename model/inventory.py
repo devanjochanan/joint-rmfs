@@ -158,6 +158,7 @@ class Inventory(Universe):
 
     def finish_orders_in_job(self, job: RobotJob):
         pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
+        sku_need_replenished = {}
         for order_id, sku, quantity in job.orders:
             order: Order = self.order_manager.get_order_by_id(order_id)
             order.deliver_quantity(sku, quantity)
@@ -167,7 +168,16 @@ class Inventory(Universe):
             # station.subtract_sku_in_station(sku, quantity)
 
             pod.pick_sku(sku, quantity)
-            # self.pod_manager.reduce_sku_data(sku, quantity)
+
+            # Check for SKU Replenishment
+            self.pod_manager.reduce_sku_data(sku, quantity)
+            sku, replenished_status = self.pod_manager.is_sku_need_replenished(sku, 0.8)
+
+            # SKU Replenished Triggered
+            if(replenished_status == True): sku_need_replenished[sku] = True
+
+            # Check for pod Replenishment
+            replenished_pod = self.pod_manager.get_pod_need_replenished_by_sku(sku)
 
             assign_order_df = pd.read_csv('assign_order.csv')
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1

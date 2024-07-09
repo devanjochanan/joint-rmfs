@@ -752,30 +752,6 @@ def assign_skus_to_pods(pod_manager):
 
 
 def assign_skus_to_pods_from_file(pod_manager: PodManager):
-
-    # df = pd.read_csv(pods_csv_path)
-    # item_in_pod = df[['item', 'qty', 'max_qty']]
-
-    # total_current_qty_df = item_in_pod.groupby('item')['qty'].sum().reset_index()
-    # total_current_qty_df.rename(columns={'qty': 'total_current_qty_in_WH'})
-
-    # total_max_qty_df = item_in_pod.groupby('item')['max_qty'].sum()().reset_index()
-    # total_max_qty_df.rename(columns={'qty': 'total_max_qty_in_WH'})
-    # merged_df = pd.merge(total_current_qty_df, total_max_qty_df, on='item')
-
-    # sku_objects = []
-
-    # for _, row in merged_df.iterrows():
-    #     item_id = row['item']
-    #     total_current_qty = row['total_current_qty']
-    #     total_max_qty = row['total_max_qty_in_WH']
-    #     global_inventory_level = total_current_qty / total_max_qty
-
-    #     sku = SKU(sku_id=item_id, global_inv_level=global_inventory_level, pod_inv_level=0)
-    #     sku.current_global_qty = total_current_qty
-    #     sku.max_global_qty = total_max_qty
-    #     sku_objects.append(sku)
-
     with open('pods.csv', mode='r', newline='') as file:
         reader = csv.DictReader(file)
         for row in reader:
@@ -816,9 +792,6 @@ def setup():
     try:
         # Initialize the simulation universe
         universe = Inventory()
-
-        
-
         config_orders(
         initial_order=20, 
         total_requested_item=500, 
