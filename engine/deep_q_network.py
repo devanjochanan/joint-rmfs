@@ -19,13 +19,15 @@ class DeepQNetwork:
         self.epsilon_decay = 0.995
         self.learning_rate = 0.001
         self.model_name = model_name
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         if load_existing_model:
             self.model = self.load_model()
         else:
             self.model = self._build_model()
-        self.q_models = {}
-        self.last_action = None
-        self.last_state = None
+        self.model.to(self.device)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+
         if torch.cuda.is_available():
             print("PyTorch is using GPU")
         else:
@@ -35,7 +37,7 @@ class DeepQNetwork:
         """Load model from file if exists."""
         model_path = f"saved_models/{self.model_name}.pt"
         if os.path.exists(model_path):
-            return torch.load(model_path)
+            return torch.load(model_path).to(self.device)
         else:
             print(f"No model found at {model_path}. Building a new model.")
             return self._build_model()
@@ -57,36 +59,34 @@ class DeepQNetwork:
     def act(self, state):
         if np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
-        state = torch.from_numpy(np.array(state)).float().unsqueeze(0)
-        act_values = self.model(state)
+        state = torch.from_numpy(np.array(state)).float().unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            act_values = self.model(state)
         return torch.argmax(act_values).item()
 
     def replay(self, batch_size):
         if len(self.memory) < batch_size:
             return
         minibatch = random.sample(self.memory, batch_size)
-        for state, action, reward, next_state, done in minibatch:
-            state = torch.from_numpy(np.array(state)).float().unsqueeze(0)
-            next_state = torch.from_numpy(np.array(next_state)).float().unsqueeze(0)
-            action = torch.tensor([action])
-            reward = torch.tensor([reward])
-            done = torch.tensor([done])
 
-            if not done:
-                target = (reward + self.gamma * torch.max(self.model(next_state)).item())
-            else:
-                target = reward
+        states = torch.tensor([m[0] for m in minibatch], dtype=torch.float32).to(self.device)
+        actions = torch.tensor([m[1] for m in minibatch]).to(self.device)
+        rewards = torch.tensor([m[2] for m in minibatch]).to(self.device)
+        next_states = torch.tensor([m[3] for m in minibatch], dtype=torch.float32).to(self.device)
+        dones = torch.tensor([m[4] for m in minibatch], dtype=torch.float32).to(self.device)
 
-            target = target.float()
+        # Predict Q-values for current states
+        q_values = self.model(states)
+        q_values_next = self.model(next_states).detach()
 
-            action = action.long()  # Ensure the action is a Long tensor
-            current_q = self.model(state)[0, action]
-            loss = nn.MSELoss()(current_q, target)
+        targets = rewards + (self.gamma * torch.max(q_values_next, dim=1)[0] * (1 - dones))
+        targets_full = q_values.clone()
+        targets_full[range(batch_size), actions] = targets
 
-            optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+        self.optimizer.zero_grad()
+        loss = nn.MSELoss()(q_values, targets_full)
+        loss.backward()
+        self.optimizer.step()
 
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
