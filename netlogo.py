@@ -170,61 +170,6 @@ stations = [
 ]
 
 
-def initPod(universe: Inventory):
-    # Access the graphs from the universe object
-    graph = universe.graph
-    graph_pod = universe.graph_pod
-
-    # Open and read the 'pod.csv' file
-    with open('pod.csv') as csv_file:
-        csv_reader = csv.reader(csv_file, delimiter=',')
-
-        # Initialize a counter for the rows (y-coordinate)
-        line_count = 0
-
-        for row in csv_reader:
-            # Initialize the x-coordinate for the start of the row
-            current_x = 0
-
-            for cell_value in row:
-                # Check if the cell indicates a Pod location
-                if cell_value == '1':
-                    # Create a new Pod object and set its position and coordinates
-                    pod = Pod(1)
-                    pod.pos_x = current_x - 1
-                    pod.pos_y = line_count
-                    pod.coordinate = NetLogoCoordinate(pod.pos_x, pod.pos_y)
-
-                    # Add the Pod object to the universe
-                    universe.addObject(pod)
-
-                    # Construct the key for the current Pod based on its coordinates
-                    obj_key = f"{pod.pos_x},{pod.pos_y}"
-
-                    # Add nodes for the Pod in both graphs
-                    graph.add_node(obj_key)
-                    graph_pod.add_node(obj_key)
-
-                    # Determine the key for the neighboring node based on the y-coordinate
-                    obj_key_neighbor = f"{pod.pos_x},{pod.pos_y - 1}"
-                    if (pod.pos_y + 1) % 3 == 0:
-                        obj_key_neighbor = f"{pod.pos_x},{pod.pos_y + 1}"
-
-                    # Add the neighboring node and edges between the Pod and its neighbor in both graphs
-                    graph_pod.add_node(obj_key_neighbor)
-                    graph.add_edge(obj_key, obj_key_neighbor, weight=1)
-                    graph_pod.add_edge(obj_key, obj_key_neighbor, weight=1)
-                    graph_pod.add_edge(obj_key_neighbor, obj_key, weight=1)
-
-                # Move to the next x-coordinate
-                current_x += 1
-
-            # Limit the processing to the first 33 lines
-            if line_count > 32:
-                break
-
-            # Move to the next row (y-coordinate)
-            line_count += 1
 
 
 def initStation(universe: Inventory):
@@ -309,8 +254,6 @@ def draw_layout(universe):
 def draw_layout_from_generated_file(universe: Inventory):
     draw_storage_from_generated_file(universe)
 
-    # Assign Backlog Orders
-    assign_backlog_orders(universe)
     # Config Orders
     assign_skus_to_pods(universe.pod_manager)
     config_orders(
@@ -338,7 +281,8 @@ def draw_layout_from_generated_file(universe: Inventory):
     sim_ver=2, 
     dev_mode=True)
     initRobots(universe)
-    # assign_backlog_orders(universe)
+    # Assign backlog clustering
+    assign_backlog_orders(universe)
 
     pod = list(universe.pod_manager.coordinate_to_pods.values())[0]
     destinations = [
@@ -555,27 +499,55 @@ def draw_storage_from_generated_file(universe: Inventory):
             elif value == 3:
                 obj.shape = 'empty-space'
 
-                if obj.pos_x == 15 and (obj.pos_y == 15 or obj.pos_y == 12):
-                    intersection = Intersection(NetLogoCoordinate(x, y))
-                    approaching_path_coordinates = []
+                intersection = Intersection(NetLogoCoordinate(x, y))
+                approaching_path_coordinates = []
 
-                    if obj_right_value == 4:
-                        for right_x in range(x + 1, (x + pods_horizontal_length) + 1):
-                            approaching_path_coordinates.append((right_x, y))
-                    if obj_left_value == 5:
-                        for left_x in range(x - 1, (x - pods_horizontal_length) - 1, - 1):
-                            approaching_path_coordinates.append((left_x, y))
-                    if obj_below_value == 6:
-                        for below_y in range(y + 1, (y + pods_vertical_length) + 1):
-                            approaching_path_coordinates.append((x, below_y))
-                    if obj_above_value == 7:
-                        for above_y in range(y - 1, (y - pods_vertical_length) - 1, - 1):
-                            approaching_path_coordinates.append((x, above_y))
+                if obj_right_value in [4, 6, 7]:
+                    right_x = x + 1
+                    while data.iloc[y, right_x] in [4, 6, 7]:
+                        approaching_path_coordinates.append((right_x, y))
+                        right_x += 1
 
-                    for each_approaching_coordinate in approaching_path_coordinates:
-                        intersection.approaching_path_coordinates.append(each_approaching_coordinate)
+                    if data.iloc[y, right_x] == 3:
+                        intersection.add_connected_intersection_id(right_x, y)
+                if obj_left_value in [5, 6, 7]:
+                    left_x = x - 1
+                    while data.iloc[y, left_x] in [5, 6, 7]:
+                        approaching_path_coordinates.append((left_x, y))
+                        left_x -= 1
 
-                    universe.intersection_manager.add_intersection(intersection)
+                    if data.iloc[y, left_x] == 3:
+                        intersection.add_connected_intersection_id(left_x, y)
+                if obj_below_value == 6:
+                    below_y = y + 1
+                    while data.iloc[below_y, x] == 6:
+                        approaching_path_coordinates.append((x, below_y))
+                        below_y += 1
+
+                    if data.iloc[below_y, x] == 3:
+                        intersection.add_connected_intersection_id(x, below_y)
+                if obj_above_value == 7:
+                    above_y = y - 1
+                    while data.iloc[above_y, x] == 7:
+                        approaching_path_coordinates.append((x, above_y))
+                        above_y -= 1
+
+                    if data.iloc[above_y, x] == 3:
+                        intersection.add_connected_intersection_id(x, above_y)
+
+                for each_approaching_coordinate in approaching_path_coordinates:
+                    intersection.approaching_path_coordinates.append(each_approaching_coordinate)
+
+                if obj.pos_x == 15:
+                    intersection.use_reinforcement_learning = True
+                    if obj.pos_y == 0:
+                        intersection.set_RL_model_name("BOTTOM")
+                    elif obj.pos_y == 30:
+                        intersection.set_RL_model_name("TOP")
+                    else:
+                        intersection.set_RL_model_name("MIDDLE")
+
+                universe.intersection_manager.add_intersection(intersection)
 
                 if obj_left_value == 4 or obj_right_value == 4:
                     graph.add_edge(obj_key, obj_left_coordinate, weight=intersection_weight)
@@ -657,7 +629,6 @@ def draw_storage_from_generated_file(universe: Inventory):
                     obj.pos_x = x
                     obj.pos_y = y
                     obj.coordinate = NetLogoCoordinate(x, y)
-                    # obj.path = construct_station_path(data, x, y)
                     obj.short_path = construct_station_path(data, x, y, station_type='replenishment')
                     obj.long_path = construct_station_path(data, x, y, station_type='replenishment', short_path=False)
                     universe.station_manager.add_station(obj)
@@ -711,7 +682,7 @@ def draw_storage_from_generated_file(universe: Inventory):
             obj.pos_y = y
             total_cols += 1
             universe.addObject(obj)
-
+    
     universe.set_warehouse_size([total_rows, total_cols])
 
 def construct_station_path(data: DataFrame, start_x, start_y, station_type:str, short_path=True):
@@ -775,6 +746,8 @@ def assign_skus_to_pods(pod_manager):
 
 
 def assign_skus_to_pods_from_file(pod_manager: PodManager):
+    items_pd = pd.read_csv('items.csv')
+    
     with open('pods.csv', mode='r', newline='') as file:
         reader = csv.DictReader(file)
         for row in reader:
@@ -782,8 +755,7 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             sku = int(row['item'])
             limit_qty = int(row['max_qty'])
             current_qty = int(row['qty'])
-            # threshold = int(row['threshold'])
-            threshold = 5
+            threshold = items_pd.loc[items_pd['item_id'] == sku, 'item_pod_inventory_level']
 
             # Find the pod by id
             pod: Pod = pod_manager.get_pod_by_id(pod_id)

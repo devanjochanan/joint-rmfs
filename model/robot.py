@@ -4,6 +4,7 @@ from typing import Optional, List
 from engine.heading import Heading
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
+from engine.util import *
 from .intersection import Intersection
 from .robot_job import RobotJob
 from .station import Station
@@ -50,7 +51,10 @@ class Robot(Object):
         self.delay_per_task = 10
         self.idle_time = 0
         self.current_intersection_id = None
+        self.future_intersection_id = None
+        self.previous_intersection_id = None
         self.current_intersection_energy_consumption = 0
+        self.current_intersection_stop_and_go = 0
         self.current_intersection_start_time = None
         self.current_intersection_finish_time = None
         super().__init__()
@@ -91,7 +95,7 @@ class Robot(Object):
         for i in range(1, len(path), 1):
             p1 = NetLogoCoordinate(path[i - 1][0], path[i - 1][1])
             p2 = NetLogoCoordinate(path[i][0], path[i][1])
-            heading = self.getHeading(p1, p2) 
+            heading = self.getHeading(p1, p2)
             if current_heading != heading:
                 current_heading = heading
                 route_stop_points.append(NetLogoCoordinate(path[i - 1][0], path[i - 1][1]))
@@ -296,11 +300,9 @@ class Robot(Object):
 
             self.idle_time = 0
 
-        # testing = self.route_stop_points
-        # next_destination_coordinate = []
-        # if len(testing) > 0:
         if not self.route_stop_points:
             return
+
         next_destination_coordinate = self.route_stop_points[0]
 
         if isinstance(next_destination_coordinate, Heading):
@@ -321,7 +323,9 @@ class Robot(Object):
         self.acceleration = 0
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity,
                                           self.acceleration, self.heading, self.current_state)
-        self.universe.landscape.objects.values()
+
+        if self.current_intersection_id:
+            self.current_intersection_stop_and_go += 1
 
     def handle_conflicts(self, next_destination_coordinate):
         candidate_conflict_coordinate = None
@@ -391,9 +395,6 @@ class Robot(Object):
         # Check if there is no robot in front
         if not robot_front:
             return False
-
-        # if self.idle_time > 50 and robot_front['velocity'] == 0 and self.current_state == "returning_pod":
-        #     return True 
 
         # Check if the robot in front is idle
         if robot_front['state'] == "idle":
@@ -475,9 +476,6 @@ class Robot(Object):
         return False
 
     def path_blocked_by_robot(self, next_step_coordinates):
-        # if round(self.pos_y) == 58:
-        #     print(self.robotName())
-
         neighbors = self.universe.landscape.getNeighborObject(round(self.pos_x), round(self.pos_y), 2)
         for neighbor in neighbors:
             if self.get_robot_by_name(neighbor['label']) == self:
@@ -569,7 +567,7 @@ class Robot(Object):
             self.update_current_position()
             if self.current_state == "delivering_pod":
                 self.set_move_to_station_gate()
-            elif self.current_state == "returning_pod": # Removing robot from station
+            elif self.current_state == "returning_pod":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.remove_robot(self.robotName())
                 self.set_move(self.job.pod_coordinate, self.universe.graph_pod, need_neutralize_robot=True)
@@ -601,8 +599,6 @@ class Robot(Object):
         initial_acceleration = self.acceleration
 
         energy = self.calculateEnergy(initial_velocity, initial_acceleration)
-        # if self.robotName() == 'robot-1':
-        #     print(energy)
         self.energy_consumption += energy
 
         if self.velocity != 0:
@@ -659,7 +655,8 @@ class Robot(Object):
         intersection: Intersection = self.universe.intersection_manager.find_intersection_by_id(
             self.current_intersection_id)
 
-        self.insert_robot_intersection_information_to_csv(intersection)
+        if intersection.should_save_robot_info():
+            self.insert_robot_intersection_information_to_csv(intersection)
 
         intersection.remove_robot(self)
 
@@ -677,6 +674,7 @@ class Robot(Object):
         # Reset all intersection-related data
         self.current_intersection_id = None
         self.current_intersection_energy_consumption = 0
+        self.current_intersection_stop_and_go = 0
         self.current_intersection_start_time = 0
         self.current_intersection_finish_time = 0
 
@@ -689,12 +687,20 @@ class Robot(Object):
                 self.current_intersection_energy_consumption,
                 intersection.robot_count()]
 
-        self.universe.write_to_csv("intersection-energy-consumption.csv", header, data)
+        write_to_csv("intersection-energy-consumption.csv", header, data,
+                     self.universe.landscape.current_date_string)
 
     def assign_job_and_set_move_to_take_pod(self, job: RobotJob):
         self.job = job
 
         self.set_move_to_take_pod()
+
+    def assign_job_and_set_move_to_station(self, job: RobotJob):
+        self.job = job
+        self.current_state = "taking_pod"
+        self.route_stop_points = None
+        self.advance_state_if_needed()
+        self.taking_pod_delay = 0
 
     def set_move_to_take_pod(self):
         self.set_move(self.job.pod_coordinate, graph=self.universe.graph, need_neutralize_robot=False)
@@ -712,10 +718,6 @@ class Robot(Object):
             self.neutralizeRobotState()
 
         nodes_to_avoid = []
-        # if avoid_front:
-        #     avoid_coord = self._calculate_next_blocks(round(self.pos_x), round(self.pos_y),
-        #                                               self.heading, 1, include_self=False)
-        #     nodes_to_avoid.append(self.coordinate_to_string_key(*avoid_coord[0]))
         if avoid_side:
             avoid_coords = self.calculate_all_directions_next_blocks(round(self.pos_x), round(self.pos_y), 1,
                                                                      include_self=False)
@@ -805,6 +807,18 @@ class Robot(Object):
     @staticmethod
     def robotID(robot_name):
         return int(robot_name.split('-')[1])
+
+    @staticmethod
+    def calculate_all_directions_next_blocks(x, y, block_count=5, include_self=False):
+        headings = [0, 90, 180, 270]
+        result = []
+
+        for heading in headings:
+            blocks = Robot._calculate_next_blocks(x, y, heading, block_count, include_self)
+            for block in blocks:
+                result.append(block)
+
+        return result
 
     @staticmethod
     def _calculate_next_blocks(x, y, heading, block_count=5, include_self=False):

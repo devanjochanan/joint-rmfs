@@ -39,7 +39,7 @@ class Inventory(Universe):
         self.station_manager = StationManager()
         self.order_manager = OrderManager()
         self.next_process_tick = 0
-        self.intersection_manager = IntersectionManager()
+        self.intersection_manager = IntersectionManager(self.landscape.current_date_string)
         self.update_intersection_using_RL = False
         self.zoning = True
         super().__init__()
@@ -100,7 +100,15 @@ class Inventory(Universe):
                     self.stop_and_go += 1
 
                 if o.job is not None and o.job.picking_delay == 0 and not o.job.is_finished:
-                    self.finish_task_in_job(o.job)
+                    need_replenish_pod = self.finish_task_in_job(o.job)
+                    if need_replenish_pod:
+                        print(f"cihuy masuk")
+                        pod: Pod = self.pod_manager.get_pod_by_coordinate(o.job.pod_coordinate.x, o.job.pod_coordinate.y)
+                        station_replenish = self.station_manager.find_available_replenish_station()
+                        new_job = RobotJob(pod.coordinate, station_id=station_replenish.station_id)
+                        new_job.add_replenishment_task(pod)
+                        o.assign_job_and_set_move_to_station(new_job)
+                        
 
                 if o.current_state == 'idle' and o.job is not None:
                     self.pod_manager.mark_pod_available(o.job.pod_coordinate)
@@ -119,13 +127,13 @@ class Inventory(Universe):
     def finish_task_in_job(self, job: RobotJob):
         job_station = self.station_manager.get_station_by_id(job.station_id)
         if job_station.is_picker_station():
-            self.finish_picking_task(job)
+            return self.finish_picking_task(job)
         elif job_station.is_replenishment_station():
-            self.finish_replenishment_task(job)
+            return self.finish_replenishment_task(job)
     
     def finish_picking_task(self, job: RobotJob):
         pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
-        sku_need_replenished = {}
+        sku_need_replenished = []
         for order_id, sku, quantity in job.orders:
             order: Order = self.order_manager.get_order_by_id(order_id)
             order.deliver_quantity(sku, quantity)
@@ -138,8 +146,7 @@ class Inventory(Universe):
             sku, replenished_status = self.pod_manager.is_sku_need_replenished(sku, 0.8)
 
             # SKU Replenished Triggered
-            if(replenished_status == True): 
-                sku_need_replenished[sku] = True
+            if(replenished_status == True): sku_need_replenished.append(sku)
 
             assign_order_df = pd.read_csv('assign_order.csv')
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
@@ -154,21 +161,17 @@ class Inventory(Universe):
                 self.insert_finished_order_to_csv(order)
 
         #trigger Check replenishment
-        need_replenish_pod = pod.check_replenishment_needed()
-        if need_replenish_pod:
-            print(f"ANJAS MASUK COK {pod.pod_id}")
-            station_replenish = self.station_manager.find_available_replenish_station()
-            new_job = RobotJob(pod.coordinate, station_id=station_replenish.station_id)
-            new_job.add_replenishment_task(pod)
-            self.pod_manager.mark_pod_not_available(pod.coordinate)
-            self.job_queue.append(new_job)
-            
         job.is_finished = True
+        
+        need_replenish_pod = pod.check_replenishment_needed()
+        print(f"reple ga yaaa {need_replenish_pod}")
+        return need_replenish_pod
     
     def finish_replenishment_task(self, job: RobotJob):
         pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
         pod.replenish_all_skus()
         job.is_finished = True
+        return False
 
     def insert_finished_order_to_csv(self, order: Order):
         header = ["order_id", "order_arrival", "process_start_time", "order_complete_time", "station_id"]
