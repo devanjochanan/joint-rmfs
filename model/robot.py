@@ -694,6 +694,13 @@ class Robot(Object):
 
         self.set_move_to_take_pod()
 
+    def assign_job_and_set_move_to_station(self, job: RobotJob):
+        self.job = job
+        self.current_state = "taking_pod"
+        self.route_stop_points = None
+        self.advance_state_if_needed()
+        self.taking_pod_delay = 0
+
     def set_move_to_take_pod(self):
         self.set_move(self.job.pod_coordinate, graph=self.universe.graph, need_neutralize_robot=False)
         self.current_state = "taking_pod"
