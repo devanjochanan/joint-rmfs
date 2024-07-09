@@ -20,7 +20,6 @@ from model.intersection import Intersection
 from model.inventory import Inventory
 from model.order import Order
 from model.order_generator import *
-from model.replenishment import *
 from model.pod import Pod
 from model.pod_manager import PodManager
 from model.robot import Robot
