@@ -41,7 +41,7 @@ class Inventory(Universe):
         self.next_process_tick = 0
         self.intersection_manager = IntersectionManager(self.landscape.current_date_string)
         self.update_intersection_using_RL = False
-        self.zoning = True
+        self.zoning = False
         super().__init__()
 
     def addObject(self, object):
@@ -144,10 +144,10 @@ class Inventory(Universe):
             # Check for SKU Replenishment
             # sku is sku_id (String)
             self.pod_manager.reduce_sku_data(sku, quantity)
-            sku, replenished_status = self.pod_manager.is_sku_need_replenished(sku)
+            # sku, replenished_status = self.pod_manager.is_sku_need_replenished(sku)
 
             # SKU Replenished Triggered
-            if(replenished_status == True): sku_need_replenished.append(sku)
+            # if(replenished_status == True): sku_need_replenished.append(sku)
     
             assign_order_df = pd.read_csv('assign_order.csv')
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
@@ -169,7 +169,6 @@ class Inventory(Universe):
         # pod_will_be_replenished = self.pod_manager.get_pod_by_id(pod_id_will_be_replenished)
 
         # Replenishment baseline
-        pod_replenished_status = pod.check_replenishment_needed()
         job.is_finished = True
 
         need_replenish_pod = pod.check_replenishment_needed()
