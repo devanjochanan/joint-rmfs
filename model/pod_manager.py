@@ -113,7 +113,7 @@ class PodManager:
             # a = self.sku_to_pods[sku]
             # print("len of available pod ", len(a))
             for pod in self.sku_to_pods[sku]:
-                similarity_score = 0
+                similarity_score = 1
 
                 if pod.is_idle is True:
                     # Similarity
@@ -148,7 +148,9 @@ class PodManager:
             pod_available_for_multiple_items = pod_available_for_multiple_items[pod_available_for_multiple_items["similarity_score"] > 0]
 
             assigned_pod = None
-            if len(pod_available_for_multiple_items) > 0:
+            print_col = ["pod_id", "similarity_score", "station_distance_score", "robot_distance_score", "cost"]
+           
+            if not pod_available_for_multiple_items.empty > 0:
                 assigned_pod_id = pod_available_for_multiple_items.loc[0, "pod_id"]
            
                 assigned_pod = self.get_pod_by_id(assigned_pod_id)
@@ -159,7 +161,7 @@ class PodManager:
     
     def _distance_pod_to_robot(self, pod_coordinate, robots_coordinate):
         pod_coordinate = np.array(pod_coordinate).reshape(1, -1)
-        distance_to_robot_score = float('inf')
+        distance_to_robot_score = 1000
         robots_coordinate = np.array(robots_coordinate)
         if len(robots_coordinate) == 0:
             return distance_to_robot_score

@@ -41,7 +41,7 @@ class Inventory(Universe):
         self.next_process_tick = 0
         self.intersection_manager = IntersectionManager()
         self.update_intersection_using_RL = False
-        self.zoning = False
+        self.zoning = True
         super().__init__()
 
     def addObject(self, object):
@@ -100,7 +100,7 @@ class Inventory(Universe):
                     self.stop_and_go += 1
 
                 if o.job is not None and o.job.picking_delay == 0 and not o.job.is_finished:
-                    self.finish_orders_in_job(o.job)
+                    self.finish_task_in_job(o.job)
 
                 if o.current_state == 'idle' and o.job is not None:
                     self.pod_manager.mark_pod_available(o.job.pod_coordinate)
@@ -116,14 +116,22 @@ class Inventory(Universe):
 
         self._tick += self.tick_to_second
 
-    def finish_orders_in_job(self, job: RobotJob):
+    def finish_task_in_job(self, job: RobotJob):
+        job_station = self.station_manager.get_station_by_id(job.station_id)
+        if job_station.is_picker_station():
+            self.finish_picking_task(job)
+        elif job_station.is_replenishment_station():
+            self.finish_replenishment_task(job)
+    
+    def finish_picking_task(self, job: RobotJob):
         pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
+        print(f"pod di proses {pod.pod_id}")
+        # Ada dict isinya sku:Bool utk replenishment
         for order_id, sku, quantity in job.orders:
             order: Order = self.order_manager.get_order_by_id(order_id)
             order.deliver_quantity(sku, quantity)
             
             # This one is for replenishment
-            pod.pick_sku(sku, quantity)
             # self.pod_manager.reduce_sku_data(sku, quantity)
 
             assign_order_df = pd.read_csv('assign_order.csv')
@@ -139,6 +147,20 @@ class Inventory(Universe):
                 self.insert_finished_order_to_csv(order)
 
         #trigger Check replenishment
+        need_replenish_pod = pod.check_replenishment_needed()
+        if need_replenish_pod:
+            print(f"ANJAS MASUK COK {pod.pod_id}")
+            station_replenish = self.station_manager.find_available_replenish_station()
+            new_job = RobotJob(pod.coordinate, station_id=station_replenish.station_id)
+            new_job.add_replenishment_task(pod)
+            self.pod_manager.mark_pod_not_available(pod.coordinate)
+            self.job_queue.append(new_job)
+            
+        job.is_finished = True
+    
+    def finish_replenishment_task(self, job: RobotJob):
+        pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
+        pod.replenish_all_skus()
         job.is_finished = True
 
     def insert_finished_order_to_csv(self, order: Order):
@@ -263,7 +285,7 @@ class Inventory(Universe):
                 order.commit_quantity(sku, quantity_to_take)
 
                 # Commiting every order that has the sku in the pod chosen
-               
+                available_pod.pick_sku(sku, quantity_to_take)
                 
                  # Append pod to station
                 order_station.add_pod(available_pod.pod_id)
@@ -288,9 +310,11 @@ class Inventory(Universe):
                                 quantity_to_take_other = order_.get_quantity_left_for_sku(skus_pod)
                                 if available_pod.get_quantity(skus_pod) > quantity_to_take_other and quantity_to_take_other > 0:
                                     order_.commit_quantity(skus_pod, quantity_to_take_other)
+                                    available_pod.pick_sku(sku, quantity_to_take_other)
                                     job.add_picking_task(order_.order_id, skus_pod,quantity_to_take_other)
-
+               
                 self.job_queue.append(job)
+               
 
     def write_to_csv(self, filename, header, data):
         folder_path = os.path.join("result", self.landscape.current_date_string)

@@ -91,7 +91,7 @@ class Robot(Object):
         for i in range(1, len(path), 1):
             p1 = NetLogoCoordinate(path[i - 1][0], path[i - 1][1])
             p2 = NetLogoCoordinate(path[i][0], path[i][1])
-            heading = self.getHeading(p1, p2) # ini dapet turning or not keknya
+            heading = self.getHeading(p1, p2) 
             if current_heading != heading:
                 current_heading = heading
                 route_stop_points.append(NetLogoCoordinate(path[i - 1][0], path[i - 1][1]))
@@ -260,7 +260,7 @@ class Robot(Object):
 
     def picking_item_in_pod(self):
         if self.job is not None and self.is_being_process_on_station():
-            self.job.picking_delay -= 1
+            self.job.decrement_delay()
             return True
 
     def is_in_station_path(self):
@@ -272,7 +272,8 @@ class Robot(Object):
 
     def is_being_process_on_station(self):
         station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
-        return self.job.picking_delay > 0 and self.close_enough(station.coordinate, 0.1)
+        return self.job.is_being_processed() and self.close_enough(
+            station.coordinate, 0.1)
 
     def movementPlan(self):
         if self.picking_item_in_pod():
@@ -284,9 +285,9 @@ class Robot(Object):
 
         if self.eligible_to_reroute():
             if self.current_state == "taking_pod":
-                self.set_move(self.route_stop_points[-1], self.universe.graph, avoid_front=True)
+                self.set_move(self.route_stop_points[-1], self.universe.graph, avoid_side=True)
             elif self.current_state == "delivering_pod" or self.current_state == "returning_pod":
-                self.set_move(self.route_stop_points[-1], self.universe.graph_pod, avoid_front=True)
+                self.set_move(self.route_stop_points[-1], self.universe.graph_pod, avoid_side=True)
             elif self.current_state == "station_processing":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.update_robot_route_type(self.robotName())
@@ -295,10 +296,12 @@ class Robot(Object):
 
             self.idle_time = 0
 
-        testing = self.route_stop_points
-        next_destination_coordinate = []
-        if len(testing) > 0:
-            next_destination_coordinate = self.route_stop_points[0]
+        # testing = self.route_stop_points
+        # next_destination_coordinate = []
+        # if len(testing) > 0:
+        if not self.route_stop_points:
+            return
+        next_destination_coordinate = self.route_stop_points[0]
 
         if isinstance(next_destination_coordinate, Heading):
             self.handle_directional(next_destination_coordinate)
@@ -566,7 +569,7 @@ class Robot(Object):
             self.update_current_position()
             if self.current_state == "delivering_pod":
                 self.set_move_to_station_gate()
-            elif self.current_state == "returning_pod":
+            elif self.current_state == "returning_pod": # Removing robot from station
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.remove_robot(self.robotName())
                 self.set_move(self.job.pod_coordinate, self.universe.graph_pod, need_neutralize_robot=True)
@@ -598,8 +601,8 @@ class Robot(Object):
         initial_acceleration = self.acceleration
 
         energy = self.calculateEnergy(initial_velocity, initial_acceleration)
-        if self.robotName() == 'robot-1':
-            print(energy)
+        # if self.robotName() == 'robot-1':
+        #     print(energy)
         self.energy_consumption += energy
 
         if self.velocity != 0:
@@ -701,7 +704,7 @@ class Robot(Object):
         station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
         self.set_move(station.get_path()[0], graph=self.universe.graph_pod, need_neutralize_robot=False)
 
-    def set_move(self, dest: NetLogoCoordinate, graph, need_neutralize_robot: bool = False, avoid_front: bool = False):
+    def set_move(self, dest: NetLogoCoordinate, graph, need_neutralize_robot: bool = False, avoid_side: bool = False):
         start = self.coordinate_to_string_key(round(self.pos_x), round(self.pos_y))
         end = self.coordinate_to_string_key(dest.x, dest.y)
 
@@ -709,36 +712,29 @@ class Robot(Object):
             self.neutralizeRobotState()
 
         nodes_to_avoid = []
-        if avoid_front:
-            avoid_coord = self._calculate_next_blocks(round(self.pos_x), round(self.pos_y),
-                                                      self.heading, 1, include_self=False)
-            nodes_to_avoid.append(self.coordinate_to_string_key(*avoid_coord[0]))
+        # if avoid_front:
+        #     avoid_coord = self._calculate_next_blocks(round(self.pos_x), round(self.pos_y),
+        #                                               self.heading, 1, include_self=False)
+        #     nodes_to_avoid.append(self.coordinate_to_string_key(*avoid_coord[0]))
+        if avoid_side:
+            avoid_coords = self.calculate_all_directions_next_blocks(round(self.pos_x), round(self.pos_y), 1,
+                                                                     include_self=False)
+            for avoid_coord in avoid_coords:
+                if self.universe.landscape.get_neighbor_object(*avoid_coord) is None:
+                    continue
 
-
-        robot_objects = self.universe.landscape.get_robot_object()
-        robots_location = [[info['x'], info['y']] for info in robot_objects.values() if info['state'] != 'station_processing']
-        robots_idle_time = []
-        robot_list = []
-        if len(robots_location) > 0:
-            robot_list = self.get_robots_by_coords(robots_location)
-
-        for robot in robot_list:
-            robots_idle_time.append(robot.idle_time)
-
-        zones = Zone(robots_location, self.universe.get_warehouse_size(), methods="default")
-        penalties = zones.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
-        zone_boundary = zones.get_boundary()
+                nodes_to_avoid.append(self.coordinate_to_string_key(*avoid_coord))
 
         node_routes = None
         if self.universe.zoning:
-            zone_boundary, penalties = self.create_zone()
+            zone_boundary, penalties = self.create_zone(method="kmeans")
             node_routes = graph.dijkstra_modified(start,end, penalties, zone_boundary, nodes_to_avoid)
         else:
             node_routes = graph.dijkstra(start, end, nodes_to_avoid) # This one is baseline
         
         self.setPath(self._transformRouteToList(node_routes))
 
-    def create_zone(self):
+    def create_zone(self, method):
         robot_objects = self.universe.landscape.get_robot_object()
         robots_location = [[info['x'], info['y']] for info in robot_objects.values() if info['state'] != 'station_processing']
         robots_idle_time = []
@@ -749,12 +745,25 @@ class Robot(Object):
         for robot in robot_list:
             robots_idle_time.append(robot.idle_time)
         
-        zones = Zone(robots_location, self.universe.get_warehouse_size(), methods="default")
+        zones = Zone(robots_location, self.universe.get_warehouse_size(), methods=method)
         penalties = zones.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
         zone_boundary = zones.get_boundary()
         return zone_boundary, penalties
 
     # utility functions
+    
+    @staticmethod
+    def calculate_all_directions_next_blocks(x, y, block_count=5, include_self=False):
+        headings = [0, 90, 180, 270]
+        result = []
+
+        for heading in headings:
+            blocks = Robot._calculate_next_blocks(x, y, heading, block_count, include_self)
+            for block in blocks:
+                result.append(block)
+
+        return result
+    
     @staticmethod
     def getHeading(p1: NetLogoCoordinate, p2: NetLogoCoordinate):
         if p1.x == p2.x:

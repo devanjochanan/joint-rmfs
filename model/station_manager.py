@@ -28,6 +28,22 @@ class StationManager:
                     available_station = station
 
         return available_station
+    
+    def find_available_replenish_station(self) -> Optional[Station]:
+        # Initialize the available station variable as None
+        available_station = None
+        # Initialize the minimum number of orders to a high value to find the station with the least orders
+        min_orders = float('inf')
+
+        # Iterate through each station to check the number of orders
+        for station in self.replenishment_stations:
+            if len(station.order_ids) < station.max_orders:
+                # Check if this station has fewer orders than the current minimum
+                if len(station.order_ids) < min_orders:
+                    min_orders = len(station.order_ids)
+                    available_station = station
+
+        return available_station
 
     def find_highest_similarity_station(self, skus_in_order, pod_manager: PodManager) -> Optional[Station]:
         available_station_rank = pd.DataFrame(columns=["station_id", "similarity_score"])

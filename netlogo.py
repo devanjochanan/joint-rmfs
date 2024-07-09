@@ -308,9 +308,37 @@ def draw_layout(universe):
 
 def draw_layout_from_generated_file(universe: Inventory):
     draw_storage_from_generated_file(universe)
-    assign_skus_to_pods(universe.pod_manager)
-    initRobots(universe)
+
+    # Assign Backlog Orders
     assign_backlog_orders(universe)
+    # Config Orders
+    assign_skus_to_pods(universe.pod_manager)
+    config_orders(
+    initial_order=20, 
+    total_requested_item=500, # Number of SKU in warehouse
+    items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
+    quantity_range=[1, 12], # Quantity range of number of SKU in each order
+    order_cycle_time=100,  # Number of order per hour
+    order_period_time=2,
+    order_start_arrival_time=5, # Start time of order arrival  
+    date=1,
+    sim_ver=1,        
+    dev_mode=False)
+    
+    # Config Backlog Orders
+    config_orders(
+    initial_order=50, # Initial order in backlog
+    total_requested_item=500, # Number of SKU in warehouse
+    items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
+    quantity_range=[1, 12], # Quantity range of number of SKU in each order
+    order_cycle_time=100, # Number of order per hour
+    order_period_time=3, # the total hours
+    order_start_arrival_time=5, # Start time of order arrival
+    date=1,  
+    sim_ver=2, 
+    dev_mode=True)
+    initRobots(universe)
+    # assign_backlog_orders(universe)
 
     pod = list(universe.pod_manager.coordinate_to_pods.values())[0]
     destinations = [
@@ -620,8 +648,8 @@ def draw_storage_from_generated_file(universe: Inventory):
                     obj.pos_x = x
                     obj.pos_y = y
                     obj.coordinate = NetLogoCoordinate(x, y)
-                    obj.short_path = construct_station_path(data, x, y)
-                    obj.long_path = construct_station_path(data, x, y, short_path=False)
+                    obj.short_path = construct_station_path(data, x, y, station_type='picking')
+                    obj.long_path = construct_station_path(data, x, y, station_type='picking', short_path=False)
                     universe.station_manager.add_station(obj)
                 elif obj_right_value == 21:
                     obj = Station(station_replenish_counter, "replenishment")
@@ -630,6 +658,8 @@ def draw_storage_from_generated_file(universe: Inventory):
                     obj.pos_y = y
                     obj.coordinate = NetLogoCoordinate(x, y)
                     # obj.path = construct_station_path(data, x, y)
+                    obj.short_path = construct_station_path(data, x, y, station_type='replenishment')
+                    obj.long_path = construct_station_path(data, x, y, station_type='replenishment', short_path=False)
                     universe.station_manager.add_station(obj)
 
                 obj.shape = 'rail-triangle'
@@ -684,25 +714,29 @@ def draw_storage_from_generated_file(universe: Inventory):
 
     universe.set_warehouse_size([total_rows, total_cols])
 
-def construct_station_path(data: DataFrame, start_x, start_y, short_path=True):
+def construct_station_path(data: DataFrame, start_x, start_y, station_type:str, short_path=True):
     station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
 
+    if station_type not in ['picking', 'replenishment']:
+        raise ValueError("station_type must be either 'picking' or 'replenishment'")
+
+    x_increment = 1 if station_type == 'picking' else -1
     if not short_path:
-        station_path.insert(0, NetLogoCoordinate(start_x + 1, start_y))
-        station_path.insert(0, NetLogoCoordinate(start_x + 2, start_y))
-        station_path.insert(0, NetLogoCoordinate(start_x + 2, start_y + 1))
-        station_path.insert(0, NetLogoCoordinate(start_x + 1, start_y + 1))
+        station_path.insert(0, NetLogoCoordinate(start_x + 1 * x_increment, start_y))
+        station_path.insert(0, NetLogoCoordinate(start_x + 2 * x_increment, start_y))
+        station_path.insert(0, NetLogoCoordinate(start_x + 2 * x_increment, start_y + 1))
+        station_path.insert(0, NetLogoCoordinate(start_x + 1 * x_increment, start_y + 1))
 
     # go to bottom
     y, x = start_y + 1, start_x
-    while data.iloc[y, x] in (14, 17):
+    while data.iloc[y, x] in (14, 17, 24, 27):
         station_path.insert(0, NetLogoCoordinate(x, y))
 
-        if data.iloc[y, x] == 17:
-            x += 1
-            while data.iloc[y, x] == 13:
+        if data.iloc[y, x] in (17, 27):
+            x += x_increment
+            while data.iloc[y, x] in (13, 23):
                 station_path.insert(0, NetLogoCoordinate(x, y))
-                x += 1
+                x += x_increment
 
         y += 1
 
@@ -729,7 +763,14 @@ def assign_skus_to_pods(pod_manager):
         assign_skus_to_pods_from_file(pod_manager)
     else:
         # Fungsi generate pods.csv
-        PodGenerator(pod_manager).generate()
+        # PodGenerator(pod_manager).generate()
+        PodGenerator(pod_types=[0], pod_num=[300], total_sku=500, 
+                      items_class_conf={"A": 0.1, "B": 0.3, "C": 0.6},
+                      items_pods_inventory_levels={"A": 0.4, "B": 0.5, "C": 0.6},
+                      items_warehouse_inventory_levels={"A": 0.4, "B": 0.5, "C": 0.6},
+                      items_pods_class_conf={"A": 0.6, "B": 0.3, "C": 0.1},
+                      pod_manager=pod_manager,
+                      dev_mode=False).generate()
         assign_skus_to_pods_from_file(pod_manager)
 
 
@@ -777,32 +818,7 @@ def setup():
         if os.path.exists(assignment_path):
             os.remove(assignment_path)
         universe = Inventory()
-
-        config_orders(
-        initial_order=20, 
-        total_requested_item=500, # Number of SKU in warehouse
-        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
-        quantity_range=[1, 12], # Quantity range of number of SKU in each order
-        order_cycle_time=100,  # Number of order per hour
-        order_period_time=2,
-        order_start_arrival_time=5, # Start time of order arrival  
-        date=1,
-        sim_ver=1,        
-        dev_mode=False)
         
-        config_orders(
-        initial_order=50, # Initial order in backlog
-        total_requested_item=500, # Number of SKU in warehouse
-        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
-        quantity_range=[1, 12], # Quantity range of number of SKU in each order
-        order_cycle_time=100, # Number of order per hour
-        order_period_time=3, # the total hours
-        order_start_arrival_time=5, # Start time of order arrival
-        date=1,  
-        sim_ver=2, 
-        dev_mode=True)
-
-
         # Populate the universe with objects and connections
         draw_layout(universe)
 

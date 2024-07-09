@@ -26,11 +26,12 @@ class Pod(Object):
         replenishment station."""
         count_below_threshold = 0
         total_skus = len(self.skus)
+        alpha = total_skus / 2
         for details in self.skus.values():
-            if details['current_qty'] <= details['threshold']:
+            if details['current_qty'] <= details['limit_qty'] * 60 / 100:
                 count_below_threshold += 1
 
-        if count_below_threshold >= total_skus / 2:
+        if count_below_threshold >= alpha:
             return True
         return False
 
