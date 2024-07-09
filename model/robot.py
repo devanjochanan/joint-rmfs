@@ -309,7 +309,6 @@ class Robot(Object):
             return
 
         if self.not_able_to_move(next_destination_coordinate):
-            self.update_idle_state()
             return
 
         candidate_conflict_coordinate = self.handle_conflicts(next_destination_coordinate)
@@ -463,8 +462,14 @@ class Robot(Object):
         if not self.is_aligned_with_heading(next_step_coordinates):
             return False
 
-        return (self.path_blocked_by_intersection(next_step_coordinates)
-                or self.path_blocked_by_robot(next_step_coordinates))
+        if self.path_blocked_by_robot(next_step_coordinates):
+            self.update_idle_state()
+            return True
+
+        if self.path_blocked_by_intersection(next_step_coordinates):
+            return True
+
+        return False
 
     def path_blocked_by_intersection(self, next_step_coordinates):
         for next_x, next_y in next_step_coordinates:
