@@ -13,6 +13,17 @@ class Pod(Object):
         self.station = None
         super().__init__()
 
+    def __eq__(self, other):
+        if isinstance(other, Pod):
+            return self.pod_id == other.pod_id
+        return False
+
+    def __hash__(self):
+        return hash(self.pod_id)
+
+    def __repr__(self):
+        return f"Pod({self.pod_id})"
+
     def add_sku(self, sku, limit_qty, current_qty, threshold):
         """Add a new SKU with its limit, current quantity, and threshold."""
         self.skus[sku] = {
@@ -58,3 +69,6 @@ class Pod(Object):
     def remove_pod_station(self):
         self.station = None
         return
+
+    def get_skus_in_pod(self):
+        return self.skus

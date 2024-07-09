@@ -153,7 +153,7 @@ def gen_backlog(initial_order, total_requested_item, items_orders_class_configur
     
 # ["order_id", 'order_dum', 'order_type', "item", "qty", "facing", "due_date", 'station', 'pod_id', 'status', 'finish_time', 'date', 'time_gen']
 
-def gen_order_arrival_time(order_cycle_time=100):
+def gen_order_arrival_time(order_cycle_time):
     
     # Define the total number of orders and the time period in minutes
     total_orders = order_cycle_time     # number of orders in a cycle (hour)
@@ -316,7 +316,6 @@ def gen_order(order_cycle_time,
         print("Please provide a total SKU that is equal to or less than the total items in the items.csv")
         return None
 
-
 def config_orders(initial_order, total_requested_item, items_orders_class_configuration,quantity_range,order_cycle_time,order_period_time,order_start_arrival_time,date,sim_ver,dev_mode):
     if sim_ver == 1:
         print("Generate database orders...")
@@ -389,16 +388,3 @@ def config_orders(initial_order, total_requested_item, items_orders_class_config
             merged_df['sequence_id'] = range(1, len(merged_df) + 1)
             os.remove('generated_order.csv')
             merged_df.to_csv('generated_order.csv', index=False)
-
-    # backlogs = gen_backlog(initial_order=20, total_requested_item=500, 
-    #                        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1},
-    #                        quantity_range=[1, 12],
-    #                        dev_mode=dev_mode)
-    # orders = gen_order(order_cycle_time=100,
-    #                    order_period_time=2,  
-    #           total_requested_item=500, 
-    #           items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1},
-    #           quantity_range=[1, 12],
-    #           date=1,
-    #           sim_ver=1, 
-    #           dev_mode=dev_mode)
