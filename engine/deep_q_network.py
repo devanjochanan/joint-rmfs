@@ -26,7 +26,10 @@ class DeepQNetwork:
         self.q_models = {}
         self.last_action = None
         self.last_state = None
-        print("Num GPUs Available: ", torch.cuda.device_count())
+        if torch.cuda.is_available():
+            print("PyTorch is using GPU")
+        else:
+            print("PyTorch is using CPU")
 
     def load_model(self):
         """Load model from file if exists."""

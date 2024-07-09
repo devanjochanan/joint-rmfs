@@ -11,6 +11,7 @@ class Pod(Object):
         self.skus = {}
         self.is_idle = True
         self.station = None
+        self.need_replenishment = False
         super().__init__()
 
     def __eq__(self, other):
@@ -39,7 +40,7 @@ class Pod(Object):
         total_skus = len(self.skus)
         alpha = total_skus / 2
         for details in self.skus.values():
-            if details['current_qty'] <= details['limit_qty'] * 60 / 100:
+            if details['current_qty']/details['limit_qty'] <= details['threshold']:
                 count_below_threshold += 1
 
         if count_below_threshold >= alpha:

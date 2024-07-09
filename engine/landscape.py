@@ -15,6 +15,9 @@ class Landscape:
                 one_row.append([])
             self._map.append(one_row)
     
+    def get_robot_object(self):
+        return self._objects
+    
     def _setObjectNew(self, label, x, y, speed, acceleration, heading, state):
         self.total_objects += 1
 
@@ -68,9 +71,6 @@ class Landscape:
             'movement': movement,
             'state': state
         }
-
-    def get_robot_object(self):
-        return self._objects
 
     def getNeighborObject(self, x, y, radius):
         i = x-radius
