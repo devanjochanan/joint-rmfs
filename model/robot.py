@@ -4,6 +4,7 @@ from typing import Optional, List
 from engine.heading import Heading
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
+from engine.util import *
 from .intersection import Intersection
 from .robot_job import RobotJob
 from .station import Station
@@ -686,7 +687,8 @@ class Robot(Object):
                 self.current_intersection_energy_consumption,
                 intersection.robot_count()]
 
-        self.universe.write_to_csv("intersection-energy-consumption.csv", header, data)
+        write_to_csv("intersection-energy-consumption.csv", header, data,
+                     self.universe.landscape.current_date_string)
 
     def assign_job_and_set_move_to_take_pod(self, job: RobotJob):
         self.job = job

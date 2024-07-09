@@ -39,7 +39,7 @@ class Inventory(Universe):
         self.station_manager = StationManager()
         self.order_manager = OrderManager()
         self.next_process_tick = 0
-        self.intersection_manager = IntersectionManager()
+        self.intersection_manager = IntersectionManager(self.landscape.current_date_string)
         self.update_intersection_using_RL = False
 
         super().__init__()
@@ -134,7 +134,7 @@ class Inventory(Universe):
         data = [order.order_id, order.order_arrival, order.process_start_time, order.order_complete_time,
                 order.station_id]
 
-        self.write_to_csv("order-finished.csv", header, data)
+        write_to_csv("order-finished.csv", header, data, self.landscape.current_date_string)
 
     def find_new_orders(self):
         orders_df = pd.read_csv('generated_order.csv')
@@ -211,19 +211,3 @@ class Inventory(Universe):
                 self.pod_manager.mark_pod_not_available(available_pod.coordinate)
                 job.add_picking_task(order.order_id, sku, quantity_to_take)
                 self.job_queue.append(job)
-
-    def write_to_csv(self, filename, header, data):
-        folder_path = os.path.join("result", self.landscape.current_date_string)
-
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
-
-        filename = os.path.join(folder_path, filename)
-        file_exists = os.path.exists(filename)
-
-        with open(filename, mode='a', newline='') as file:
-            writer = csv.writer(file)
-            if not file_exists:
-                writer.writerow(header)
-
-            writer.writerow(data)

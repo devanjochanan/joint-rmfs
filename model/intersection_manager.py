@@ -1,17 +1,19 @@
 from typing import List, Optional
 
 from engine.deep_q_network import DeepQNetwork
+from engine.util import *
 from model.intersection import Intersection
 
 
 class IntersectionManager:
-    def __init__(self):
+    def __init__(self, start_date_string):
         self.intersections: List[Intersection] = []
         self.coordinate_to_intersection = {}
         self.intersection_id_to_intersection = {}
         self.q_models = {}
         self.previous_state = {}
         self.previous_action = {}
+        self.start_date_string = start_date_string
 
     def add_intersection(self, intersection: Intersection):
         self.intersections.append(intersection)
@@ -59,9 +61,31 @@ class IntersectionManager:
             self.q_models[intersection.RL_model_name] = self.create_new_model(intersection, state)
         model = self.q_models[intersection.RL_model_name]
         action = model.act(state)
+
+        self.insert_robot_intersection_information_to_csv(intersection, action, tick)
+
         self.previous_action[intersection.intersection_id] = action
         new_direction = intersection.get_allowed_direction_by_code(action)
         self.update_allowed_direction(intersection.intersection_id, new_direction, tick)
+
+    def insert_robot_intersection_information_to_csv(self, intersection, action, tick):
+        previous_allowed_direction = intersection.allowed_direction
+        previous_allowed_direction = previous_allowed_direction if previous_allowed_direction is not None else "None"
+        new_allowed_direction = intersection.get_allowed_direction_by_code(action)
+        new_allowed_direction = new_allowed_direction if new_allowed_direction is not None else "None"
+        if previous_allowed_direction == new_allowed_direction:
+            return
+
+        header = ["intersection_id", "previous_action", "action_decided", "tick_changed", "duration_since_last_change"]
+        data = [
+            intersection.intersection_id,
+            previous_allowed_direction,
+            new_allowed_direction,
+            tick,
+            intersection.duration_since_last_change(tick)
+        ]
+
+        write_to_csv("allowed_direction_changes.csv", header, data, self.start_date_string)
 
     @staticmethod
     def create_new_model(intersection: Intersection, state):
