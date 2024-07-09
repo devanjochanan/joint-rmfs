@@ -263,7 +263,7 @@ class Robot(Object):
 
     def picking_item_in_pod(self):
         if self.job is not None and self.is_being_process_on_station():
-            self.job.picking_delay -= 1
+            self.job.decrement_delay()
             return True
 
     def is_in_station_path(self):
@@ -275,11 +275,10 @@ class Robot(Object):
 
     def is_being_process_on_station(self):
         station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
-        return self.job.picking_delay > 0 and self.close_enough(station.coordinate, 0.1)
+        return self.job.is_being_processed() and self.close_enough(
+            station.coordinate, 0.1)
 
     def movementPlan(self):
-        # if self.robotName() == "robot-1":
-        #     print(self.route_stop_points)
         if self.picking_item_in_pod():
             return
 

@@ -447,8 +447,8 @@ def draw_storage_from_generated_file(universe: Inventory):
                     obj.pos_x = x
                     obj.pos_y = y
                     obj.coordinate = NetLogoCoordinate(x, y)
-                    obj.short_path = construct_station_path(data, x, y)
-                    obj.long_path = construct_station_path(data, x, y, short_path=False)
+                    obj.short_path = construct_station_path(data, x, y, station_type='picking')
+                    obj.long_path = construct_station_path(data, x, y, station_type='picking', short_path=False)
                     universe.station_manager.add_station(obj)
                 elif obj_right_value == 21:
                     obj = Station(station_replenish_counter, "replenishment")
@@ -456,7 +456,8 @@ def draw_storage_from_generated_file(universe: Inventory):
                     obj.pos_x = x
                     obj.pos_y = y
                     obj.coordinate = NetLogoCoordinate(x, y)
-                    # obj.path = construct_station_path(data, x, y)
+                    obj.short_path = construct_station_path(data, x, y, station_type='replenishment')
+                    obj.long_path = construct_station_path(data, x, y, station_type='replenishment', short_path=False)
                     universe.station_manager.add_station(obj)
 
                 obj.shape = 'rail-triangle'
@@ -509,25 +510,30 @@ def draw_storage_from_generated_file(universe: Inventory):
             universe.addObject(obj)
 
 
-def construct_station_path(data: DataFrame, start_x, start_y, short_path=True):
+def construct_station_path(data: DataFrame, start_x, start_y, station_type: str, short_path=True):
     station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
 
+    if station_type not in ['picking', 'replenishment']:
+        raise ValueError("station_type must be either 'picking' or 'replenishment'")
+
+    x_increment = 1 if station_type == 'picking' else -1
+
     if not short_path:
-        station_path.insert(0, NetLogoCoordinate(start_x + 1, start_y))
-        station_path.insert(0, NetLogoCoordinate(start_x + 2, start_y))
-        station_path.insert(0, NetLogoCoordinate(start_x + 2, start_y + 1))
-        station_path.insert(0, NetLogoCoordinate(start_x + 1, start_y + 1))
+        station_path.insert(0, NetLogoCoordinate(start_x + 1 * x_increment, start_y))
+        station_path.insert(0, NetLogoCoordinate(start_x + 2 * x_increment, start_y))
+        station_path.insert(0, NetLogoCoordinate(start_x + 2 * x_increment, start_y + 1))
+        station_path.insert(0, NetLogoCoordinate(start_x + 1 * x_increment, start_y + 1))
 
     # go to bottom
     y, x = start_y + 1, start_x
-    while data.iloc[y, x] in (14, 17):
+    while data.iloc[y, x] in (14, 17, 24, 27):
         station_path.insert(0, NetLogoCoordinate(x, y))
 
-        if data.iloc[y, x] == 17:
-            x += 1
-            while data.iloc[y, x] == 13:
+        if data.iloc[y, x] in (17, 27):
+            x += x_increment
+            while data.iloc[y, x] in (13, 23):
                 station_path.insert(0, NetLogoCoordinate(x, y))
-                x += 1
+                x += x_increment
 
         y += 1
 

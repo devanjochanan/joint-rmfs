@@ -100,7 +100,7 @@ class Inventory(Universe):
                     self.stop_and_go += 1
 
                 if o.job is not None and o.job.picking_delay == 0 and not o.job.is_finished:
-                    self.finish_orders_in_job(o.job)
+                    self.finish_task_in_job(o.job)
 
                 if o.current_state == 'idle' and o.job is not None:
                     self.pod_manager.mark_pod_available(o.job.pod_coordinate)
@@ -116,7 +116,14 @@ class Inventory(Universe):
 
         self._tick += self.tick_to_second
 
-    def finish_orders_in_job(self, job: RobotJob):
+    def finish_task_in_job(self, job: RobotJob):
+        job_station = self.station_manager.get_station_by_id(job.station_id)
+        if job_station.is_picker_station():
+            self.finish_picking_task(job)
+        elif job_station.is_replenishment_station():
+            self.finish_replenishment_task(job)
+
+    def finish_picking_task(self, job: RobotJob):
         for order_id, sku, quantity in job.orders:
             order: Order = self.order_manager.get_order_by_id(order_id)
             order.deliver_quantity(sku, quantity)
@@ -127,7 +134,12 @@ class Inventory(Universe):
                 station.remove_order(order_id)
                 self.insert_finished_order_to_csv(order)
 
-            job.is_finished = True
+        job.is_finished = True
+
+    def finish_replenishment_task(self, job: RobotJob):
+        pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
+        pod.replenish_all_skus()
+        job.is_finished = True
 
     def insert_finished_order_to_csv(self, order: Order):
         header = ["order_id", "order_arrival", "process_start_time", "order_complete_time", "station_id"]

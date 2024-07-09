@@ -11,12 +11,29 @@ class RobotJob:
         self.orders = []  # This will hold tuples of (order_id, sku, quantity)
         self.picking_delay_per_sku = 100
         self.picking_delay = 0
+        self.replenishment_delay_per_sku = 100
+        self.replenishment_delay = 100
         self.is_finished = False
 
     def add_picking_task(self, order_id, sku, quantity):
         """Add an order with the specific SKU and quantity to be picked."""
         self.orders.append((order_id, sku, quantity))
         self.picking_delay += self.picking_delay_per_sku
+
+    def add_replenishment_task(self, pod):
+        total_skus = len(pod.skus)
+        self.replenishment_delay += total_skus * self.replenishment_delay_per_sku
+
+    def is_being_processed(self):
+        """Check if the job is being processed based on delays."""
+        return self.picking_delay > 0 or self.replenishment_delay > 0
+
+    def decrement_delay(self):
+        """Decrement the picking or replenishment delay."""
+        if self.picking_delay > 0:
+            self.picking_delay -= 1
+        elif self.replenishment_delay > 0:
+            self.replenishment_delay -= 1
 
     def pop_order(self):
         return self.orders.pop(0)
