@@ -117,6 +117,7 @@ class Robot(Object):
     def advance_state(self):
         if self.current_state == "taking_pod":
             self.taking_pod_delay += self.delay_per_task
+            
             self.current_state = "delivering_pod"
         elif self.current_state == "delivering_pod":
             self.current_state = "station_processing"

@@ -11,6 +11,7 @@ class Pod(Object):
         self.skus = {}
         self.is_idle = True
         self.station = None
+        self.need_replenishment = False
         super().__init__()
 
     def __eq__(self, other):
