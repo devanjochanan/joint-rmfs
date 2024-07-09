@@ -53,8 +53,8 @@ class PodManager:
     def get_all_skus_data(self):
         return self.skus_data
     
-    def is_sku_need_replenished(self, sku_id, threshold):
-        if self.skus_data[sku_id]['global_inv_level'] <= self.skus_data[sku_id]['global_threshold_inv_level']:
+    def is_sku_need_replenished(self, sku_id):
+        if float(self.skus_data[sku_id]['global_inv_level']) <= float(self.skus_data[sku_id]['global_threshold_inv_level']):
             return sku_id, True
 
     def get_pod_need_replenished_by_sku(self, list_of_sku):

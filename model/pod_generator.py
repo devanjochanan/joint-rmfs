@@ -315,6 +315,9 @@ class PodGenerator:
                                 qty = max_item_in_slot.astype(int)
                                 max_qty = max_item_in_slot.astype(int)
                                 total_item_weight = (item_weight * qty).round(3)
+                                
+                                item_inventory_level = items_slots_volume_filtered.loc[(items_slots_volume_filtered["item_id"] == item_id), "item_pod_inventory_level"].to_numpy()[0]
+                                item_global_level = items_slots_volume_filtered.loc[(items_slots_volume_filtered["item_id"] == item_id), "item_warehouse_inventory_level"].to_numpy()[0]
 
                                 
                                 pods.loc[(pods["pod_id"] == pod_id) & (pods["slot_id"] == slot_id), "item"] = item_id
@@ -322,6 +325,8 @@ class PodGenerator:
                                 pods.loc[(pods["pod_id"] == pod_id) & (pods["slot_id"] == slot_id), "max_qty"] = max_qty
                                 pods.loc[(pods["pod_id"] == pod_id) & (pods["slot_id"] == slot_id), "item_weight"] = item_weight
                                 pods.loc[(pods["pod_id"] == pod_id) & (pods["slot_id"] == slot_id), "total_item_weight"] = total_item_weight
+                                pods.loc[(pods["pod_id"] == pod_id) & (pods["slot_id"] == slot_id), "item_pod_inventory_level"] = item_inventory_level
+                                pods.loc[(pods["pod_id"] == pod_id) & (pods["slot_id"] == slot_id), "item_warehouse_inventory_level"] = item_global_level
                                 
                                 item_initial_quantity_needed -= qty 
                                 # print("      ", slot_id, slot_type)
@@ -376,6 +381,9 @@ class PodGenerator:
                                                                             "item_weight"].to_numpy()[0]
                         total_item_weight = (item_weight * qty).round(3)                            
 
+                        item_inventory_level = items_slots_configuration_selected.loc[(items_slots_configuration_selected["item_id"] == item_id), "item_pod_inventory_level"].to_numpy()[0]
+                        item_global_level = items_slots_configuration_selected.loc[(items_slots_configuration_selected["item_id"] == item_id), "item_warehouse_inventory_level"].to_numpy()[0]
+                        
                         # assign the item to the slot
                         slot_id = slot_available[i]
                         pod.loc[(pod["pod_id"] == pod_id) & (pod["slot_id"] == slot_id), "item"] = item_id
@@ -383,6 +391,8 @@ class PodGenerator:
                         pod.loc[(pod["pod_id"] == pod_id) & (pod["slot_id"] == slot_id), "max_qty"] = max_qty
                         pod.loc[(pod["pod_id"] == pod_id) & (pod["slot_id"] == slot_id), "item_weight"] = item_weight
                         pod.loc[(pod["pod_id"] == pod_id) & (pod["slot_id"] == slot_id), "total_item_weight"] = total_item_weight
+                        pod.loc[(pods["pod_id"] == pod_id) & (pods["slot_id"] == slot_id), "item_pod_inventory_level"] = item_inventory_level
+                        pod.loc[(pods["pod_id"] == pod_id) & (pods["slot_id"] == slot_id), "item_warehouse_inventory_level"] = item_global_level
 
                 else:                
                     break

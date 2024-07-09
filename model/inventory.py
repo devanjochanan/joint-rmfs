@@ -144,10 +144,10 @@ class Inventory(Universe):
             # Check for SKU Replenishment
             # sku is sku_id (String)
             self.pod_manager.reduce_sku_data(sku, quantity)
-            # sku, replenished_status = self.pod_manager.is_sku_need_replenished(sku)
+            sku, replenished_status = self.pod_manager.is_sku_need_replenished(sku)
 
             # SKU Replenished Triggered
-            # if(replenished_status == True): sku_need_replenished.append(sku)
+            if(replenished_status == True): sku_need_replenished.append(sku)
     
             assign_order_df = pd.read_csv('assign_order.csv')
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
@@ -170,7 +170,8 @@ class Inventory(Universe):
 
         # Replenishment baseline
         job.is_finished = True
-
+        if len(sku_need_replenished) > 0:
+            return True
         need_replenish_pod = pod.check_replenishment_needed()
         print(f"reple ga yaaa {need_replenish_pod}")
         return need_replenish_pod

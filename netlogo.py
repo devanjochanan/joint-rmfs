@@ -745,7 +745,6 @@ def assign_skus_to_pods(pod_manager):
 
 
 def assign_skus_to_pods_from_file(pod_manager: PodManager):
-    items_pd = pd.read_csv('items.csv')
     
     with open('pods.csv', mode='r', newline='') as file:
         reader = csv.DictReader(file)
@@ -754,8 +753,8 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             sku = int(row['item'])
             limit_qty = int(row['max_qty'])
             current_qty = int(row['qty'])
-            threshold = items_pd.loc[items_pd['item_id'] == sku, 'item_pod_inventory_level']
-            global_threshold_inv_level = items_pd.loc[items_pd['item_id'] == sku, 'item_warehouse_inventory_level']
+            threshold = row['item_pod_inventory_level']
+            global_threshold_inv_level = row['item_warehouse_inventory_level']
 
             # Find the pod by id
             pod: Pod = pod_manager.get_pod_by_id(pod_id)
