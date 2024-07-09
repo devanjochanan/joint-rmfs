@@ -56,14 +56,14 @@ class PodManager:
         if self.skus_data[sku]['global_inv_level'] <= threshold:
             return sku, True
 
-    def get_pod_need_replenished_by_sku(self, sku):
-        check_pod: List[Pod] = self.sku_to_pods[sku]
-        replenished_pod_needed = {}
-        for pod in check_pod:
-            status_replenished = pod.check_replenishment_needed()
-            if(status_replenished == True):
-                replenished_pod_needed[pod.pod_id] = status_replenished
-        return replenished_pod_needed
+    def get_pod_need_replenished_by_sku(self, list_of_sku):
+        replenished_pod_needed_every_sku = {}
+
+        for sku in list_of_sku:
+            check_pod: List[Pod] = self.sku_to_pods[sku]
+            replenished_pod_needed_every_sku[sku] = check_pod
+        
+        return replenished_pod_needed_every_sku
 
     def get_available_pod(self, sku: str):
         if sku in self.sku_to_pods:

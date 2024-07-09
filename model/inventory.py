@@ -130,9 +130,6 @@ class Inventory(Universe):
             order: Order = self.order_manager.get_order_by_id(order_id)
             order.deliver_quantity(sku, quantity)
             print("order, sku, quantity :" ,order_id, sku, quantity)
-            # station = self.station_manager.get_station_by_id(order.station_id)  
-            # # Suba stract the sku from the skus_in_station
-            # station.subtract_sku_in_station(sku, quantity)
 
             pod.pick_sku(sku, quantity)
 
@@ -141,10 +138,8 @@ class Inventory(Universe):
             sku, replenished_status = self.pod_manager.is_sku_need_replenished(sku, 0.8)
 
             # SKU Replenished Triggered
-            if(replenished_status == True): sku_need_replenished[sku] = True
-
-            # Check for pod Replenishment
-            replenished_pod = self.pod_manager.get_pod_need_replenished_by_sku(sku)
+            if(replenished_status == True): 
+                sku_need_replenished[sku] = True
 
             assign_order_df = pd.read_csv('assign_order.csv')
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
