@@ -7,7 +7,7 @@ class OrderManager:
     def __init__(self):
         self.orders: List[Order] = []
         self.order_id_to_order: Dict[int, Order] = {}
-        self.finished_orders: List[Order] = []
+        # self.finished_orders: List[Order] = []
         self.unfinished_orders: List[Order] = []
 
     def add_order(self, order: Order):
@@ -28,4 +28,4 @@ class OrderManager:
         order.complete_order(tick)
         if order and order in self.unfinished_orders:
             self.unfinished_orders.remove(order)
-            self.finished_orders.append(order)
+            # self.finished_orders.append(order)

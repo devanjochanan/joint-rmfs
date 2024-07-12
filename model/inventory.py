@@ -41,7 +41,7 @@ class Inventory(Universe):
         self.next_process_tick = 0
         self.intersection_manager = IntersectionManager(self.landscape.current_date_string)
         self.update_intersection_using_RL = False
-        self.zoning = False
+        self.zoning = True
         super().__init__()
 
     def addObject(self, object):
@@ -190,13 +190,12 @@ class Inventory(Universe):
         self.write_to_csv("order-finished.csv", header, data)
 
     def find_new_orders(self):
-        orders_df = pd.read_csv('generated_order.csv')
-
         file_path = 'assign_order.csv'
         if os.path.exists(file_path):
             assign_order_df = pd.read_csv(file_path)
             # pass
         else:
+            orders_df = pd.read_csv('generated_order.csv')
             assign_order_df = orders_df.copy()
             assign_order_df['assigned_station'] = None
             assign_order_df['assigned_pod'] = None

@@ -160,7 +160,7 @@ class Zone:
             lists of zone boundaries
         """
         robots = np.array(robots_location)
-        if len(robots) >= 2:
+        if len(robots) >= 3:
             self.cluster_num = self._silhouette_score(robots, min_cluster=2, max_cluster=9)
             kmeans = KMeans(n_clusters=self.cluster_num, random_state=0)
             labels = kmeans.fit_predict(robots)

@@ -620,7 +620,7 @@ class Robot(Object):
         # for traffic policy purposes, report states to the manager
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
                                           self.heading, self.current_state)
-        self.update_intersection_information(energy)
+        # self.update_intersection_information(energy)
 
     def update_intersection_information(self, energy):
         intersection_id = self.universe.intersection_manager.find_intersection_by_path_coordinate(round(self.pos_x),
@@ -655,8 +655,8 @@ class Robot(Object):
         intersection: Intersection = self.universe.intersection_manager.find_intersection_by_id(
             self.current_intersection_id)
 
-        if intersection.should_save_robot_info():
-            self.insert_robot_intersection_information_to_csv(intersection)
+        # if intersection.should_save_robot_info():
+            # self.insert_robot_intersection_information_to_csv(intersection)
 
         intersection.remove_robot(self)
 
