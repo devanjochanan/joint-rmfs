@@ -40,7 +40,7 @@ class StationManager:
             if len(station.robot_ids) < station.max_robots:
                 # Check if this station has fewer orders than the current minimum
                 if len(station.robot_ids) < min_robots:
-                    min_robots = len(station.order_ids)
+                    min_robots = len(station.robot_ids)
                     available_station = station
 
         return available_station
