@@ -261,7 +261,7 @@ def draw_layout_from_generated_file(universe: Inventory):
     items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
     quantity_range=[1, 12], # Quantity range of number of SKU in each order
     order_cycle_time=100,  # Number of order per hour
-    order_period_time=2,
+    order_period_time=2,  # the total hours
     order_start_arrival_time=5, # Start time of order arrival  
     date=1,
     sim_ver=1,        
@@ -274,8 +274,8 @@ def draw_layout_from_generated_file(universe: Inventory):
     items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
     quantity_range=[1, 12], # Quantity range of number of SKU in each order
     order_cycle_time=100, # Number of order per hour
-    order_period_time=3, # the total hours
-    order_start_arrival_time=5, # Start time of order arrival
+    order_period_time=3,
+    order_start_arrival_time=5, 
     date=1,  
     sim_ver=2, 
     dev_mode=True)

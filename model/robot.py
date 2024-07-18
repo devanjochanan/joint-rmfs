@@ -217,10 +217,10 @@ class Robot(Object):
             'idle': 0
         }
 
-        self_priority = state_priority[self.current_state]
-        other_priority = state_priority[object['state']]
-
-        return self_priority - other_priority
+        self_priority = state_priority[self.current_state] + (self.load_mass*0.001)
+        other_priority = state_priority[object['state']] + object['load_mass']*0.001
+        
+        return self_priority - other_priority 
 
     def is_collision_candidate(self, obj):
         # Check for collision candidate based on relative positions and headings
@@ -360,7 +360,7 @@ class Robot(Object):
         self.velocity = 0
         self.acceleration = 0
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity,
-                                          self.acceleration, self.heading, self.current_state)
+                                          self.acceleration, self.heading, self.current_state, self.load_mass)
 
         if self.current_intersection_id:
             self.current_intersection_stop_and_go += 1
@@ -424,6 +424,8 @@ class Robot(Object):
                 return True
             else:
                 return False
+
+        # if got into zone
 
         # Calculate next step coordinates
         next_step_coordinates = self._calculate_next_blocks(
@@ -614,10 +616,12 @@ class Robot(Object):
             self.advance_state()
             self.update_current_position()
             if self.current_state == "delivering_pod":
+                station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 self.set_move_to_station_gate()
             elif self.current_state == "returning_pod":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.remove_robot(self.robotName())
+                # station.remove_robot_job()
                 self.set_move(self.job.pod_coordinate, self.universe.graph_pod, need_neutralize_robot=True)
             elif self.current_state == "station_processing":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
@@ -625,7 +629,7 @@ class Robot(Object):
                 self.setPath(self.transform_coords_to_list(station.get_robot_route(self.robotName())))
 
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
-                                          self.heading, self.current_state)
+                                          self.heading, self.current_state, self.load_mass)
 
     def update_motion_parameters(self, current_coord, next_destination_coordinate):
         # Adjust robot's acceleration based on proximity to the next intersection_coordinate
@@ -667,7 +671,7 @@ class Robot(Object):
 
         # for traffic policy purposes, report states to the manager
         self.universe.landscape.setObject(self.robotName(), self.pos_x, self.pos_y, self.velocity, self.acceleration,
-                                          self.heading, self.current_state)
+                                          self.heading, self.current_state, self.load_mass)
         # self.update_intersection_information(energy)
 
     def update_intersection_information(self, energy):

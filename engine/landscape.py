@@ -18,7 +18,7 @@ class Landscape:
     def get_robot_object(self):
         return self._objects
     
-    def _setObjectNew(self, label, x, y, speed, acceleration, heading, state):
+    def _setObjectNew(self, label, x, y, speed, acceleration, heading, state, load_mass):
         self.total_objects += 1
 
         movement = 'vertical'
@@ -34,13 +34,14 @@ class Landscape:
             'heading': heading,
             'movement': movement,
             'state': state,
+            'load_mass': load_mass,
         }
 
         self._map[round(x)][round(y)].append(self._objects[label])
 
-    def setObject(self, label, x, y, speed, acceleration, heading, state):
+    def setObject(self, label, x, y, speed, acceleration, heading, state, load_mass):
         if label not in self._objects:
-            return self._setObjectNew(label, x, y, speed, acceleration, heading, state)
+            return self._setObjectNew(label, x, y, speed, acceleration, heading, state, load_mass)
         
         old_x = round(self._objects[label]['x'])
         old_y = round(self._objects[label]['y'])
@@ -69,7 +70,8 @@ class Landscape:
             'acceleration': acceleration,
             'heading': heading,
             'movement': movement,
-            'state': state
+            'state': state,
+            'load_mass': load_mass,
         }
 
     def getNeighborObject(self, x, y, radius):

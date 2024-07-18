@@ -41,7 +41,7 @@ class Inventory(Universe):
         self.next_process_tick = 0
         self.intersection_manager = IntersectionManager(self.landscape.current_date_string)
         self.update_intersection_using_RL = False
-        self.zoning = True
+        self.zoning = False
         super().__init__()
 
     def addObject(self, object):
@@ -102,7 +102,6 @@ class Inventory(Universe):
                 if o.job is not None and o.job.picking_delay == 0 and not o.job.is_finished:
                     need_replenish_pod = self.finish_task_in_job(o.job)
                     if need_replenish_pod:
-                        print(f"cihuy masuk")
                         pod: Pod = self.pod_manager.get_pod_by_coordinate(o.job.pod_coordinate.x, o.job.pod_coordinate.y)
                         station_replenish = self.station_manager.find_available_replenish_station()
                         if station_replenish is not None:
@@ -322,6 +321,7 @@ class Inventory(Universe):
                     
                     # This is Emily's pod picking
                     # available_pod: Optional[Pod] = self.pod_manager.get_available_pod_similarity(sku, skus_in_station, station_coordinate, robots_location) 
+                    
                     # This is Jhen's pod picking
                     available_pod: Pod = self.pod_manager.get_available_pod_inventory(sku, order_station.skus_in_station, station_coordinate, robots_location) 
                     if available_pod is None:

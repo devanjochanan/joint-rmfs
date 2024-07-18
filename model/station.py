@@ -18,6 +18,7 @@ class Station(Object):
         self.long_path: List[NetLogoCoordinate] = []
         self.order_ids: List[int] = []
         self.orders: List[Order] = []
+        self.robot_job = 0
         self.max_orders = 6 # Picking station capacity
         self.max_robots = 12
         self.short_path_threshold = 4
@@ -54,6 +55,12 @@ class Station(Object):
     
     def remove_pod(self, pod):
         self.incoming_pod.remove(pod)
+        
+    def add_robot_job(self):
+        self.robot_job += 1
+    
+    def remove_robot_job(self):
+        self.robot_job -= 1
 
     def is_picker_station(self) -> bool:
         return self.station_type == "picker"
