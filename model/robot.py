@@ -643,7 +643,7 @@ class Robot(Object):
             elif self.current_state == "returning_pod":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.remove_robot(self.robotName())
-                # station.remove_robot_job()
+                station.remove_pod(self.job.pod.pod_id)
                 self.set_move(self.job.pod_coordinate, self.universe.graph_pod, need_neutralize_robot=True)
             elif self.current_state == "station_processing":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)

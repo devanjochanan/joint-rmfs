@@ -139,7 +139,7 @@ class PodManager:
     def get_available_pod_inventory(self, sku: str, skus_in_station_dict, station_coordinate, robots_coordinate):
         sku_in_station_list = [i for i in skus_in_station_dict]
         pod_available_for_multiple_items = pd.DataFrame(columns=["pod_id", "similarity_score", "inventory_score","distance_to_station","distance_to_robot"])
-        
+        total_elements = sum(len(v) for v in skus_in_station_dict.values())
         station_coordinate = [station_coordinate.x, station_coordinate.y]
         # print("THE SKU ", sku)
         # print(skus_in_station_dict)
@@ -173,15 +173,16 @@ class PodManager:
                                                                 pd.DataFrame([[pod.pod_id, similarity_score,inventory_score, distance_to_station, distance_to_robot]], 
                                                                                                             columns=["pod_id", "similarity_score", "inventory_score","distance_to_station","distance_to_robot"])], ignore_index=True) 
             
-            pod_available_for_multiple_items["station_distance_score"] = pod_available_for_multiple_items["distance_to_station"].max() - pod_available_for_multiple_items["distance_to_station"]
-            pod_available_for_multiple_items["cost"] = (pod_available_for_multiple_items["station_distance_score"] + pod_available_for_multiple_items["distance_to_robot"]) * pod_available_for_multiple_items["similarity_score"] * (len(sku_in_station_list) / pod_available_for_multiple_items["inventory_score"]) 
+            # pod_available_for_multiple_items["station_distance_score"] = pod_available_for_multiple_items["distance_to_station"].max() - pod_available_for_multiple_items["distance_to_station"]
+            pod_available_for_multiple_items["cost"] = (pod_available_for_multiple_items["distance_to_station"] + pod_available_for_multiple_items["distance_to_robot"]) * (1/pod_available_for_multiple_items["similarity_score"]) * (total_elements / pod_available_for_multiple_items["inventory_score"] ) 
             pod_available_for_multiple_items.sort_values(by=["cost"], ascending=[True], inplace=True)
             pod_available_for_multiple_items.reset_index(drop=True, inplace=True)
             pod_available_for_multiple_items = pod_available_for_multiple_items[pod_available_for_multiple_items["similarity_score"] > 0]
 
             assigned_pod = None
             if len(pod_available_for_multiple_items) > 0:
-                # print("tes",pod_available_for_multiple_items)
+                # print("tes i score",pod_available_for_multiple_items['inventory_score'].head(3))
+                # print("tes cost",pod_available_for_multiple_items['cost'].head(3))
                 assigned_pod_id = pod_available_for_multiple_items["pod_id"].head(1).values[0]
            
                 assigned_pod = self.get_pod_by_id(assigned_pod_id)

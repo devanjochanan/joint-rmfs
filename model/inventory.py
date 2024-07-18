@@ -369,6 +369,7 @@ class Inventory(Universe):
                                         assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'assigned_pod'] = int(available_pod.pod_id)
                     
                                         assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'status'] = 0
+                                        assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'order_processed'] = int(self._tick)
                                         order_station.reduce_sku_from_station(skus_pod, quantity_to_take_other)
                                         
                                         available_pod.pick_sku(skus_pod, quantity_to_take_other)
