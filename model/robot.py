@@ -76,8 +76,8 @@ class Robot(Object):
         self.current_intersection_stop_and_go = 0
         self.current_intersection_start_time = None
         self.current_intersection_finish_time = None
-        self.zone_boundary =[]
-        self.zone: Optional[Zone] = None
+        # self.zone_boundary =[]
+        # self.zone: Optional[Zone] = None
         super().__init__()
 
     @staticmethod
@@ -821,10 +821,10 @@ class Robot(Object):
         for robot in robot_list:
             robots_idle_time.append(robot.idle_time)
         
-        self.zone = Zone(robots_location, self.universe.get_warehouse_size(), methods=method)
-        penalties = self.zone.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
-        self.zone_boundary = self.zone.get_boundary()
-        return self.zone_boundary, penalties
+        zones = Zone(robots_location, self.universe.get_warehouse_size(), methods=method)
+        penalties = zones.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
+        zone_boundary = self.zone.get_boundary()
+        return zone_boundary, penalties
 
     # utility functions
     

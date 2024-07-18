@@ -41,7 +41,7 @@ class Inventory(Universe):
         self.next_process_tick = 0
         self.intersection_manager = IntersectionManager(self.landscape.current_date_string)
         self.update_intersection_using_RL = False
-        self.zoning = True
+        self.zoning = False
         super().__init__()
 
     def addObject(self, object):
@@ -104,11 +104,11 @@ class Inventory(Universe):
                     if need_replenish_pod:
                         pod: Pod = self.pod_manager.get_pod_by_coordinate(o.job.pod_coordinate.x, o.job.pod_coordinate.y)
                         station_replenish = self.station_manager.find_available_replenish_station()
-                        if station_replenish is not None:
-                            new_job = RobotJob(pod.coordinate, station_id=station_replenish.station_id, pod=pod)
-                            new_job.add_replenishment_task(pod)
-                            # station_replenish.add_robot
-                            o.assign_job_and_set_move_to_station(new_job)
+                        # if station_replenish is not None:
+                        new_job = RobotJob(pod.coordinate, station_id=station_replenish.station_id, pod=pod)
+                        new_job.add_replenishment_task(pod)
+                        # station_replenish.add_robot
+                        o.assign_job_and_set_move_to_station(new_job)
                         
 
                 if o.current_state == 'idle' and o.job is not None:
@@ -323,7 +323,7 @@ class Inventory(Universe):
                     # available_pod: Optional[Pod] = self.pod_manager.get_available_pod_similarity(sku, skus_in_station, station_coordinate, robots_location) 
                     
                     # This is Jhen's pod picking
-                    available_pod: Pod = self.pod_manager.get_available_pod_inventory(sku, order_station.skus_in_station, station_coordinate, robots_location) 
+                    available_pod: Optional[Pod] = self.pod_manager.get_available_pod_inventory(sku, order_station.skus_in_station, station_coordinate, robots_location) 
                     if available_pod is None:
                         continue
                     quantity_to_take = order.get_quantity_left_for_sku(sku)
@@ -363,7 +363,7 @@ class Inventory(Universe):
                                     quantity_to_take_other = order_.get_quantity_left_for_sku(skus_pod)
                                     if available_pod.get_quantity(skus_pod) > quantity_to_take_other and quantity_to_take_other > 0:
                                         order_.commit_quantity(skus_pod, quantity_to_take_other)
-                                        available_pod.pick_sku(sku, quantity_to_take_other)
+                                        # available_pod.pick_sku(sku, quantity_to_take_other)
                                         job.add_picking_task(order_.order_id, skus_pod,quantity_to_take_other)
                                         
                                         assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'assigned_pod'] = int(available_pod.pod_id)
