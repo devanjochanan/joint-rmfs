@@ -1,4 +1,5 @@
 import math
+import numpy as np
 from typing import Optional, List
 
 from engine.heading import Heading
@@ -10,6 +11,7 @@ from .robot_job import RobotJob
 from .station import Station
 from .traffic_policy import TrafficPolicy
 from .zone import Zone
+from .pod import Pod
 
 
 class Robot(Object):
@@ -35,12 +37,29 @@ class Robot(Object):
     traffic_policy = []
     latest_tick = 0
 
+    lift = False
     # energy consumption related
-    mass = 1
+    mass = 100 # kg
     load_mass = 0
-    _gravity = 10
-    _friction = 0.3
-    _inertia = 0.4
+    _gravity = 9.8
+    _friction = 0.02
+    _impact_resistance = 0.15
+    _robot_width = 0.6 # m
+    _robot_radius = _robot_width / 2
+    _length = 0.75 # m
+    _lift_coef = 0.2
+    
+    e_accel = 0
+    e_decel = 0
+    e_const = 0
+    e_rot = 0
+    e_krot = 0
+    e_frot = 0
+    e_lift = 0
+    e_lu = 0
+    
+    
+    
 
     def __init__(self):
         self.id = None
@@ -79,12 +98,19 @@ class Robot(Object):
 
     def calculateEnergy(self, velocity, acceleration):
         tick_unit = self.universe.tick_to_second
-        if acceleration != 0 and velocity != 0:
-            average_speed = 2 * velocity + (acceleration * tick_unit)
-            return (self.mass + self.load_mass) * ((self._gravity * self._friction) + (
-                    acceleration * self._inertia)) * average_speed * tick_unit / 7200
+       
+        if acceleration > 0 and velocity != 0:
+            # average_speed = 2 * velocity + (acceleration * tick_unit)
+            e_accel = (self.mass + self.load_mass) * (acceleration * self._impact_resistance + self._gravity * self._friction) * velocity * tick_unit
+            return e_accel
+        elif acceleration < 0 and velocity != 0:
+            # average_speed = 2 * velocity + (acceleration * tick_unit)
+            e_decel = abs((self.mass + self.load_mass) * (acceleration * self._impact_resistance - self._gravity * self._friction) * velocity * tick_unit)
+            return e_decel
         elif velocity != 0:
-            return (self.mass + self.load_mass) * self._gravity * self._friction * velocity * tick_unit / 3600
+            e_const = (self.mass + self.load_mass) * self._gravity * self._friction * velocity * tick_unit
+            return e_const
+       
         return 0
 
     def setPath(self, path):
@@ -110,23 +136,35 @@ class Robot(Object):
         if self.current_state == "taking_pod":
             self.color = 57  # green
         elif self.current_state == "delivering_pod":
-            self.color = 15  # red
+            station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+            if station.is_replenishment_station():
+                self.color = 138
+            else:
+                self.color = 15  # red
         elif self.current_state == "returning_pod":
             self.color = 46  # yellow
         elif self.current_state == "station_processing":
-            self.color = 94  # brown
+            self.color = 94  # blue
         elif self.current_state == "idle":
             self.color = 0  # black
 
     def advance_state(self):
         if self.current_state == "taking_pod":
             self.taking_pod_delay += self.delay_per_task
+            if self.job is not None:
+                pod: Pod = self.job.pod
+                self.load_mass = pod.mass
+            e_li = self.load_mass * self._gravity * self._lift_coef
+            self.energy_consumption += e_li
             self.current_state = "delivering_pod"
         elif self.current_state == "delivering_pod":
             self.current_state = "station_processing"
         elif self.current_state == "station_processing":
             self.current_state = "returning_pod"
         elif self.current_state == "returning_pod":
+            e_li = self.load_mass * self._gravity * self._lift_coef
+            self.energy_consumption += e_li
+            self.load_mass = 0
             self.taking_pod_delay += self.delay_per_task
             self.current_state = "idle"
 
@@ -539,6 +577,16 @@ class Robot(Object):
         self.turning_delay += self.delay_per_task * angular_change
 
         self.heading = heading.getHeading()
+        rotation_deg = 0
+        if angular_change == 1:
+            rotation_deg = 90
+        else:
+            rotation_deg = 180
+        rotation = np.radians(rotation_deg)
+        e_krot = 1/6 * (self.mass + self.load_mass) * (self._length + self._robot_width**2) * (rotation**2/2.5**2)
+        e_frot = (self.mass + self.load_mass) * self._gravity * self._friction * self._robot_radius * rotation
+        e_rot = e_krot + e_frot
+        self.energy_consumption += e_rot
         self.turning += 1
         self.route_stop_points.pop(0)
 

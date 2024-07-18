@@ -128,7 +128,7 @@ class PodManager:
 
             assigned_pod = None
             if len(pod_available_for_multiple_items) > 0:
-                assigned_pod_id = pod_available_for_multiple_items.loc[0, "pod_id"]
+                assigned_pod_id = pod_available_for_multiple_items["pod_id"].head(1).values[0]
            
                 assigned_pod = self.get_pod_by_id(assigned_pod_id)
         
@@ -146,7 +146,7 @@ class PodManager:
             # a = self.sku_to_pods[sku]
             # print("len of available pod ", len(a))
             for pod in self.sku_to_pods[sku]:
-                similarity_score = 0
+                similarity_score = 1
 
                 if pod.is_idle is True:
                     # Similarity
@@ -166,10 +166,6 @@ class PodManager:
                     distance_to_station = manhattan_distances([pod_coordinate],[station_coordinate])[0][0]
                     # D2
                     distance_to_robot = self._distance_pod_to_robot(pod_coordinate, robots_coordinate)
-                    # distance_to_robot = 1
-                    # Inventory Score
-                    # print("sku in dict, gabisa keknya")
-                    # print(skus_in_station_dict)
                     inventory_score = self._count_fulfillment(skus_in_station_dict, pod.skus)
                     # inventory_score = 1
                     pod_available_for_multiple_items = pd.concat([pod_available_for_multiple_items, 
@@ -184,7 +180,8 @@ class PodManager:
 
             assigned_pod = None
             if len(pod_available_for_multiple_items) > 0:
-                assigned_pod_id = pod_available_for_multiple_items.loc[0, "pod_id"]
+                # print("tes",pod_available_for_multiple_items)
+                assigned_pod_id = pod_available_for_multiple_items["pod_id"].head(1).values[0]
            
                 assigned_pod = self.get_pod_by_id(assigned_pod_id)
         
@@ -217,9 +214,6 @@ class PodManager:
 
         return total_fulfillment
 
-    def _count_similarity():
-        return
-    
 
     def mark_pod_not_available(self, coordinate: NetLogoCoordinate):
         pod = self.coordinate_to_pods.get((coordinate.x, coordinate.y))

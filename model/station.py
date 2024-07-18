@@ -19,6 +19,7 @@ class Station(Object):
         self.order_ids: List[int] = []
         self.orders: List[Order] = []
         self.max_orders = 6 # Picking station capacity
+        self.max_robots = 12
         self.short_path_threshold = 4
         self.robot_ids = {}
         self.is_using_short_route = True

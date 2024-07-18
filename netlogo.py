@@ -360,6 +360,8 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
         assign_order_df['assigned_station'] = None
         assign_order_df['assigned_pod'] = None
         assign_order_df['status'] = -3
+        assign_order_df['order_processed'] = None
+        assign_order_df['order_finished'] = None
         assign_order_df.to_csv('assign_order.csv', index=False)      
     
     unique_orders = set()
@@ -377,6 +379,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
             
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'assigned_station'] = station_id
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'status'] = -1
+            assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'order_processed'] = int(universe.tick_to_second)
             
             assign_order_df.to_csv('assign_order.csv', index=False)
             new_order.assign_station(station_id)
@@ -599,10 +602,10 @@ def draw_storage_from_generated_file(universe: Inventory):
                 obj.shape = 'arrow-down'
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
-
-                graph.add_edge(obj_key, obj_left_coordinate, weight=turning_weight)
+                 
+                graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
-                graph.add_edge(obj_key, obj_right_coordinate, weight=turning_weight)
+                graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_right_coordinate, weight=100)
             elif value == 11 or value == 21:
                 obj.shape = 'person-red'
@@ -755,10 +758,11 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             current_qty = int(row['qty'])
             threshold = row['item_pod_inventory_level']
             global_threshold_inv_level = row['item_warehouse_inventory_level']
+            weight = float(row['item_weight'])
 
             # Find the pod by id
             pod: Pod = pod_manager.get_pod_by_id(pod_id)
-            pod.add_sku(sku, limit_qty=limit_qty, current_qty=current_qty, threshold=threshold)
+            pod.add_sku(sku, limit_qty=limit_qty, current_qty=current_qty, threshold=threshold, weight=weight)
             pod_manager.add_sku_to_pod(sku, pod)
              
             # Add SKU Data of level
@@ -775,6 +779,9 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
         for key, value in skus_data.items():
             writer.writerow([key, value['current_global_qty'], value['max_global_qty'], value['global_inv_level']])
 
+    pod_info = pd.DataFrame(columns=["pod_id", "item_id", "qty", "processed_time", "task_type"])
+    pod_info.to_csv("pod_info.csv", index=False)
+
     print(f"Data has been saved to {csv_file}")
     df = pd.read_csv(csv_file)
     df_sorted = df.sort_values(by='item_id')
@@ -788,6 +795,10 @@ def setup():
         assignment_path = "assign_order.csv"
         if os.path.exists(assignment_path):
             os.remove(assignment_path)
+            
+        pod_info = "pod_info.csv"
+        if os.path.exists(pod_info):
+            os.remove(pod_info)
         universe = Inventory()
         
         # Populate the universe with objects and connections

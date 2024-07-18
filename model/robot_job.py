@@ -4,10 +4,10 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 
 
 class RobotJob:
-    def __init__(self, pod_coordinate: NetLogoCoordinate, station_id):
+    def __init__(self, pod_coordinate: NetLogoCoordinate, station_id, pod):
         self.job_id = id
         self.pod_coordinate = pod_coordinate
-        self.pod = None
+        self.pod = pod
         self.station_id = station_id
         self.orders = []  # This will hold tuples of (order_id, sku, quantity)
         self.picking_delay_per_sku = 40 # Time for handling a task

@@ -12,6 +12,7 @@ class Pod(Object):
         self.is_idle = True
         self.station = None
         self.need_replenishment = False
+        self.mass = 0
         super().__init__()
 
     def __eq__(self, other):
@@ -25,13 +26,15 @@ class Pod(Object):
     def __repr__(self):
         return f"Pod({self.pod_id})"
 
-    def add_sku(self, sku, limit_qty, current_qty, threshold):
+    def add_sku(self, sku, limit_qty, current_qty, threshold, weight):
         """Add a new SKU with its limit, current quantity, and threshold."""
         self.skus[sku] = {
             'limit_qty': limit_qty,
             'current_qty': current_qty,
-            'threshold': threshold
+            'threshold': threshold,
+            'weight': weight,
         }
+        self.mass += (self.skus[sku]['weight'] * self.skus[sku]['current_qty'])
 
     def check_replenishment_needed(self):
         """Check if 50% or more SKUs are below their threshold to determine if the pod needs to move to a
@@ -55,6 +58,7 @@ class Pod(Object):
 
     def pick_sku(self, sku, qty):
         self.skus[sku]['current_qty'] -= qty
+        self.mass -= (self.skus[sku]['weight'] * qty)
 
     def get_quantity(self, sku):
         return self.skus[sku]['current_qty']
