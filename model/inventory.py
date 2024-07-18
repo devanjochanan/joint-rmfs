@@ -41,7 +41,7 @@ class Inventory(Universe):
         self.next_process_tick = 0
         self.intersection_manager = IntersectionManager(self.landscape.current_date_string)
         self.update_intersection_using_RL = False
-        self.zoning = False
+        self.zoning = True
         super().__init__()
 
     def addObject(self, object):

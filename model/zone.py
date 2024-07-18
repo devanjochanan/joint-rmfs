@@ -59,6 +59,20 @@ class Zone:
     def get_boundary(self):
         return self.boundaries
     
+    def is_over_threshold(self, boundary, robot_locations):
+        bottom_left, top_right = boundary
+        width = top_right[0] - bottom_left[0] + 1
+        height = top_right[1] - bottom_left[1] + 1
+        area = width * height
+        threshold = 0.5 * area
+        
+        robot_count = sum(
+            bottom_left[0] <= x <= top_right[0] and bottom_left[1] <= y <= top_right[1]
+            for x, y in robot_locations
+        )
+        
+        return robot_count > threshold
+    
     def calculate_penalty(self, robots_location, idle_time, warehouse_size, threshold):
         self.penalty = [1] * len(self.boundaries)
         area = [1] * len(self.boundaries)

@@ -165,7 +165,7 @@ class PodGenerator:
                 "item_order_frequency", "number_of_item_in_a_box"]].astype(int)
 
             items.to_csv(working_path + "/items.csv", index=True)
-
+            
         else:
             items = None
 

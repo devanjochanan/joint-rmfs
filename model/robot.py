@@ -76,6 +76,8 @@ class Robot(Object):
         self.current_intersection_stop_and_go = 0
         self.current_intersection_start_time = None
         self.current_intersection_finish_time = None
+        self.zone_boundary =[]
+        self.zone: Optional[Zone] = None
         super().__init__()
 
     @staticmethod
@@ -412,8 +414,30 @@ class Robot(Object):
             self.handle_next_movement(next_destination_coordinate, is_next_route_stop=True)
 
         self.drawNextPosition()
+        
+    def check_in_zone(self, x, y):
+        for index, (bottom_left, top_right) in enumerate(self.zone_boundary):
+            if bottom_left[0] <= x <= top_right[0] and bottom_left[1] <= y <= top_right[1]:
+                return index + 1  # Return zone index starting from 1
+        return -1
+    
+    def check_on_boundary(self, x, y):
+        for index, (bottom_left, top_right) in enumerate(self.zone_boundary):
+            # Extract coordinates
+            x1, y1 = bottom_left
+            x2, y2 = top_right
+            
+            # Check if the point (x, y) is on the boundary
+            if ((x == x1 or x == x2) and y1 <= y <= y2) or ((y == y1 or y == y2) and x1 <= x <= x2):
+                return index  # Return zone index starting from 1
+        return -1
 
     def eligible_to_reroute(self):
+         # if got into a zone, and the zone is full now
+        # print(f"Masuk kesini per modulo 30 detik {self.universe._tick}")
+       
+       
+        
         if self.idle_time <= 50 or self.current_state == "delivering_pod":
             return False
 
@@ -424,9 +448,7 @@ class Robot(Object):
                 return True
             else:
                 return False
-
-        # if got into zone
-
+        
         # Calculate next step coordinates
         next_step_coordinates = self._calculate_next_blocks(
             round(self.pos_x), round(self.pos_y), self.heading, 1, include_self=False)
@@ -799,10 +821,10 @@ class Robot(Object):
         for robot in robot_list:
             robots_idle_time.append(robot.idle_time)
         
-        zones = Zone(robots_location, self.universe.get_warehouse_size(), methods=method)
-        penalties = zones.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
-        zone_boundary = zones.get_boundary()
-        return zone_boundary, penalties
+        self.zone = Zone(robots_location, self.universe.get_warehouse_size(), methods=method)
+        penalties = self.zone.calculate_penalty(robots_location, robots_idle_time, self.universe.get_warehouse_size(), threshold=5)
+        self.zone_boundary = self.zone.get_boundary()
+        return self.zone_boundary, penalties
 
     # utility functions
     
