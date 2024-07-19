@@ -25,6 +25,7 @@ class Robot(Object):
     maximum_speed = 1.5
     current_state = 'idle'
     energy_consumption = 0
+    travel_distances = 0
     turning = 0
     heading = 0
     suspend_movement = 0
@@ -219,8 +220,8 @@ class Robot(Object):
             'idle': 0
         }
 
-        self_priority = state_priority[self.current_state] + (self.load_mass*0.001)
-        other_priority = state_priority[object['state']] + object['load_mass']*0.001
+        self_priority = state_priority[self.current_state]
+        other_priority = state_priority[object['state']] 
         
         return self_priority - other_priority 
 
@@ -643,10 +644,12 @@ class Robot(Object):
             elif self.current_state == "returning_pod":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.remove_robot(self.robotName())
-                station.remove_pod(self.job.pod.pod_id)
+                
                 self.set_move(self.job.pod_coordinate, self.universe.graph_pod, need_neutralize_robot=True)
             elif self.current_state == "station_processing":
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+                if station.is_replenishment_station():
+                    print(f"Gets into replenishment")
                 station.add_robot(self.robotName())
                 self.setPath(self.transform_coords_to_list(station.get_robot_route(self.robotName())))
 

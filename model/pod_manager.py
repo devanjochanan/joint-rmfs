@@ -2,6 +2,7 @@ from typing import List
 
 from model.pod import Pod
 from engine import NetLogoCoordinate
+import copy
 
 import numpy as np
 import pandas as pd
@@ -101,7 +102,7 @@ class PodManager:
 
         if sku in self.sku_to_pods:
             for pod in self.sku_to_pods[sku]:
-                similarity_score = 1
+                similarity_score = 0
                 if pod.is_idle is True:
                     pod_skus = [i for i in pod.skus]
                     pod_skus_in_station_skus_mask = np.isin(sku_in_station_list, pod_skus)
@@ -125,7 +126,7 @@ class PodManager:
             pod_available_for_multiple_items["distance_score"] = pod_available_for_multiple_items["distance_to_station"].max() - pod_available_for_multiple_items["distance_to_station"] + pod_available_for_multiple_items["distance_to_robot"].max() - pod_available_for_multiple_items["distance_to_robot"]
             pod_available_for_multiple_items.sort_values(by=["similarity_score", "distance_score"], ascending=[False, False], inplace=True)
             pod_available_for_multiple_items.reset_index(drop=True, inplace=True)
-            pod_available_for_multiple_items = pod_available_for_multiple_items[pod_available_for_multiple_items["similarity_score"] > 0]
+            pod_available_for_multiple_items = pod_available_for_multiple_items[pod_available_for_multiple_items["similarity_score"] > 1]
 
             assigned_pod = None
             if len(pod_available_for_multiple_items) > 0:
@@ -147,7 +148,7 @@ class PodManager:
             # a = self.sku_to_pods[sku]
             # print("len of available pod ", len(a))
             for pod in self.sku_to_pods[sku]:
-                similarity_score = 1
+                similarity_score = 0
 
                 if pod.is_idle is True:
                     # Similarity
@@ -157,9 +158,11 @@ class PodManager:
                     pod_skus_in_station_skus = np.array(sku_in_station_list)[pod_skus_in_station_skus_mask]
                     
                     if len(pod_skus_in_station_skus) > 0:
+                        # print("pod in sku len ",len(pod_skus_in_station_skus))
                         for skus in pod_skus_in_station_skus:
                             skus_qty_in_pod = pod.get_quantity(skus)
                             if skus_qty_in_pod > 0:
+                                # print(f"skus {skus_qty_in_pod}")
                                 similarity_score += 1
                     
                     pod_coordinate = [pod.coordinate.x, pod.coordinate.y]
@@ -173,16 +176,18 @@ class PodManager:
                                                                 pd.DataFrame([[pod.pod_id, similarity_score,inventory_score, distance_to_station, distance_to_robot]], 
                                                                                                             columns=["pod_id", "similarity_score", "inventory_score","distance_to_station","distance_to_robot"])], ignore_index=True) 
             
-            # pod_available_for_multiple_items["station_distance_score"] = pod_available_for_multiple_items["distance_to_station"].max() - pod_available_for_multiple_items["distance_to_station"]
-            pod_available_for_multiple_items["cost"] = (pod_available_for_multiple_items["distance_to_station"] + pod_available_for_multiple_items["distance_to_robot"]) * (1/pod_available_for_multiple_items["similarity_score"]) * (total_elements / pod_available_for_multiple_items["inventory_score"] ) 
-            pod_available_for_multiple_items.sort_values(by=["cost"], ascending=[True], inplace=True)
+            pod_available_for_multiple_items["station_distance_score"] = pod_available_for_multiple_items["distance_to_station"].max() - pod_available_for_multiple_items["distance_to_station"]
+            pod_available_for_multiple_items["robot_distance_score"] = pod_available_for_multiple_items["distance_to_robot"].max() - pod_available_for_multiple_items["distance_to_robot"]
+            
+            pod_available_for_multiple_items["cost"] = (pod_available_for_multiple_items["distance_to_station"] + pod_available_for_multiple_items["distance_to_robot"]) * (pod_available_for_multiple_items["similarity_score"]) * (pod_available_for_multiple_items["inventory_score"] / total_elements ) 
+            pod_available_for_multiple_items.sort_values(by=["cost"], ascending=[False], inplace=True)
             pod_available_for_multiple_items.reset_index(drop=True, inplace=True)
-            pod_available_for_multiple_items = pod_available_for_multiple_items[pod_available_for_multiple_items["similarity_score"] > 0]
+            pod_available_for_multiple_items = pod_available_for_multiple_items[pod_available_for_multiple_items["cost"] > 0]
 
             assigned_pod = None
             if len(pod_available_for_multiple_items) > 0:
                 # print("tes i score",pod_available_for_multiple_items['inventory_score'].head(3))
-                # print("tes cost",pod_available_for_multiple_items['cost'].head(3))
+                print("tes cost\n",pod_available_for_multiple_items[['pod_id','similarity_score','cost']].head(2))
                 assigned_pod_id = pod_available_for_multiple_items["pod_id"].head(1).values[0]
            
                 assigned_pod = self.get_pod_by_id(assigned_pod_id)
@@ -204,8 +209,8 @@ class PodManager:
         return distance_to_robot_score
     
     def _count_fulfillment(self, skus_in_station_dict, pod_skus):
-        total_fulfillment = 1
-        pod_skus_copy = pod_skus.copy()
+        total_fulfillment = 0
+        pod_skus_copy = copy.deepcopy(pod_skus)
         for sku in skus_in_station_dict:
             for order_qty in skus_in_station_dict[sku]:
                 if sku in pod_skus_copy and pod_skus_copy[sku]["current_qty"] >= order_qty:

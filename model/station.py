@@ -50,11 +50,12 @@ class Station(Object):
         if order in self.orders:
             self.orders.remove(order)
 
-    def add_pod(self, pod):
-        self.incoming_pod.append(pod)
+    def add_pod(self, pod_id):
+        self.incoming_pod.append(pod_id)
     
-    def remove_pod(self, pod):
-        self.incoming_pod.remove(pod)
+    def remove_pod(self, pod_id):
+        if pod_id in self.incoming_pod:
+            self.incoming_pod.remove(pod_id)
         
     def add_robot_job(self):
         self.robot_job += 1

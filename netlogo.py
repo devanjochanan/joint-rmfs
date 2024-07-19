@@ -779,7 +779,7 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
         for key, value in skus_data.items():
             writer.writerow([key, value['current_global_qty'], value['max_global_qty'], value['global_inv_level']])
 
-    pod_info = pd.DataFrame(columns=["pod_id", "item_id", "qty", "processed_time", "task_type"])
+    pod_info = pd.DataFrame(columns=["pod_id", "item_id", "qty","order_id", "processed_time", "task_type"])
     pod_info.to_csv("pod_info.csv", index=False)
 
     print(f"Data has been saved to {csv_file}")
