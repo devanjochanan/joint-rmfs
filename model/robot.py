@@ -30,7 +30,7 @@ class Robot(Object):
     heading = 0
     suspend_movement = 0
     route_stop_points = []
-
+    total_idle = 0
     # routing related
     latest_rotation = ''
 
@@ -149,6 +149,7 @@ class Robot(Object):
         elif self.current_state == "station_processing":
             self.color = 94  # blue
         elif self.current_state == "idle":
+            self.total_idle += 1
             self.color = 0  # black
 
     def advance_state(self):
