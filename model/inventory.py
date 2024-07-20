@@ -25,6 +25,7 @@ class Inventory(Universe):
     total_energy = 0
     total_pod = 0
     total_turning = 0
+    total_robot_idle = 0
     movement_channel = {}
     graph = None
     graph_pod = None
@@ -90,12 +91,14 @@ class Inventory(Universe):
 
         total_energy = 0
         total_turning = 0
+        total_idle = 0
         for o in self.get_movable_objects():
             initial_velocity = o.velocity
             o.move()
             if isinstance(o, Robot):
                 total_energy += o.energy_consumption
                 total_turning += o.turning
+                total_idle += (o.total_idle * 0.15)
                 if o.velocity == 0 and initial_velocity > 0:
                     self.stop_and_go += 1
 
@@ -115,7 +118,7 @@ class Inventory(Universe):
                 if o.current_state == 'idle' and o.job is not None:
                     self.pod_manager.mark_pod_available(o.job.pod_coordinate)
                     o.job = None
-
+        self.total_robot_idle = total_idle
         self.total_energy = total_energy
         self.total_turning = total_turning
 
@@ -285,8 +288,8 @@ class Inventory(Universe):
         for order in self.order_manager.unfinished_orders:
             assign_order_df = pd.read_csv('assign_order.csv')
             if order.station_id is None:
-                available_station = self.station_manager.find_available_picking_station()
-                # available_station = self.station_manager.find_highest_similarity_station(order.skus, self.pod_manager)
+                # available_station = self.station_manager.find_available_picking_station()
+                available_station = self.station_manager.find_highest_similarity_station(order.skus, self.pod_manager)
                 if available_station is not None:
                     order.assign_station(available_station.station_id)
                     available_station.add_order(order.order_id, order)

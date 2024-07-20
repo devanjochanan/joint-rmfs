@@ -832,6 +832,7 @@ def tick():
             universe: Inventory = pickle.load(file)
 
         print("before tick", universe._tick)
+        print("Idle? ", universe.total_robot_idle)
 
         # Update each object with the current universe context
         for _n in universe._objects:
