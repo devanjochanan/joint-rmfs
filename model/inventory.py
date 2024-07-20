@@ -144,7 +144,7 @@ class Inventory(Universe):
 
             # Check for SKU Replenishment
             # sku is sku_id (String)
-            self.pod_manager.reduce_sku_data(sku, quantity)
+            
             sku, replenished_status = self.pod_manager.is_sku_need_replenished(sku)
 
             # SKU Replenished Triggered
@@ -336,6 +336,7 @@ class Inventory(Universe):
 
                         # Commiting every order that has the sku in the pod chosen
                         available_pod.pick_sku(sku, quantity_to_take)
+                        self.pod_manager.reduce_sku_data(sku, quantity_to_take)
                         print(f"{available_pod.get_quantity(sku)} qty pod after picked in process" )
                         
                         # Append pod to station
@@ -378,6 +379,7 @@ class Inventory(Universe):
                                         order_station.reduce_sku_from_station(skus_pod, quantity_to_take_other)
                                         # print(f"for other order {order_.order_id} sku {skus_pod} qty {quantity_to_take_other} qty_pod {available_pod.get_quantity(skus_pod)} pod_id {available_pod.pod_id}")
                                         available_pod.pick_sku(skus_pod, quantity_to_take_other)
+                                        self.pod_manager.reduce_sku_data(skus_pod, quantity_to_take_other)
                                         # print(f"{available_pod.get_quantity(skus_pod)} qty pod after picked in other" )
                                         
                                         assign_order_df.to_csv('assign_order.csv', index=False)

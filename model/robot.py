@@ -436,9 +436,6 @@ class Robot(Object):
     def eligible_to_reroute(self):
          # if got into a zone, and the zone is full now
         # print(f"Masuk kesini per modulo 30 detik {self.universe._tick}")
-       
-       
-        
         if self.idle_time <= 50 or self.current_state == "delivering_pod":
             return False
 

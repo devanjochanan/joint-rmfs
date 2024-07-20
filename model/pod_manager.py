@@ -55,7 +55,7 @@ class PodManager:
         return self.skus_data
     
     def is_sku_need_replenished(self, sku_id):
-        print(f"level {self.skus_data[sku_id]['global_inv_level']}")
+        print(f"sku_id {sku_id} level {self.skus_data[sku_id]['global_inv_level']}")
         if float(self.skus_data[sku_id]['global_inv_level']) <= float(self.skus_data[sku_id]['global_threshold_inv_level']):
             return sku_id, True
         else:
@@ -162,7 +162,7 @@ class PodManager:
                         for skus in pod_skus_in_station_skus:
                             skus_qty_in_pod = pod.get_quantity(skus)
                             if skus_qty_in_pod > 0:
-                                # print(f"skus {skus_qty_in_pod}")
+                                print(f"skus {sku} {skus_qty_in_pod}")
                                 similarity_score += 1
                     
                     pod_coordinate = [pod.coordinate.x, pod.coordinate.y]
