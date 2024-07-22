@@ -220,8 +220,15 @@ class Robot(Object):
             'taking_pod': 1,
             'idle': 0
         }
+        is_replenish = False
+        if self.job is not None:
+            station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+            is_replenish = station.is_replenishment_station()
 
         self_priority = state_priority[self.current_state]
+        if self.job is not None and is_replenish:
+            self_priority = state_priority['returning_pod']
+
         other_priority = state_priority[object['state']] 
         
         return self_priority - other_priority 

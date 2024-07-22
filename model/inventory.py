@@ -317,13 +317,13 @@ class Inventory(Universe):
             for sku in order.get_remaining_skus():
                 if assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)) , 'status'].values[0] != 0:
                     # This is the baseline
-                    # available_pod: Optional[Pod] = self.pod_manager.get_available_pod(sku) 
+                    available_pod: Optional[Pod] = self.pod_manager.get_available_pod(sku) 
                     
                     # This is Emily's pod picking
                     # available_pod: Optional[Pod] = self.pod_manager.get_available_pod_similarity(sku, skus_in_station, station_coordinate, robots_location) 
                     
                     # This is Jhen's pod picking
-                    available_pod: Optional[Pod] = self.pod_manager.get_available_pod_inventory(sku, order_station.skus_in_station, station_coordinate, robots_location) 
+                    # available_pod: Optional[Pod] = self.pod_manager.get_available_pod_inventory(sku, order_station.skus_in_station, station_coordinate, robots_location) 
                     if available_pod is None:
                         continue
                     quantity_to_take = order.get_quantity_left_for_sku(sku)
@@ -363,29 +363,29 @@ class Inventory(Universe):
                    
                     
                     # Turn this off for baseline 
-                    for skus_pod in pod_skus:
-                        for order_ in orders_in_station:
-                            if order_ != order and order_.has_sku(skus_pod):
-                                    quantity_to_take_other = order_.get_quantity_left_for_sku(skus_pod)
-                                    # print(f"sku{skus_pod} quantity other {quantity_to_take_other} pod {available_pod.get_quantity(skus_pod)}")
-                                    if available_pod.get_quantity(skus_pod) > 0 and quantity_to_take_other > 0:
-                                        if quantity_to_take_other > available_pod.get_quantity(skus_pod):
-                                            quantity_to_take_other = available_pod.get_quantity(skus_pod)
-                                        order_.commit_quantity(skus_pod, quantity_to_take_other)
-                                        # available_pod.pick_sku(sku, quantity_to_take_other)
-                                        job.add_picking_task(order_.order_id, skus_pod,quantity_to_take_other)
+                    # for skus_pod in pod_skus:
+                    #     for order_ in orders_in_station:
+                    #         if order_ != order and order_.has_sku(skus_pod):
+                    #                 quantity_to_take_other = order_.get_quantity_left_for_sku(skus_pod)
+                    #                 # print(f"sku{skus_pod} quantity other {quantity_to_take_other} pod {available_pod.get_quantity(skus_pod)}")
+                    #                 if available_pod.get_quantity(skus_pod) > 0 and quantity_to_take_other > 0:
+                    #                     if quantity_to_take_other > available_pod.get_quantity(skus_pod):
+                    #                         quantity_to_take_other = available_pod.get_quantity(skus_pod)
+                    #                     order_.commit_quantity(skus_pod, quantity_to_take_other)
+                    #                     # available_pod.pick_sku(sku, quantity_to_take_other)
+                    #                     job.add_picking_task(order_.order_id, skus_pod,quantity_to_take_other)
                                         
-                                        assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'assigned_pod'] = int(available_pod.pod_id)
+                    #                     assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'assigned_pod'] = int(available_pod.pod_id)
                     
-                                        assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'status'] = 0
-                                        assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'order_processed'] = int(self._tick)
-                                        order_station.reduce_sku_from_station(skus_pod, quantity_to_take_other)
-                                        # print(f"for other order {order_.order_id} sku {skus_pod} qty {quantity_to_take_other} qty_pod {available_pod.get_quantity(skus_pod)} pod_id {available_pod.pod_id}")
-                                        available_pod.pick_sku(skus_pod, quantity_to_take_other)
-                                        self.pod_manager.reduce_sku_data(skus_pod, quantity_to_take_other)
-                                        # print(f"{available_pod.get_quantity(skus_pod)} qty pod after picked in other" )
+                    #                     assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'status'] = 0
+                    #                     assign_order_df.loc[((assign_order_df['order_id'] == order_.order_id) & (assign_order_df['item_id'] == skus_pod)), 'order_processed'] = int(self._tick)
+                    #                     order_station.reduce_sku_from_station(skus_pod, quantity_to_take_other)
+                    #                     # print(f"for other order {order_.order_id} sku {skus_pod} qty {quantity_to_take_other} qty_pod {available_pod.get_quantity(skus_pod)} pod_id {available_pod.pod_id}")
+                    #                     available_pod.pick_sku(skus_pod, quantity_to_take_other)
+                    #                     self.pod_manager.reduce_sku_data(skus_pod, quantity_to_take_other)
+                    #                     # print(f"{available_pod.get_quantity(skus_pod)} qty pod after picked in other" )
                                         
-                                        assign_order_df.to_csv('assign_order.csv', index=False)
+                    #                     assign_order_df.to_csv('assign_order.csv', index=False)
                                         
                                         
                     if len(job.orders) > 0:

@@ -90,7 +90,7 @@ class PodManager:
     def get_available_pod(self, sku: str):
         if sku in self.sku_to_pods:
             for pod in self.sku_to_pods[sku]:
-                if pod.is_idle is True:
+                if pod.is_idle is True and pod.skus[sku]['current_qty'] > 0:
                     return pod
 
     def get_available_pod_similarity(self, sku: str, skus_in_station, station_coordinate, robots_coordinate):
@@ -209,7 +209,7 @@ class PodManager:
         return distance_to_robot_score
     
     def _count_fulfillment(self, skus_in_station_dict, pod_skus):
-        total_fulfillment = 0
+        total_fulfillment = 1
         pod_skus_copy = copy.deepcopy(pod_skus)
         for sku in skus_in_station_dict:
             for order_qty in skus_in_station_dict[sku]:
