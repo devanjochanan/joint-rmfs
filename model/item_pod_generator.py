@@ -539,7 +539,7 @@ def assign_items_to_pods(pods, items, items_pods_class_conf, dev_mode=False):
     
     return pods
                             
-def config_items_pods(pod_types=[0], pod_num=[300], total_sku=500, 
+def config_items_pods(pod_types=[0], pod_num=[420], total_sku=500, 
                       items_class_conf={"A": 0.1, "B": 0.3, "C": 0.6},
                       items_pods_inventory_levels={"A": 0.4, "B": 0.5, "C": 0.6},
                       items_warehouse_inventory_levels={"A": 0.4, "B": 0.5, "C": 0.6},
@@ -659,7 +659,7 @@ if __name__ == "__main__":
     
     dev_mode=True
     pod_types = [0]
-    pod_num = [300]
+    pod_num = [420]
     total_sku = 500
     items_class_conf = {"A": 0.1, "B": 0.3, "C": 0.6}
     items_pod_inventory_levels = {"A": 0.4, "B": 0.5, "C": 0.6}

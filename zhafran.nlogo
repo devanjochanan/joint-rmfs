@@ -15,12 +15,15 @@ globals [
   robot_count
   _stop
   total_turning
+  station1_orders
+  station2_orders
+  station3_orders
 ]
 
 to setup
   ca
   let result ""
-  py:setup py:python3
+  py:setup "/Users/julius/miniconda3/envs/netlogo/bin/python3"
   (py:run
     "import netlogo"
     "item = netlogo.setup()")
@@ -77,6 +80,17 @@ to go
   set _stop item 3 result
   set total_turning item 4 result
   set average_total_energy total_energy / robot_count
+
+  let station_status item 5 result
+  if length station_status > 0 [
+    set station1_orders item 0 station_status
+    if length station_status > 1 [
+      set station2_orders item 1 station_status
+      if length station_status > 2 [
+        set station3_orders item 2 station_status
+      ]
+    ]
+  ]
 end
 
 to setup-py
@@ -88,8 +102,8 @@ end
 GRAPHICS-WINDOW
 15
 10
-773
-529
+758
+484
 -1
 -1
 15.0
@@ -113,10 +127,10 @@ ticks
 15.0
 
 BUTTON
-1450
-140
-1533
-173
+795
+10
+878
+43
 setup
 setup
 NIL
@@ -130,10 +144,10 @@ NIL
 1
 
 BUTTON
-1355
-150
-1419
-184
+990
+10
+1054
+44
 go
 go
 NIL
@@ -147,10 +161,10 @@ NIL
 1
 
 BUTTON
-1226
-150
-1323
-183
+795
+60
+892
+93
 go-forever
 go
 T
@@ -164,10 +178,10 @@ NIL
 1
 
 MONITOR
-1225
-212
-1388
-269
+790
+110
+953
+167
 Order
 order_count
 17
@@ -175,10 +189,10 @@ order_count
 14
 
 MONITOR
-1225
-298
-1387
-355
+790
+196
+952
+253
 Total Energy
 total_energy
 17
@@ -186,10 +200,10 @@ total_energy
 14
 
 MONITOR
-1225
-375
-1390
-432
+790
+273
+955
+330
 Average Energy
 average_total_energy
 17
@@ -197,10 +211,10 @@ average_total_energy
 14
 
 MONITOR
-1225
-450
-1390
-507
+790
+348
+955
+405
 Stop and Go
 _stop
 17
@@ -208,21 +222,54 @@ _stop
 14
 
 MONITOR
-1225
-525
-1390
-582
+790
+425
+955
+482
 Total Turning
 total_turning
 17
 1
 14
 
+MONITOR
+970
+196
+1200
+253
+Station 1 Orders
+station1_orders
+17
+1
+14
+
+MONITOR
+970
+273
+1200
+330
+Station 2 Orders
+station2_orders
+17
+1
+14
+
+MONITOR
+970
+348
+1200
+405
+Station 3 Orders
+station3_orders
+17
+1
+14
+
 BUTTON
-975
-185
-1057
-218
+895
+10
+977
+43
 Setup Py
 setup-py
 NIL
@@ -287,11 +334,11 @@ true
 0
 Polygon -7500403 true true 150 0 0 150 105 150 105 293 195 293 195 150 300 150
 
-arrow-up
+arrow-down
 true
 0
-Line -16777216 false 75 150 150 225
-Line -16777216 false 150 225 225 150
+Line -16777216 false 75 150 150 75
+Line -16777216 false 225 150 150 75
 
 arrow-left
 true
@@ -305,11 +352,11 @@ true
 Line -16777216 false 150 75 225 150
 Line -16777216 false 225 150 150 225
 
-arrow-down
+arrow-up
 true
 0
-Line -16777216 false 75 150 150 75
-Line -16777216 false 225 150 150 75
+Line -16777216 false 75 150 150 225
+Line -16777216 false 150 225 225 150
 
 box
 false

@@ -20,9 +20,11 @@ class Station(Object):
         self.orders: List[Order] = []
         self.robot_job = 0
         self.max_orders = 6 # Picking station capacity
-        self.max_robots = 12
+        self.max_robots = 7
         self.short_path_threshold = 4
         self.robot_ids = {}
+        self.robot_queue = []  # New: Queue for robots waiting for their turn
+        self.max_robot_queue = 6  # New: Maximum number of robots allowed in the queue
         self.is_using_short_route = True
         self.skus = {} # {A:15, B: 10}
         self.skus_in_station = {} # {A:[5,10], B:[10]}

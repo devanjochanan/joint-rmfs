@@ -10,9 +10,9 @@ class RobotJob:
         self.pod = pod
         self.station_id = station_id
         self.orders = []  # This will hold tuples of (order_id, sku, quantity)
-        self.picking_delay_per_sku = 40 # Time for handling a task
+        self.picking_delay_per_sku = 10 # Time for handling a task
         self.picking_delay = 0
-        self.replenishment_delay_per_sku = 80
+        self.replenishment_delay_per_sku = 20
         self.replenishment_delay = 80
         self.is_finished = False
 

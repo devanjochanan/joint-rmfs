@@ -1,8 +1,0 @@
-order_id,order_arrival,process_start_time,order_complete_time,station_id
--27,0,1,47,picker-2
--47,0,1,62,picker-3
--46,0,1,82,picker-3
--50,0,1,109,picker-3
--48,0,1,109,picker-3
--44,0,1,153,picker-3
--43,0,1,175,picker-3

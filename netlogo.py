@@ -169,39 +169,37 @@ stations = [
 ]
 
 
+# def initStation(universe: Inventory):
+#     # Iterate over each station defined in the 'stations' list
+#     # Assuming 'stations' is a list of tuples/lists where each item contains the x and y coordinates of a station
+#     for s in stations:
+#         # Create a new Station object
+#         station = Station(1, "picker")
 
+#         # Set the x and y positions from the station data
+#         station.pos_x = s[0]
+#         station.pos_y = s[1]
 
-def initStation(universe: Inventory):
-    # Iterate over each station defined in the 'stations' list
-    # Assuming 'stations' is a list of tuples/lists where each item contains the x and y coordinates of a station
-    for s in stations:
-        # Create a new Station object
-        station = Station(1, "picker")
+#         # Set the coordinates for the station using a helper function or class
+#         # NetLogoCoordinate may be a function or class designed to handle coordinate transformations or representations
+#         station.coordinate = NetLogoCoordinate(s[0], s[1])
 
-        # Set the x and y positions from the station data
-        station.pos_x = s[0]
-        station.pos_y = s[1]
+#         # Add the station object to the universe's list of objects
+#         # This could be for general object management within the universe
+#         universe.addObject(station)
 
-        # Set the coordinates for the station using a helper function or class
-        # NetLogoCoordinate may be a function or class designed to handle coordinate transformations or representations
-        station.coordinate = NetLogoCoordinate(s[0], s[1])
-
-        # Add the station object to the universe's list of objects
-        # This could be for general object management within the universe
-        universe.addObject(station)
-
-        # Specifically add the station object to the universe's list of stations
-        # This could be for easy access to stations or station-specific management
-        universe.station_manager.add_station(station)
+#         # Specifically add the station object to the universe's list of stations
+#         # This could be for easy access to stations or station-specific management
+#         universe.station_manager.add_station(station)
 
 
 def initRobots(universe: Inventory):
 
-    num_robot = 20 # Number of robots
-    
+    num_robot = 20  # Number of robots
+
     robots = []
-    x_range = (5,43)
-    y_range=(0,30)
+    x_range = (5, 43)
+    y_range = (0, 30)
 
     # Initialize a set to keep track of used coordinates
     used_coordinates = set()
@@ -256,29 +254,28 @@ def draw_layout_from_generated_file(universe: Inventory):
     # Config Orders
     assign_skus_to_pods(universe.pod_manager)
     config_orders(
-    initial_order=20, 
-    total_requested_item=500, # Number of SKU in warehouse
-    items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
-    quantity_range=[1, 12], # Quantity range of number of SKU in each order
-    order_cycle_time=100,  # Number of order per hour
-    order_period_time=2,  # the total hours
-    order_start_arrival_time=5, # Start time of order arrival  
-    date=1,
-    sim_ver=1,        
-    dev_mode=False)
-    
+        initial_order=20,
+        total_requested_item=500,  # Number of SKU in warehouse
+        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1},  # Item class configuration in warehouse
+        quantity_range=[1, 12],  # Quantity range of number of SKU in each order
+        order_cycle_time=120,  # Number of order per hour
+        order_period_time=2,  # the total hours
+        order_start_arrival_time=5,  # Start time of order arrival
+        date=1,
+        sim_ver=1,
+        dev_mode=False)
     # Config Backlog Orders
     config_orders(
-    initial_order=50, # Initial order in backlog
-    total_requested_item=500, # Number of SKU in warehouse
-    items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1}, # Item class configuration in warehouse
-    quantity_range=[1, 12], # Quantity range of number of SKU in each order
-    order_cycle_time=100, # Number of order per hour
-    order_period_time=3,
-    order_start_arrival_time=5, 
-    date=1,  
-    sim_ver=2, 
-    dev_mode=True)
+        initial_order=50,  # Initial order in backlog
+        total_requested_item=500,  # Number of SKU in warehouse
+        items_orders_class_configuration={"A": 0.6, "B": 0.3, "C": 0.1},  # Item class configuration in warehouse
+        quantity_range=[1, 12],  # Quantity range of number of SKU in each order
+        order_cycle_time=120,  # Number of order per hour
+        order_period_time=3,
+        order_start_arrival_time=5,
+        date=1,
+        sim_ver=2,
+        dev_mode=True)
     initRobots(universe)
     # Assign backlog clustering
     assign_backlog_orders(universe)
@@ -288,11 +285,13 @@ def draw_layout_from_generated_file(universe: Inventory):
         [pod.pos_x, pod.pos_y, 0]
     ]
 
+
 def jaccard_similarity(set1, set2):
     intersection = len(set1.intersection(set2))
     union = len(set1.union(set2))
-     
-    return intersection / union  
+
+    return intersection / union
+
 
 def compute_jaccard_similarity(data):
     similarity_dict = {}
@@ -307,6 +306,7 @@ def compute_jaccard_similarity(data):
                 similarities.append(similarity)
         similarity_dict[order_dum] = similarities
     return grouped, similarity_dict
+
 
 def cluster_backlog_orders(jaccard_similarities, total_station, station_capacity_df):
     jaccard_similarities_list = [similarities for similarities in jaccard_similarities.values()]
@@ -327,7 +327,7 @@ def cluster_backlog_orders(jaccard_similarities, total_station, station_capacity
         centroid = kmeans.cluster_centers_[label]
         distance = np.linalg.norm(jaccard_similarities_list[i] - centroid)
         cluster_distances.append((i, label, distance))
-        
+
     cluster_distances.sort(key=lambda x: x[2])
 
     # assign each backlog order to a cluster
@@ -344,13 +344,14 @@ def cluster_backlog_orders(jaccard_similarities, total_station, station_capacity
 
     return cluster_labels
 
+
 def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order, cluster_labels, station_capacity_df):
     order_dum_to_cluster = dict(zip(full_order.index, cluster_labels))
     temp = float('inf')
     new_order = None
- 
+
     orders_df = pd.read_csv('generated_order.csv')
-    
+
     file_path = 'assign_order.csv'
     if os.path.exists(file_path):
         assign_order_df = pd.read_csv(file_path)
@@ -362,30 +363,29 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
         assign_order_df['status'] = -3
         assign_order_df['order_processed'] = None
         assign_order_df['order_finished'] = None
-        assign_order_df.to_csv('assign_order.csv', index=False)      
-    
+        assign_order_df.to_csv('assign_order.csv', index=False)
+
     unique_orders = set()
     order_sku_map = {}
     new_order = None
     for index, row in data_backlog_order_df.iterrows():
         order_dum = row['order_id']
         station_id = order_dum_to_cluster[order_dum]
-       
+
         if station_id is not None and order_dum not in unique_orders:
             unique_orders.add(order_dum)
             new_order = Order(order_dum, 0)
             # print("order: ", new_order.order_id)
             # print("station: ", station_id)
-            
+
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'assigned_station'] = station_id
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'status'] = -1
-            assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'order_processed'] = int(universe.tick_to_second)
-            
+            assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'order_processed'] = int(
+                universe.tick_to_second)
             assign_order_df.to_csv('assign_order.csv', index=False)
             new_order.assign_station(station_id)
             station = universe.station_manager.get_station_by_id(station_id)
             universe.order_manager.add_order(new_order)
-            
             order_sku_map[order_dum] = 0
 
         if order_dum in unique_orders:
@@ -397,8 +397,9 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
             expected_sku_count = data_backlog_order_df[data_backlog_order_df['order_id'] == order_dum].shape[0]
             if order_sku_map[order_dum] == expected_sku_count:
                 station.add_order(order_dum, order)
-    
+
     return station_capacity_df
+
 
 def assign_backlog_orders(universe: Inventory):
     # open file order
@@ -406,7 +407,8 @@ def assign_backlog_orders(universe: Inventory):
     data_order_df = pd.read_csv(order_path)
 
     # filter order_id < 0
-    unassigned_backlog_order = data_order_df.loc[(data_order_df['order_id'] < 0)].sort_values(by=['order_id']).reset_index(drop=True)
+    unassigned_backlog_order = data_order_df.loc[(data_order_df['order_id'] < 0)].sort_values(by=['order_id']).reset_index(
+        drop=True)
 
     columns = ['id_station', 'capacity_left']
     station_id_cap_df = pd.DataFrame(columns=columns)
@@ -414,7 +416,7 @@ def assign_backlog_orders(universe: Inventory):
     for station in universe.station_manager.stations:
         id = station.station_id
         cap = station.max_orders - len(station.order_ids)
-        
+
         new_row = pd.DataFrame({'id_station': [id], 'capacity_left': [cap]})
         # station_id_cap_df = station_id_cap_df.append({'id_station': id, 'capacity_left': cap}, ignore_index=True)
         station_id_cap_df = pd.concat([station_id_cap_df, new_row], ignore_index=True)
@@ -430,8 +432,8 @@ def assign_backlog_orders(universe: Inventory):
 
         cluster_labels = cluster_backlog_orders(jaccard_similarities, total_station, station_id_cap_df)
 
-        station_id_cap_df = assign_cluster_labels(universe, unassigned_backlog_order, full_order, cluster_labels, station_id_cap_df)
-
+        station_id_cap_df = assign_cluster_labels(universe, unassigned_backlog_order, full_order, cluster_labels,
+                                                  station_id_cap_df)
 
 
 def draw_storage_from_generated_file(universe: Inventory):
@@ -602,7 +604,7 @@ def draw_storage_from_generated_file(universe: Inventory):
                 obj.shape = 'arrow-down'
                 graph.add_edge(obj_key, obj_below_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_below_coordinate, weight=weight)
-                 
+
                 graph.add_edge(obj_key, obj_left_coordinate, weight=weight)
                 graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
                 graph.add_edge(obj_key, obj_right_coordinate, weight=weight)
@@ -684,10 +686,11 @@ def draw_storage_from_generated_file(universe: Inventory):
             obj.pos_y = y
             total_cols += 1
             universe.addObject(obj)
-    
+
     universe.set_warehouse_size([total_rows, total_cols])
 
-def construct_station_path(data: DataFrame, start_x, start_y, station_type:str, short_path=True):
+
+def construct_station_path(data: DataFrame, start_x, start_y, station_type: str, short_path=True):
     station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
 
     if station_type not in ['picking', 'replenishment']:
@@ -737,7 +740,7 @@ def assign_skus_to_pods(pod_manager):
     else:
         # Fungsi generate pods.csv
         # PodGenerator(pod_manager).generate()
-        PodGenerator(pod_types=[0], pod_num=[300], total_sku=500, 
+        PodGenerator(pod_types=[0], pod_num=[420], total_sku=500,
                       items_class_conf={"A": 0.1, "B": 0.3, "C": 0.6},
                       items_pods_inventory_levels={"A": 0.4, "B": 0.5, "C": 0.6},
                       items_warehouse_inventory_levels={"A": 0.4, "B": 0.5, "C": 0.6},
@@ -748,7 +751,7 @@ def assign_skus_to_pods(pod_manager):
 
 
 def assign_skus_to_pods_from_file(pod_manager: PodManager):
-    
+
     with open('pods.csv', mode='r', newline='') as file:
         reader = csv.DictReader(file)
         for row in reader:
@@ -764,22 +767,22 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             pod: Pod = pod_manager.get_pod_by_id(pod_id)
             pod.add_sku(sku, limit_qty=limit_qty, current_qty=current_qty, threshold=threshold, weight=weight)
             pod_manager.add_sku_to_pod(sku, pod)
-             
+
             # Add SKU Data of level
-            pod_manager.add_sku_data(sku,current_qty,limit_qty, global_threshold_inv_level)
+            pod_manager.add_sku_data(sku, current_qty, limit_qty, global_threshold_inv_level)
 
     csv_file = 'skus_data.csv'
     if os.path.exists(csv_file):
         os.remove(csv_file)
     skus_data = pod_manager.get_all_skus_data()
-    
+
     with open(csv_file, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(['item_id', 'current_global_qty', 'max_global_qty', 'global_inv_level'])
         for key, value in skus_data.items():
             writer.writerow([key, value['current_global_qty'], value['max_global_qty'], value['global_inv_level']])
 
-    pod_info = pd.DataFrame(columns=["pod_id", "item_id", "qty","order_id", "processed_time", "task_type"])
+    pod_info = pd.DataFrame(columns=["pod_id", "item_id", "qty", "order_id", "processed_time", "task_type"])
     pod_info.to_csv("pod_info.csv", index=False)
 
     print(f"Data has been saved to {csv_file}")
@@ -795,18 +798,17 @@ def setup():
         assignment_path = "assign_order.csv"
         if os.path.exists(assignment_path):
             os.remove(assignment_path)
-            
+
         pod_info = "pod_info.csv"
         if os.path.exists(pod_info):
             os.remove(pod_info)
         universe = Inventory()
-        
+
         # Populate the universe with objects and connections
         draw_layout(universe)
 
         # Set simulation parameters
         universe.tick_to_second = 0.15
-        # print(universe.intersection_manager.intersections[0].intersection_coordinate)
 
         # Generate initial results
         next_result = universe.generateResult()
@@ -815,7 +817,8 @@ def setup():
         with open('netlogo.state', 'wb') as config_dictionary_file:
             pickle.dump(universe, config_dictionary_file)
 
-        return next_result
+        # Return only the first element (object positions) as NetLogo setup doesn't need station info
+        return next_result[0]
 
     except Exception as e:
         # Print complete stack trace
@@ -825,28 +828,29 @@ def setup():
 
 def tick():
     try:
-        # print("========tick========")
-
         # Load the simulation state
         with open('netlogo.state', 'rb') as file:
             universe: Inventory = pickle.load(file)
-
-        print("before tick", universe._tick)
-        print("Idle? ", universe.total_robot_idle)
 
         # Update each object with the current universe context
         for _n in universe._objects:
             _n.setUniverse(universe)
 
         # Perform a simulation tick
-        universe.tick()
+        next_result = universe.tick()
+        if universe._tick > 5000:
+            return IndexError
 
-        # Generate results after the tick
-        next_result = universe.generateResult()
+        # Save updated state
         with open('netlogo.state', 'wb') as config_dictionary_file:
             pickle.dump(universe, config_dictionary_file)
-        return [next_result, universe.total_energy, len(universe.job_queue), universe.stop_and_go,
-                universe.total_turning]
+
+        # Return all required information for NetLogo
+        # next_result[0] contains object positions
+        # next_result[1] contains station orders
+        return [next_result[0], universe.total_energy, len(universe.job_queue), universe.stop_and_go,
+                universe.total_turning, next_result[1]]
+
     except Exception as e:
         # Print complete stack trace
         traceback.print_exc()
@@ -864,8 +868,3 @@ def setup_py():
     # Install each package
     for package in packages:
         install_package(package)
-# setup()
-# x = setup()
-# print(x)
-# x = tick()
-# print(x)

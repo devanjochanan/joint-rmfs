@@ -61,6 +61,7 @@ class StationManager:
             for station in available_station:
                 # Check Available Station
                 current_orders = len(station.order_ids)
+                # print (f"current orders:{current_orders}")
                 similarity_score = 0
                 if len(station.order_ids) < station.max_orders:
                     # Take pod assigned to this particular station
@@ -70,8 +71,10 @@ class StationManager:
                         pod  = pod_manager.get_pod_by_id(pod_id)
                         pod_skus = [item for item, details in pod.skus.items() if details['current_qty'] > 0]
                         station_pod_skus_set.update(pod_skus)
+                        # print(f"station_pod_skus_set: {station_pod_skus_set}")
 
                     station_pod_skus_list = list(station_pod_skus_set)
+                    # print(f"station_pod_skus_list: {station_pod_skus_list}")
                     station_pod_skus_in_order_mask = np.isin(sku_in_order_list, station_pod_skus_list)
                     station_pod_skus_in_order = np.array(sku_in_order_list)[station_pod_skus_in_order_mask]
                     similarity_score = len(station_pod_skus_in_order)
@@ -94,6 +97,25 @@ class StationManager:
             assign_station = self.get_station_by_id(assign_station_id)
 
         return assign_station
+    
+    def assign_robot_to_picking_station(self, robot_id):
+        station = self.find_available_picking_station()
+        if station is None:
+            print("No available station found.")
+            return
+    
+        # Check active robot capacity first
+        if len(station.robot_ids) < station.max_robots:
+            station.add_robot(robot_id)
+            print(f"Robot {robot_id} assigned to station {station.station_id} (active).")
+        
+        # If active capacity is full, try the queue
+        elif len(station.robot_queue) < station.max_robot_queue:
+            station.robot_queue.append(robot_id)
+            print(f"Robot {robot_id} added to queue at station {station.station_id}.")
+        else:
+            print(f"Station {station.station_id} is full (active + queue).")
+
 
     def add_station(self, station: Station):
         self.stations.append(station)

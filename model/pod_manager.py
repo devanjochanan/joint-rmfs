@@ -93,7 +93,7 @@ class PodManager:
                 if pod.is_idle is True and pod.skus[sku]['current_qty'] > 0:
                     return pod
 
-    def get_available_pod_similarity(self, sku: str, skus_in_station, station_coordinate, robots_coordinate):
+    def get_available_pod_similarity(self, sku: str, skus_in_station, station_coordinate, robots_coordinate): # use in Emily's pod picking
         # If SKU is available
         sku_in_station_list = [i for i in skus_in_station]
         pod_available_for_multiple_items = pd.DataFrame(columns=["pod_id", "similarity_score", "distance_to_station", "distance_to_robot"])
@@ -137,7 +137,7 @@ class PodManager:
             return assigned_pod
     
 
-    def get_available_pod_inventory(self, sku: str, skus_in_station_dict, station_coordinate, robots_coordinate):
+    def get_available_pod_inventory(self, sku: str, skus_in_station_dict, station_coordinate, robots_coordinate): # use in Jhen's pod picking
         sku_in_station_list = [i for i in skus_in_station_dict]
         pod_available_for_multiple_items = pd.DataFrame(columns=["pod_id", "similarity_score", "inventory_score","distance_to_station","distance_to_robot"])
         total_elements = sum(len(v) for v in skus_in_station_dict.values())
@@ -162,7 +162,7 @@ class PodManager:
                         for skus in pod_skus_in_station_skus:
                             skus_qty_in_pod = pod.get_quantity(skus)
                             if skus_qty_in_pod > 0:
-                                print(f"skus {sku} {skus_qty_in_pod}")
+                                # print(f"skus {sku} {skus_qty_in_pod}")
                                 similarity_score += 1
                     
                     pod_coordinate = [pod.coordinate.x, pod.coordinate.y]
@@ -187,7 +187,7 @@ class PodManager:
             assigned_pod = None
             if len(pod_available_for_multiple_items) > 0:
                 # print("tes i score",pod_available_for_multiple_items['inventory_score'].head(3))
-                print("tes cost\n",pod_available_for_multiple_items[['pod_id','similarity_score','cost']].head(2))
+                # print("tes cost\n",pod_available_for_multiple_items[['pod_id','similarity_score','cost']].head(2))
                 assigned_pod_id = pod_available_for_multiple_items["pod_id"].head(1).values[0]
            
                 assigned_pod = self.get_pod_by_id(assigned_pod_id)
@@ -220,7 +220,22 @@ class PodManager:
                     continue
 
         return total_fulfillment
-
+    
+    def _remaining_pod_sku_queue_rika (self, skus_in_station_dict , pod_skus):
+        pod_skus_copy = copy.deepcopy(pod_skus)
+        for sku, order_qty_list in skus_in_station_dict.items():
+            for order_qty in order_qty_list:
+                if sku in pod_skus_copy and pod_skus_copy[sku]["current_qty"] >= order_qty:
+                    pod_skus_copy[sku]["current_qty"] -= order_qty
+                    print(f"[Update] SKU {sku}: Deducted {order_qty}. Remaining in pod: {pod_skus_copy[sku]['current_qty']}")
+            
+        remaining_skus = {
+        sku: data["current_qty"]
+        for sku, data in pod_skus_copy.items()
+        if data["current_qty"] > 0 
+        }
+        
+        return remaining_skus
 
     def mark_pod_not_available(self, coordinate: NetLogoCoordinate):
         pod = self.coordinate_to_pods.get((coordinate.x, coordinate.y))
