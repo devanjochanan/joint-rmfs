@@ -9,7 +9,7 @@ class RobotJob:
         self.pod_coordinate = pod_coordinate
         self.pod = pod
         self.station_id = station_id
-        self.orders = []  # This will hold tuples of (order_id, sku, quantity)
+        self.orders: list[tuple[int, int, int]] = []  # This will hold tuples of (order_id, sku, quantity)
         self.picking_delay_per_sku = 10 # Time for handling a task
         self.picking_delay = 0
         self.replenishment_delay_per_sku = 20

@@ -45,7 +45,7 @@ class StationManager:
 
         return available_station
 
-    def find_highest_similarity_station(self, skus_in_order, pod_manager: PodManager) -> Optional[Station]:
+    def find_highest_similarity_station(self, skus_in_order: dict, pod_manager: PodManager) -> Optional[Station]:
         available_station_rank = pd.DataFrame(columns=["station_id", "similarity_score", "current_orders"])
         sku_in_order_list = [i for i in skus_in_order]
         available_station = []
@@ -66,7 +66,7 @@ class StationManager:
                 if len(station.order_ids) < station.max_orders:
                     # Take pod assigned to this particular station
                     station_incoming_pod = station.incoming_pod
-                    station_pod_skus_set = set()
+                    station_pod_skus_set = set()  # Jenis SKU yang ada di pod yang ngantri + otw
                     for pod_id in station_incoming_pod:
                         pod  = pod_manager.get_pod_by_id(pod_id)
                         pod_skus = [item for item, details in pod.skus.items() if details['current_qty'] > 0]
@@ -75,8 +75,11 @@ class StationManager:
 
                     station_pod_skus_list = list(station_pod_skus_set)
                     # print(f"station_pod_skus_list: {station_pod_skus_list}")
+                    # yang kembar (mask)
                     station_pod_skus_in_order_mask = np.isin(sku_in_order_list, station_pod_skus_list)
+                    # yang kembar apa aja
                     station_pod_skus_in_order = np.array(sku_in_order_list)[station_pod_skus_in_order_mask]
+                    # yang kembar ada berapa
                     similarity_score = len(station_pod_skus_in_order)
 
                     available_station_rank = pd.concat([available_station_rank , 
@@ -128,3 +131,59 @@ class StationManager:
 
     def get_station_by_id(self, station_id):
         return self.stations_by_id[station_id]
+    
+    def find_highest_supplyrate_station_rika(self, skus_in_order, pod_manager: PodManager) -> Optional[Station]:
+        available_station_rank = pd.DataFrame(columns=["station_id", "similarity_score", "current_orders"])
+        sku_in_order_list = [i for i in skus_in_order]
+        available_station = []
+        assign_station = None
+
+        # Store all available station
+        for station in self.picking_stations:
+            if len(station.order_ids) < station.max_orders:
+                available_station.append(station)
+        
+        # Check if more than one station is available
+        if len(available_station) > 0:
+            for station in available_station:
+                # Check Available Station
+                current_orders = len(station.order_ids)
+                print (f"current orders:{current_orders}")
+                ######################################
+                similarity_score = 0
+                if len(station.order_ids) < station.max_orders:
+                    # Take pod assigned to this particular station
+                    station_incoming_pod = station.incoming_pod
+                    station_pod_skus_set = set() #kenapa set ? bisa
+                    for pod_id in station_incoming_pod:
+                        pod  = pod_manager.get_pod_by_id(pod_id)
+                        pod_skus = [item for item, details in pod.skus.items() if details['current_qty'] > 0]
+                        station_pod_skus_set.update(pod_skus)
+                        # print(f"station_pod_skus_set: {station_pod_skus_set}")
+
+                    station_pod_skus_list = list(station_pod_skus_set)
+                    print(f"station_pod_skus_list: {station_pod_skus_list}")
+                    station_pod_skus_in_order_mask = np.isin(sku_in_order_list, station_pod_skus_list)
+                    #isin to compare the order's SKUs with those available in the station:
+                    station_pod_skus_in_order = np.array(sku_in_order_list)[station_pod_skus_in_order_mask]
+                    similarity_score = len(station_pod_skus_in_order)
+
+                    available_station_rank = pd.concat([available_station_rank , 
+                                                pd.DataFrame([[station.station_id, similarity_score, current_orders]], columns=["station_id", "similarity_score", "current_orders"])], ignore_index=True) 
+            
+            available_station_rank.sort_values(by=["similarity_score"], ascending=False, inplace=True)
+            available_station_rank.reset_index(drop=True, inplace=True)
+        
+        min_orders = available_station_rank['current_orders'].min() # to identify which stations are the least busy.
+        eligible_stations =  available_station_rank[available_station_rank['current_orders'] - min_orders <= 3]
+        #includes only those stations whose current order count is within 3 orders of the minimum
+        if len(eligible_stations) > 0:
+            eligible_stations.sort_values(by=["similarity_score"], ascending=False, inplace=True)
+            eligible_stations.reset_index(drop=True, inplace=True)
+            assign_station_id = eligible_stations["station_id"].head(1).values[0]
+            assign_station = self.get_station_by_id(assign_station_id)
+        elif len(available_station_rank) > 0:
+            assign_station_id = available_station_rank["station_id"].head(1)
+            assign_station = self.get_station_by_id(assign_station_id)
+
+        return assign_station
