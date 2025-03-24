@@ -23,7 +23,7 @@ globals [
 to setup
   ca
   let result ""
-  py:setup "/Users/julius/miniconda3/envs/netlogo/bin/python3"
+  py:setup py:python3
   (py:run
     "import netlogo"
     "item = netlogo.setup()")

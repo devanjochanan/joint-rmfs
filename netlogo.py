@@ -4,7 +4,8 @@ import os
 import traceback
 from typing import List
 import random
-
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 import networkx as nx
 import pandas as pd
@@ -838,7 +839,7 @@ def tick():
 
         # Perform a simulation tick
         next_result = universe.tick()
-        if universe._tick > 5000:
+        if universe._tick > 1000:
             return IndexError
 
         # Save updated state
