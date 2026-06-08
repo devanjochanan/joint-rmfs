@@ -13,16 +13,16 @@ This document compiles the known simulation time steps, tick parameters, and sch
 
 ## 2. Suspected / Observed Time Concepts
 
-Based on code inspection of `netlogo.py` and `model/inventory.py`, the following timing parameters are currently active:
+Based on code inspection of `netlogo.py` and `model/inventory.py`, the following timing parameters are observed in the codebase:
 
 1. **Simulation Time Step (`tick_to_second`)**:
    * Initialized as `0.25` in `model/inventory.py` (`self.tick_to_second = 0.25`).
-   * Overridden to `0.15` in `netlogo.py` during `setup()` (`universe.tick_to_second = 0.15`).
-   * Each simulation tick step represents **0.15 seconds** of simulated time.
+   * Current code appears to override `tick_to_second` to `0.15` in `netlogo.py` during `setup()` (`universe.tick_to_second = 0.15`).
+   * Under this override, each simulation tick step is interpreted as representing **0.15 seconds** of simulated time.
 2. **Simulation Horizon**:
    * Evaluated inside `netlogo.py` (`tick()` method).
-   * If `universe._tick > 28800`, the loop stops (returns `IndexError`).
-   * **28,800 simulated seconds** represents exactly **8 hours** of warehouse operations (8 hours * 3600 seconds/hour = 28800).
+   * The stop condition uses `universe._tick > 28800` where the loop stops (returns `IndexError`).
+   * Under the assumed tick scaling, **28,800 simulated seconds** is interpreted as representing **8 hours** of warehouse operations (8 hours * 3600 seconds/hour = 28800). This interpretation should be preserved and verified during refactor.
 3. **Order Process Interval**:
    * Handled in `model/inventory.py` (`tick()` method).
    * Checks for new orders when `int(self._tick) == self.next_process_tick` (integer increments of seconds).
@@ -31,7 +31,13 @@ Based on code inspection of `netlogo.py` and `model/inventory.py`, the following
    * Inside `model/robot.py`, a base delay coefficient is defined: `self.delay_per_task = 10` ticks.
    * **Turning Delay**: `self.turning_delay += self.delay_per_task * angular_change` (where angular change is the count of 90-degree rotations needed).
    * **Taking Pod / Lifting Delay**: `self.taking_pod_delay += self.delay_per_task`.
-   * Since each tick is 0.15 seconds, a delay of `10` ticks equates to `10 * 0.15 = 1.5 seconds` of simulated lift/turn operations.
+   * Under the assumed tick scaling, a delay of `10` ticks equates to `1.5 seconds` of simulated lift/turn operations. However, this is an observed code value rather than a validated simulation semantic.
+
+> [!IMPORTANT]
+> **Refactoring Constraints & Guidelines**
+> * **Do not change time semantics in Phase 3**: Keep the current timing logic intact without modification.
+> * **Do not claim validated timing behavior** without a targeted equivalence check. All details above are observed code facts rather than fully validated simulation semantics.
+
 
 ---
 

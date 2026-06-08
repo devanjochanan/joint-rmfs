@@ -4,7 +4,7 @@ This planning table outlines the planned movement of existing repository files i
 
 > [!WARNING]
 > **This is a planning document only.** 
-> No files are physically moved or refactored in Phase 2.
+> No files are physically moved or refactored during the documentation scaffolding phase.
 
 ---
 
@@ -16,11 +16,11 @@ This planning table outlines the planned movement of existing repository files i
 | `netlogo.py` | Python entry point called by NetLogo bridge. | `src/rmfs/app/netlogo_bridge.py` | Phase 3 | **High** | NetLogo calls `import netlogo`. The bridge must maintain exact API bindings. |
 | `engine/coordinate.py` | Coordinate class. | `src/rmfs/core/coordinate.py` | Phase 3 | Low | Core data class. |
 | `engine/deep_q_network.py` | RL deep network for intersections. | `src/rmfs/core/deep_q_network.py` | Phase 3 | Medium | Neural net definition. |
-| `engine/heading.py` | Heading angle tracker. | `src/rmfs/core/heading.py` | Phase 3 | Low | Helper enum/class. |
-| `engine/landscape.py` | 2D patch matrix operations. | `src/rmfs/core/landscape.py` | Phase 3 | Medium | Proximity search query. |
-| `engine/movement.py` | Coordinate updates utility. | `src/rmfs/core/movement.py` | Phase 3 | Low | Helper class. |
-| `engine/netlogo_coordinate.py` | Coordinate math helper. | `src/rmfs/core/netlogo_coordinate.py` | Phase 3 | Low | Grid offsets helper. |
-| `engine/object.py` | Base agent class. | `src/rmfs/core/object.py` | Phase 3 | Medium | Class hierarchy anchor. |
+| `engine/heading.py` | Heading angle tracker. | `src/rmfs/core/heading.py` | Phase 3 | Low | Helper enum/class (provisional destination). |
+| `engine/landscape.py` | 2D patch matrix operations. | `src/rmfs/core/landscape.py` | Phase 3 | Medium | Proximity search query (provisional destination). |
+| `engine/movement.py` | Coordinate updates utility. | `src/rmfs/core/movement.py` | Phase 3 | Low | Helper class (provisional destination). |
+| `engine/netlogo_coordinate.py` | Coordinate math helper. | `src/rmfs/core/netlogo_coordinate.py` | Phase 3 | Low | Grid offsets helper (provisional destination). |
+| `engine/object.py` | Base agent class. | `src/rmfs/core/object.py` | Phase 3 | Medium | Class hierarchy anchor (provisional destination). |
 | `engine/universe.py` | Abstract clock runner. | `src/rmfs/simulation/universe.py` | Phase 3 | Medium | Drives object ticking. |
 | `engine/util.py` | Geometric distance checks. | `src/rmfs/core/util.py` | Phase 3 | Low | Math helper. |
 | `model/inventory.py` | Active simulation environment loop. | `src/rmfs/simulation/inventory.py` | Phase 3 / 4 | **High** | Heavy domain file; core decisions (POA, PPS) will be split off in Phase 4. |
@@ -42,9 +42,9 @@ This planning table outlines the planned movement of existing repository files i
 | `model/order_generator.py` | CSV order stream generator. | `src/rmfs/order_generation/order_generator.py` | Phase 4 | Medium | Order stream builder. |
 | `model/pod_generator.py` | CSV pod stock generator. | `src/rmfs/order_generation/pod_generator.py` | Phase 4 | Medium | Initial stock builder. |
 | `model/item_pod_generator.py` | Alternate pod stock generator. | `src/rmfs/order_generation/item_pod_generator.py` | Phase 4 | Medium | Initial stock builder. |
-| `model/layout.py` | Matrix grid builder. | `src/rmfs/order_generation/layout.py` | Phase 4 | Medium | Builds grid layouts. |
+| `model/layout.py` | Matrix grid builder. | `src/rmfs/simulation/layout.py` | Phase 4 | Medium | Builds grid layouts. |
 | `model/live_advanced_table.py` | Experimental TKinter UI. | `src/rmfs/legacy/live_advanced_table.py` | Phase 3 | Low | Unused visualization tool. |
-| `model/robot_new.py` | Unused experimental Robot class. | `src/rmfs/legacy/robot_new.py` | Phase 3 | Low | Dead code quarantine. |
+| `model/robot_new.py` | Unused experimental Robot class. | `src/rmfs/legacy/robot_new.py` | Phase 3 | Low | Candidate legacy/quarantine file; do not delete yet. Recommended future action: quarantine in `src/rmfs/legacy/` during Phase 3 or delete later in a separate cleanup only after explicit approval. |
 | `model/tools/job_task.py` | SQLite tasks updater. | `src/rmfs/runtime_io/job_task.py` | Phase 3 | Medium | Database writer. |
 | `model/tools/order_history.py` | SQLite order updater. | `src/rmfs/runtime_io/order_history.py` | Phase 3 | Medium | Database writer. |
 | `model/tools/pod_location.py` | SQLite pod coordinate registry. | `src/rmfs/runtime_io/pod_location.py` | Phase 3 | **High** | Database coordinate sync. |

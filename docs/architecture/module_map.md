@@ -42,23 +42,23 @@ This document maps the functional components of the simulation to their current 
 * **Behavior Risk Level**: **High**
 * **Notes**: Fundamental classes used throughout the entire codebase.
 
-### 5. Decisions: POA (Pod-to-Order Allocation)
-* **Description**: Core allocation algorithm assigning order batches to picker slots and matching stations.
+### 5. Decisions: POA (Pick Order Assignment)
+* **Description**: Core assignment algorithm mapping order batches to picker slots and matching stations.
 * **Current Source File(s)**: `model/inventory.py` (specifically methods `assign_order`, `xxx`, `yyy`)
 * **Future Destination**: `src/rmfs/decisions/poa/`
-* **Owner**: Devan / Shared
+* **Owner**: Team / Shared
 * **Migration Status**: Not moved (planned for Phase 4)
 * **Behavior Risk Level**: **High**
-* **Notes**: Critical scheduling component affecting simulation speed and throughput.
+* **Notes**: Critical scheduling component affecting simulation speed and throughput. Currently resides entirely in active source files; the future folder is a scaffold placeholder.
 
-### 6. Decisions: PPS (Pod-to-Picker Selection)
+### 6. Decisions: PPS (Pick Pod Selection)
 * **Description**: Selects the optimal pod to retrieve from storage to fulfill a station's batch orders (e.g., Pile-On or Demand).
 * **Current Source File(s)**: `model/inventory.py` (specifically methods `find_best_pod`, `find_pod_with_the_highest_pile_on`, `find_pod_with_the_highest_demand`, `add_picking_task_after_pps`)
 * **Future Destination**: `src/rmfs/decisions/pps/`
 * **Owner**: Devan
 * **Migration Status**: Not moved (planned for Phase 4)
 * **Behavior Risk Level**: **High**
-* **Notes**: Devan's primary research area.
+* **Notes**: Devan's primary research area. Currently resides entirely in active source files; the future folder is a scaffold placeholder.
 
 ### 7. Decisions: RTS (Return-to-Storage)
 * **Description**: Selects storage spots for pods returning from pickers (fixed locations vs. nearest empty bin).

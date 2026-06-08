@@ -13,7 +13,7 @@ This profile documents the ownership details, current code mappings, and plans f
 
 ## 2. Refactoring Phase Status
 
-* **Phase 2 Status**: **Placeholder only**.
+* **Status**: Scaffold placeholder only.
 * **Restrictions**:
   * Do not write execution code in the scaffold directories.
   * Do not import regret-k or RTS-RL algorithms yet.

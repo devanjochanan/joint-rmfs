@@ -1,4 +1,4 @@
-# PPS (Pod-to-Picker Selection) Module Ownership Profile
+# PPS (Pick Pod Selection) Module Ownership Profile
 
 This profile documents the ownership details, current code mappings, and plans for the PPS module.
 
@@ -6,14 +6,14 @@ This profile documents the ownership details, current code mappings, and plans f
 
 ## 1. Module Overview
 * **Owner**: Devan
-* **Responsibility**: PPS (Pod-to-Picker Selection) matching policies that decide which pods to bring to active stations based on current queues.
+* **Responsibility**: PPS (Pick Pod Selection) matching policies that decide which pods to bring to active stations based on current queues.
 * **Future Folder Location**: `src/rmfs/decisions/pps/`
 
 ---
 
 ## 2. Refactoring Phase Status
 
-* **Phase 2 Status**: **Placeholder only**.
+* **Status**: Scaffold placeholder only.
 * **Restrictions**:
   * Do not write execution code in the scaffold directories.
   * Do not add PPO or PPS-RL models yet.

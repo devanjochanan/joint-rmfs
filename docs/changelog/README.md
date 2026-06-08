@@ -48,7 +48,7 @@ For all future refactoring stages, developers must append entries in the followi
 * **Validation Run**: Ran `git status --short` and `git diff --cached --name-status` to verify index removals.
 * **Residual Risks**: Runtime states are now unversioned (which is intended), but developers must ensure baseline templates (e.g. `generated_pod.csv`) are kept in sync manually.
 
-### 2026-06-08 Phase 2 - Folder Scaffold & Ownership Documentation (Current)
+### 2026-06-08 Phase 2 - Folder Scaffold & Ownership Documentation
 * **Files Changed/Created/Deleted**:
   * `[NEW] docs/current/current_state.md`
   * `[NEW] docs/architecture/module_map.md`
