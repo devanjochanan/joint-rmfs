@@ -1,8 +1,35 @@
-**/__pycache__
-/.idea/misc.xml
-/.idea/modules.xml
-/.idea/netlogo-ext.iml
-/.idea/inspectionProfiles/profiles_settings.xml
-/.idea/vcs.xml
-/.idea/.gitignore
+# Python cache/build artifacts
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE/Editor metadata
+/.idea/
+.DS_Store
+.vscode/
+.claude/
+
+# Local NetLogo/Python runtime state
 netlogo.state
+*.state
+*.pickle
+*.pkl
+
+# Runtime databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime CSV telemetry/status outputs
+assign_order.csv
+pod_info.csv
+
+# Profiling artifacts
+*.prof
+
+# Simulation outputs / archived local runs
+output/
+PS/
+robot sa data/
