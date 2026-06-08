@@ -126,3 +126,25 @@ For all future refactoring stages, developers must append entries in the followi
 * **Residual Risks**:
   * Full simulation run has not been executed. Behavior equivalence remains a Phase 5 acceptance-check item.
   * `docs/architecture/file_inventory.md` still references `generated_pod2.csv` etc. and `model/robot_new.py` in historical inspection notes. These are Phase 1 audit records and were intentionally not edited.
+
+### 2026-06-08 Phase 5 - Bridge Acceptance Audit
+* **Files Changed/Created/Deleted**:
+  * `[NEW] docs/architecture/phase5_acceptance_audit.md`
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/changelog/README.md`
+  * `[MODIFY] src/rmfs/app/README.md` (corrected stale placeholder wording after Phase 4 bridge split)
+* **Behavior Changes**: No. Documentation-only audit; no active behavior code was edited.
+* **Validation Run**:
+  * `py_compile` passed for `netlogo.py`, `src/rmfs/app/netlogo_api.py`, `profile_netlogo.py`, and tracked active `engine/*.py`, `model/*.py`, `model/tools/*.py` files.
+  * Import/signature checks confirmed `setup()`, `tick()`, `console_tick()`, and `setup_py()` through root `netlogo` and `src.rmfs.app.netlogo_api`.
+  * Shim export consistency check passed.
+  * Historical AST comparison found no missing public functions, public classes, or public assignments between pre-Phase-4 root `netlogo.py` and current `src/rmfs/app/netlogo_api.py`.
+  * Reference greps found no active imports from `src/rmfs/legacy/**` and no active-code references to deleted generated-pod variants or deleted `robot_new.py`.
+* **Acceptance Result**: ACCEPTED WITH RESIDUAL RISKS.
+* **Residual Risks**:
+  * Full NetLogo GUI run was not performed.
+  * `setup()`, `tick()`, `setup_py()`, and `console_tick()` were not executed.
+  * Behavior equivalence was not measured by simulation outputs.
+  * Runtime paths and CSV/state behavior remain root-relative.
+  * Decision modules remain unextracted; future researchers should avoid editing active shared internals until extraction.
+  * Import checks emitted a Matplotlib cache warning because `/home/dewan/.config/matplotlib` is not writable.

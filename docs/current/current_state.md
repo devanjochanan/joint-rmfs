@@ -16,6 +16,7 @@ This file records the repository state and refactor constraints at the time it w
 - Phase 3: documentation-only `data/` planning skeleton was created, and confirmed-unused legacy/sandbox Python files were quarantined in `src/rmfs/legacy/`.
 - Phase 4: the first active package boundary was created by moving the NetLogo Python bridge implementation from root `netlogo.py` into `src/rmfs/app/netlogo_api.py`. Root `netlogo.py` was replaced with a compatibility shim.
 - Phase 4.1: post-bridge cleanup — deleted noncanonical generated-pod CSV variants and the quarantined `robot_new.py`. Corrected stale documentation wording.
+- Phase 5: acceptance audit recorded static/import/signature checks for the bridge split and repository scaffold.
 
 ## Recorded Phase 4 Bridge Split
 - Root `netlogo.py` remains the stable NetLogo-facing module; it re-exports all public symbols from `src/rmfs/app/netlogo_api.py`.
@@ -31,5 +32,13 @@ This file records the repository state and refactor constraints at the time it w
 - Remaining quarantined legacy files (`astar.py`, `astar_only.py`, `generate_pod.py`, `stock_out_probability.py`) are retained in `src/rmfs/legacy/`.
 - No active behavior files were modified in this cleanup.
 
+## Recorded Phase 5 Acceptance Audit
+- Static syntax checks passed for the root bridge shim, bridge implementation, profiling script, active `engine/**`, and active `model/**` Python files.
+- Import/signature checks confirmed `setup()`, `tick()`, `console_tick()`, and `setup_py()` are still available through both `import netlogo` and `src.rmfs.app.netlogo_api`.
+- Shim export checks confirmed the root bridge re-exports the implementation API objects.
+- Historical AST comparison found no missing public functions, classes, or public assignments between pre-Phase-4 root `netlogo.py` and current `src/rmfs/app/netlogo_api.py`.
+- No active source imports from `src/rmfs/legacy/**`.
+- Acceptance result: accepted with residual risks because no NetLogo GUI run, setup/tick execution, simulation-output equivalence check, or benchmark was performed.
+
 ## Current Constraint
-No behavior refactor has happened. Behavior equivalence remains a Phase 5 acceptance-check item.
+No decision-logic behavior refactor has happened. Behavior equivalence still requires a separate simulation run and output comparison.
