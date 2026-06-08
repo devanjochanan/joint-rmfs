@@ -4,8 +4,9 @@ This planning table outlines the planned movement of existing repository files i
 
 > [!WARNING]
 > **This is a planning document only.** 
-> Phase 3 only quarantined confirmed-unused legacy/sandbox files in `src/rmfs/legacy/` and added a documentation-only `data/` skeleton.
-> Active behavior files remain in their current locations until a later package refactor.
+> Phase 3 quarantined confirmed-unused legacy/sandbox files in `src/rmfs/legacy/` and added a documentation-only `data/` skeleton.
+> Phase 4 split the NetLogo bridge: root `netlogo.py` is now a compatibility shim delegating to `src/rmfs/app/netlogo_api.py`.
+> All other active behavior files remain in their current locations until a later package refactor.
 
 ---
 
@@ -14,7 +15,8 @@ This planning table outlines the planned movement of existing repository files i
 | Current Path | Current Role | Future Destination | Migration Phase | Risk | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `simulation.nlogo` | Frontend UI and setup/go buttons triggers. | `simulation.nlogo` (Keep at Root) | N/A | **High** | Cannot be moved; NetLogo expects the `.nlogo` file at root. Bridges to `netlogo.py`. |
-| `netlogo.py` | Python entry point called by NetLogo bridge. | `src/rmfs/app/netlogo_bridge.py` | Later package refactor | **High** | NetLogo calls `import netlogo`. The bridge must maintain exact API bindings. Not moved in Phase 3. |
+| `netlogo.py` | Root compatibility shim (re-exports from `src/rmfs/app/netlogo_api.py`). | `netlogo.py` (Keep at Root as shim) | Phase 4 bridge split (done) | **High** | NetLogo calls `import netlogo`. The shim preserves exact API bindings. |
+| `src/rmfs/app/netlogo_api.py` | Active NetLogo bridge implementation (classes, helpers, `setup`, `tick`, `console_tick`, `setup_py`). | `src/rmfs/app/netlogo_api.py` | Phase 4 bridge split (done) | **High** | Contains the full implementation previously in root `netlogo.py`. Imports `engine/**` and `model/**` from their current locations. |
 | `engine/coordinate.py` | Coordinate class. | `src/rmfs/core/coordinate.py` | Later package refactor | Low | Core data class. Not moved in Phase 3. |
 | `engine/deep_q_network.py` | RL deep network for intersections. | `src/rmfs/core/deep_q_network.py` | Later package refactor | Medium | Neural net definition. Not moved in Phase 3. |
 | `engine/heading.py` | Heading angle tracker. | `src/rmfs/core/heading.py` | Later package refactor | Low | Helper enum/class (provisional destination). Not moved in Phase 3. |

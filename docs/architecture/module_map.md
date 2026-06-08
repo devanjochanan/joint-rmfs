@@ -8,12 +8,12 @@ This document maps the functional components of the simulation to their current 
 
 ### 1. NetLogo Bridge / App Boundary
 * **Description**: Facade interface between the NetLogo execution engine and Python simulation.
-* **Current Source File(s)**: `netlogo.py`
-* **Future Destination**: `src/rmfs/app/`
+* **Current Source File(s)**: `netlogo.py` (root compatibility shim) → `src/rmfs/app/netlogo_api.py` (active implementation)
+* **Future Destination**: `src/rmfs/app/` (bridge implementation already moved in Phase 4)
 * **Owner**: Team / Shared
-* **Migration Status**: Not moved (future package refactor)
+* **Migration Status**: Phase 4 bridge split completed. Root `netlogo.py` is now a thin shim re-exporting from `src/rmfs/app/netlogo_api.py`.
 * **Behavior Risk Level**: **High**
-* **Notes**: Any alteration to function signatures breaks NetLogo extension calls.
+* **Notes**: Any alteration to function signatures breaks NetLogo extension calls. The shim preserves exact API compatibility.
 
 ### 2. Simulation Core / Universe
 * **Description**: Coordinates simulation ticks, schedules execution steps, and holds universe collections.

@@ -83,3 +83,24 @@ For all future refactoring stages, developers must append entries in the followi
 * **Behavior Changes**: No. No active behavior files, baseline CSVs, runtime paths, or NetLogo bridge files were changed.
 * **Validation Run**: Lightweight syntax checks were run with `/home/dewan/torch-gpu/bin/python` for `netlogo.py`, tracked `engine/*.py` and active `model/*.py`, and quarantined `src/rmfs/legacy/*.py` files.
 * **Residual Risks**: Existing local uncommitted CSV changes remain outside this cleanup. The quarantined `robot_new.py` file preserves pre-existing local edits and should be reviewed before any future deletion.
+
+### 2026-06-08 Phase 4 - NetLogo Bridge Package Boundary
+* **Files Changed/Created/Deleted**:
+  * `[MODIFY] netlogo.py` (replaced 946-line implementation with ~22-line compatibility shim)
+  * `[NEW] src/rmfs/app/netlogo_api.py` (full bridge implementation moved here)
+  * `[NEW] src/rmfs/__init__.py` (package init)
+  * `[NEW] src/rmfs/app/__init__.py` (package init)
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/architecture/file_map.md`
+  * `[MODIFY] docs/architecture/module_map.md`
+  * `[MODIFY] docs/changelog/README.md`
+* **Behavior Changes**: No. The root `netlogo.py` shim re-exports all public symbols from `src/rmfs/app/netlogo_api.py` via `from src.rmfs.app.netlogo_api import *` constrained by `__all__`. No function signatures, return shapes, side effects, paths, seeds, or timing were altered.
+* **Validation Run**:
+  * `py_compile` passed for `netlogo.py`, `src/rmfs/app/netlogo_api.py`, `profile_netlogo.py`, all tracked `engine/*.py`, `model/*.py`, and `model/tools/*.py` files.
+  * Import compatibility test confirmed `setup`, `tick`, `console_tick`, `setup_py`, `DirectedGraph`, and `ACTIVATE_NEAREST` are accessible via `import netlogo`.
+  * Reference grep confirmed only `netlogo.py` imports from `src.rmfs.app.netlogo_api`; external callers still use `import netlogo`.
+* **Residual Risks**:
+  * Full simulation run (`setup()` → `tick()` loop) was not executed; only import/syntax compatibility was verified.
+  * If NetLogo's `py` extension sets an unexpected working directory, the `sys.path` fixup in the shim should handle it, but this should be confirmed during the next interactive simulation run.
+  * `from pip._internal import main as pipmain` in `netlogo_api.py` is preserved from the original; it is a fragile import that may break across pip versions.
+
