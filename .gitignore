@@ -33,3 +33,8 @@ pod_info.csv
 output/
 PS/
 robot sa data/
+
+# Local agent rules file
+AGENTS.md
+agents.md
+
