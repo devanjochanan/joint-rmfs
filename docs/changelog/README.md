@@ -62,4 +62,24 @@ For all future refactoring stages, developers must append entries in the followi
   * `[NEW] src/rmfs/**/README.md` (Scaffold placeholder folders)
 * **Behavior Changes**: No (Expected to be **fully behavior-neutral**; no code changes were introduced).
 * **Validation Run**: Verified status and diffs of the newly introduced documentation files and folders.
-* **Residual Risks**: Future package imports must be updated carefully in Phase 3 to avoid circular references.
+* **Residual Risks**: Future package imports must be updated carefully in a later package refactor to avoid circular references.
+
+### 2026-06-08 Phase 3 - Behavior-Neutral Layout Cleanup
+* **Files Changed/Created/Deleted**:
+  * `[NEW] data/README.md`
+  * `[NEW] data/input/README.md`
+  * `[NEW] data/runtime/README.md`
+  * `[NEW] data/archived/README.md`
+  * `[MOVE] model/robot_new.py -> src/rmfs/legacy/robot_new.py`
+  * `[MOVE] astar.py -> src/rmfs/legacy/astar.py`
+  * `[MOVE] astar_only.py -> src/rmfs/legacy/astar_only.py`
+  * `[MOVE] generate_pod.py -> src/rmfs/legacy/generate_pod.py`
+  * `[MOVE] stock_out_probability.py -> src/rmfs/legacy/stock_out_probability.py`
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/architecture/file_map.md`
+  * `[MODIFY] docs/architecture/module_map.md`
+  * `[MODIFY] docs/architecture/current_architecture_map.md`
+  * `[MODIFY] src/rmfs/legacy/README.md`
+* **Behavior Changes**: No. No active behavior files, baseline CSVs, runtime paths, or NetLogo bridge files were changed.
+* **Validation Run**: Lightweight syntax checks were run with `/home/dewan/torch-gpu/bin/python` for `netlogo.py`, tracked `engine/*.py` and active `model/*.py`, and quarantined `src/rmfs/legacy/*.py` files.
+* **Residual Risks**: Existing local uncommitted CSV changes remain outside this cleanup. The quarantined `robot_new.py` file preserves pre-existing local edits and should be reviewed before any future deletion.

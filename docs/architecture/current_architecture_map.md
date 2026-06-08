@@ -1,6 +1,8 @@
 # Rika RMFS Current Architecture Map
 
-This document outlines the software architecture, execution path, import dependencies, file flows, and organizational ownership areas of the `joint-rmfs` simulation repository before any refactoring.
+This document outlines the software architecture, execution path, import dependencies, file flows, and organizational ownership areas of the `joint-rmfs` simulation repository after the recorded Phase 3 layout cleanup.
+
+Phase 3 did not move active behavior code. The active simulation still runs through `simulation.nlogo`, `netlogo.py`, `engine/**`, and active `model/**` files.
 
 ---
 
@@ -96,6 +98,8 @@ The simulation relies on a mix of structured CSV catalogs, layout templates, run
          └─ intersection-energy-consumption.csv (Congestion energy tracking)
 ```
 
+Phase 3 added `data/`, `data/input/`, `data/runtime/`, and `data/archived/` as documentation-only planning folders. No baseline CSVs, runtime DB/state files, telemetry outputs, or archive artifacts were moved.
+
 ---
 
 ## 5. Current Likely Ownership Areas
@@ -134,26 +138,36 @@ Based on current code structures, the research and development areas map to indi
 
 ## 6. Proposed Future Destination Map
 
-To clean up the repository structure and isolate runtime states from source files, the following modular organization is planned:
+To clean up the repository structure and isolate runtime states from source files, the following modular organization remains planned for later phases. These moves were not performed in Phase 3:
 
 | Current Path | Proposed Future Path | Rationale | Migration Risk |
 | :--- | :--- | :--- | :--- |
-| `netlogo.py` | `src/bridge/netlogo_bridge.py` | Separates NetLogo bridge boilerplate from model logic. | **Low**: Requires updating the import statements in `simulation.nlogo`. |
-| `engine/` | `src/engine/` | Keeps low-level coordinate/grid structures grouped. | **Low**: Minor import search-and-replace. |
-| `model/` | `src/model/` | Standardizes domain entity paths under a parent source folder. | **Medium**: Many cross-imports will need updating. |
-| `model/tools/` | `src/telemetry/` | Separates SQLite logging and telemetry tools from domain entities. | **Low**: Standard package refactor. |
-| `*.py` (root helpers) | `tools/` or `scratch/` | Removes profiling and matrix generation sandboxes from root. | **Low**: Standalone scripts. |
+| `netlogo.py` | `src/rmfs/app/netlogo_bridge.py` | Separates NetLogo bridge boilerplate from model logic. | **High**: NetLogo calls `import netlogo`; API compatibility must be preserved. |
+| `engine/` | `src/rmfs/core/` and related package folders | Keeps low-level coordinate/grid structures grouped. | **Medium**: Import paths must be updated without changing behavior. |
+| active `model/` files | `src/rmfs/core/`, `src/rmfs/managers/`, `src/rmfs/simulation/`, and decision folders | Standardizes domain entity paths under the future package structure. | **High**: Many cross-imports and active behavior paths will need updating. |
+| `model/tools/` | `src/rmfs/runtime_io/` and `src/rmfs/metrics/` | Separates SQLite logging and telemetry tools from domain entities. | **Medium**: Runtime file paths and database writes must be validated. |
+| `profile_netlogo.py` | TBD, retained at root for now | Preserves the documented local profiling workflow until a separate profiling CLI decision is made. | **Low**: Standalone script, but it invokes active `netlogo.console_tick()`. |
 | `*.csv` (root catalogs) | `data/input/` | Isolates input dataset catalogs. | **High**: File path strings are hardcoded in multiple scripts; requires rigorous regression checks. |
 | `assign_order.csv`, `pod_info.csv`, `warehouse.db` | `data/runtime/` | Prevents runtime states from cluttering source directories. | **High**: Real-time relative paths must be updated globally. |
 | `netlogo.state` | `data/runtime/netlogo.state` | Groups all transient state files together. | **High**: Must update both Python pickling paths and NetLogo state loading logic. |
 
 ---
 
-## 7. "Do Not Change in Phase 1" Section
+## 7. Recorded Phase 3 Boundary
 
 > [!IMPORTANT]
-> **No code modifications or refactoring operations are allowed in Phase 1.**
-> The active codebase (including `simulation.nlogo`, `netlogo.py`, and all files in `engine/` and `model/`) must remain exactly in its current state. Only the adding of dependencies to `requirements.txt` is permitted. All architectural refactoring and folder migrations must wait for Phase 2 execution.
+> **No active behavior files were moved in Phase 3.**
+> The active codebase (`simulation.nlogo`, `netlogo.py`, `engine/**`, and active `model/**`) remains the source of truth. Phase 3 only added documentation-only `data/` planning folders and quarantined confirmed-unused legacy/sandbox files.
+
+Quarantined in Phase 3:
+* `model/robot_new.py` -> `src/rmfs/legacy/robot_new.py`
+* `astar.py` -> `src/rmfs/legacy/astar.py`
+* `astar_only.py` -> `src/rmfs/legacy/astar_only.py`
+* `generate_pod.py` -> `src/rmfs/legacy/generate_pod.py`
+* `stock_out_probability.py` -> `src/rmfs/legacy/stock_out_probability.py`
+
+Retained at root in Phase 3:
+* `profile_netlogo.py`, because it is documented as a profiling entry point.
 
 ---
 
@@ -164,7 +178,7 @@ To clean up the repository structure and isolate runtime states from source file
 2. **Overlap between Pod Generators**:
    * What is the structural difference between `model/pod_generator.py` and `model/item_pod_generator.py`? They appear to share highly overlapping responsibilities for SKU allocation.
 3. **Dead Code / Experimental Files**:
-   * `model/robot_new.py` contains 2,000+ lines of modifications but is not imported anywhere. We need to clarify if this is a legacy experiment or if it was intended to replace `model/robot.py` in some scenarios.
+   * `src/rmfs/legacy/robot_new.py` preserves pre-existing local modifications from the former `model/robot_new.py` path. It is not imported by active code, but should be reviewed before any future deletion.
 4. **Teleportation Bug Fixes**:
    * There are inline comments indicating teleportation issues (e.g. `# try to fix teleport` around line 628 of `model/inventory.py`). We need to understand if these telemetry writes directly affect robot coordinates or if they are purely diagnostic.
 5. **RL Training Framework**:

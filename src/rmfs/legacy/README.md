@@ -2,9 +2,16 @@
 
 This folder is part of the future refactored structure for the Rika RMFS simulation.
 
-* **Status**: Placeholder only.
+* **Status**: Phase 3 quarantine for confirmed-unused legacy/sandbox files.
 * **Rules**:
-  * No behavior/logic lives here yet.
-  * Do not import from this folder yet.
-* **Future Purpose**: Quarantine for legacy sandbox scripts and unused experimental modules (such as `robot_new.py`, `astar.py`, `astar_only.py`, and `stock_out_probability.py`).
+  * Active simulation behavior must not import from this folder.
+  * Files here are retained for auditability and possible future deletion, not as active package modules.
+  * Moving additional files here requires confirming they have no active imports or runtime references.
+* **Quarantined in Phase 3**:
+  * `robot_new.py`
+  * `astar.py`
+  * `astar_only.py`
+  * `generate_pod.py`
+  * `stock_out_probability.py`
+* **Future Purpose**: Holding area for legacy sandbox scripts and unused experimental modules.
 * **Future Owner**: Team / Shared

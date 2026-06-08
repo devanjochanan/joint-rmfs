@@ -11,7 +11,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `netlogo.py`
 * **Future Destination**: `src/rmfs/app/`
 * **Owner**: Team / Shared
-* **Migration Status**: Not moved (planned for Phase 3)
+* **Migration Status**: Not moved (future package refactor)
 * **Behavior Risk Level**: **High**
 * **Notes**: Any alteration to function signatures breaks NetLogo extension calls.
 
@@ -20,7 +20,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `model/inventory.py` (inherits from `engine/universe.py`)
 * **Future Destination**: `src/rmfs/simulation/`
 * **Owner**: Team / Shared
-* **Migration Status**: Not moved (planned for Phase 3)
+* **Migration Status**: Not moved (future package refactor)
 * **Behavior Risk Level**: **High**
 * **Notes**: Central loop driver; extremely sensitive to timing or sequence edits.
 
@@ -29,7 +29,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `model/pod_manager.py`, `model/station_manager.py`, `model/storage_manager.py`, `model/order_manager.py`, `model/intersection_manager.py`
 * **Future Destination**: `src/rmfs/managers/`
 * **Owner**: Team / Shared
-* **Migration Status**: Not moved (planned for Phase 3)
+* **Migration Status**: Not moved (future package refactor)
 * **Behavior Risk Level**: **High**
 * **Notes**: Mutates and retrieves active entity positions and queues.
 
@@ -38,7 +38,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `engine/object.py`, `engine/coordinate.py`, `engine/netlogo_coordinate.py`, `engine/heading.py`, `engine/movement.py`, `engine/landscape.py`, `model/order.py`, `model/pod.py`, `model/station.py`, `model/storage.py`, `model/robot_job.py`
 * **Future Destination**: `src/rmfs/core/`
 * **Owner**: Team / Shared
-* **Migration Status**: Not moved (planned for Phase 3)
+* **Migration Status**: Not moved (future package refactor)
 * **Behavior Risk Level**: **High**
 * **Notes**: Fundamental classes used throughout the entire codebase.
 
@@ -92,7 +92,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `model/tools/job_task.py`, `model/tools/pod_location.py`, `model/tools/pod_travel.py`, `model/tools/order_history.py`, `model/tools/pre_assign.py`
 * **Future Destination**: `src/rmfs/runtime_io/`
 * **Owner**: Team / Shared
-* **Migration Status**: Not moved (planned for Phase 3)
+* **Migration Status**: Not moved (future package refactor)
 * **Behavior Risk Level**: **Medium**
 * **Notes**: Responsible for telemetry writes. Errors lead to diagnostic logs failing or database lock issues.
 
@@ -101,15 +101,15 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `model/tools/write_record.py`
 * **Future Destination**: `src/rmfs/metrics/`
 * **Owner**: Team / Shared
-* **Migration Status**: Not moved (planned for Phase 3)
+* **Migration Status**: Not moved (future package refactor)
 * **Behavior Risk Level**: **Low**
 * **Notes**: Outputs CSV telemetry files.
 
 ### 12. Legacy / Quarantine
 * **Description**: Holds standalone sandbox scripts, offline probability estimators, profiling helpers, and duplicate classes.
-* **Current Source File(s)**: `astar.py`, `astar_only.py`, `stock_out_probability.py`, `profile_netlogo.py`, `generate_pod.py`, `model/robot_new.py`
+* **Current Source File(s)**: `src/rmfs/legacy/astar.py`, `src/rmfs/legacy/astar_only.py`, `src/rmfs/legacy/stock_out_probability.py`, `src/rmfs/legacy/generate_pod.py`, `src/rmfs/legacy/robot_new.py`, plus root `profile_netlogo.py`
 * **Future Destination**: `src/rmfs/legacy/`
 * **Owner**: Team / Shared
-* **Migration Status**: Not moved (planned for Phase 3)
+* **Migration Status**: Confirmed-unused sandbox files quarantined in Phase 3; `profile_netlogo.py` retained at root
 * **Behavior Risk Level**: **Low**
-* **Notes**: Sandboxes currently ignored/unused by the main NetLogo active run.
+* **Notes**: Quarantined files are not imported by the main NetLogo active run. `profile_netlogo.py` is documented as a local profiling entry point and was not moved.
