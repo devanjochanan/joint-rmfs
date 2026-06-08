@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Devan/.claude/projects/c--Users-Devan-Documents-RMFS-Simulation-Rika-Netlogo/memory//**)"
+    ]
+  }
+}
