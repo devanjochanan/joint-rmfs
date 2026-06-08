@@ -47,7 +47,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `model/inventory.py` (specifically methods `assign_order`, `xxx`, `yyy`)
 * **Future Destination**: `src/rmfs/decisions/poa/`
 * **Owner**: Team / Shared
-* **Migration Status**: Not moved (planned for Phase 4)
+* **Migration Status**: Not moved. Future decision-extraction phase.
 * **Behavior Risk Level**: **High**
 * **Notes**: Critical scheduling component affecting simulation speed and throughput. Currently resides entirely in active source files; the future folder is a scaffold placeholder.
 
@@ -56,7 +56,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `model/inventory.py` (specifically methods `find_best_pod`, `find_pod_with_the_highest_pile_on`, `find_pod_with_the_highest_demand`, `add_picking_task_after_pps`)
 * **Future Destination**: `src/rmfs/decisions/pps/`
 * **Owner**: Devan
-* **Migration Status**: Not moved (planned for Phase 4)
+* **Migration Status**: Not moved. Future decision-extraction phase.
 * **Behavior Risk Level**: **High**
 * **Notes**: Devan's primary research area. Currently resides entirely in active source files; the future folder is a scaffold placeholder.
 
@@ -65,7 +65,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `model/robot.py` (methods `return_fix` and `return_nearest` logic inside `advance_state_if_needed`)
 * **Future Destination**: `src/rmfs/decisions/rts/`
 * **Owner**: Dewa
-* **Migration Status**: Not moved (planned for Phase 4)
+* **Migration Status**: Not moved. Future decision-extraction phase.
 * **Behavior Risk Level**: **High**
 * **Notes**: Dewa's primary research area. Closely tied to path planning and collision management.
 
@@ -74,7 +74,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `model/robot.py` (energy consumption fields & `calculateEnergy`), `model/layout.py` (charging slot markers)
 * **Future Destination**: `src/rmfs/decisions/charging/`
 * **Owner**: Salsa
-* **Migration Status**: Not moved (planned for Phase 4)
+* **Migration Status**: Not moved. Future decision-extraction phase.
 * **Behavior Risk Level**: **Medium**
 * **Notes**: Salsa's primary research area. Controls energy consumption profiles.
 
@@ -83,7 +83,7 @@ This document maps the functional components of the simulation to their current 
 * **Current Source File(s)**: `model/order_generator.py`, `model/pod_generator.py`, `model/item_pod_generator.py`
 * **Future Destination**: `src/rmfs/order_generation/`
 * **Owner**: Lukman
-* **Migration Status**: Not moved (planned for Phase 4)
+* **Migration Status**: Not moved. Future decision-extraction phase.
 * **Behavior Risk Level**: **Medium**
 * **Notes**: Lukman's primary research area.
 
@@ -106,10 +106,10 @@ This document maps the functional components of the simulation to their current 
 * **Notes**: Outputs CSV telemetry files.
 
 ### 12. Legacy / Quarantine
-* **Description**: Holds standalone sandbox scripts, offline probability estimators, profiling helpers, and duplicate classes.
-* **Current Source File(s)**: `src/rmfs/legacy/astar.py`, `src/rmfs/legacy/astar_only.py`, `src/rmfs/legacy/stock_out_probability.py`, `src/rmfs/legacy/generate_pod.py`, `src/rmfs/legacy/robot_new.py`, plus root `profile_netlogo.py`
+* **Description**: Holds standalone sandbox scripts and offline probability estimators.
+* **Current Source File(s)**: `src/rmfs/legacy/astar.py`, `src/rmfs/legacy/astar_only.py`, `src/rmfs/legacy/stock_out_probability.py`, `src/rmfs/legacy/generate_pod.py`, plus root `profile_netlogo.py`
 * **Future Destination**: `src/rmfs/legacy/`
 * **Owner**: Team / Shared
-* **Migration Status**: Confirmed-unused sandbox files quarantined in Phase 3; `profile_netlogo.py` retained at root
+* **Migration Status**: Confirmed-unused sandbox files quarantined in Phase 3; `robot_new.py` deleted in Phase 4.1 after no active references were found; `profile_netlogo.py` retained at root
 * **Behavior Risk Level**: **Low**
 * **Notes**: Quarantined files are not imported by the main NetLogo active run. `profile_netlogo.py` is documented as a local profiling entry point and was not moved.

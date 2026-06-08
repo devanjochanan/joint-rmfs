@@ -1,8 +1,8 @@
 # Rika RMFS Current Architecture Map
 
-This document outlines the software architecture, execution path, import dependencies, file flows, and organizational ownership areas of the `joint-rmfs` simulation repository after the recorded Phase 3 layout cleanup.
+This document outlines the software architecture, execution path, import dependencies, file flows, and organizational ownership areas of the `joint-rmfs` simulation repository.
 
-Phase 3 did not move active behavior code. The active simulation still runs through `simulation.nlogo`, `netlogo.py`, `engine/**`, and active `model/**` files.
+Phase 4 split the NetLogo bridge: root `netlogo.py` is now a compatibility shim delegating to `src/rmfs/app/netlogo_api.py`. The active simulation still runs through `simulation.nlogo`, `engine/**`, and active `model/**` files.
 
 ---
 
@@ -142,7 +142,7 @@ To clean up the repository structure and isolate runtime states from source file
 
 | Current Path | Proposed Future Path | Rationale | Migration Risk |
 | :--- | :--- | :--- | :--- |
-| `netlogo.py` | `src/rmfs/app/netlogo_bridge.py` | Separates NetLogo bridge boilerplate from model logic. | **High**: NetLogo calls `import netlogo`; API compatibility must be preserved. |
+| `netlogo.py` | `netlogo.py` (root compatibility shim) | Phase 4 split the bridge implementation into `src/rmfs/app/netlogo_api.py`. Root shim re-exports all public symbols. | **High**: NetLogo calls `import netlogo`; API compatibility preserved by shim. |
 | `engine/` | `src/rmfs/core/` and related package folders | Keeps low-level coordinate/grid structures grouped. | **Medium**: Import paths must be updated without changing behavior. |
 | active `model/` files | `src/rmfs/core/`, `src/rmfs/managers/`, `src/rmfs/simulation/`, and decision folders | Standardizes domain entity paths under the future package structure. | **High**: Many cross-imports and active behavior paths will need updating. |
 | `model/tools/` | `src/rmfs/runtime_io/` and `src/rmfs/metrics/` | Separates SQLite logging and telemetry tools from domain entities. | **Medium**: Runtime file paths and database writes must be validated. |
@@ -159,12 +159,14 @@ To clean up the repository structure and isolate runtime states from source file
 > **No active behavior files were moved in Phase 3.**
 > The active codebase (`simulation.nlogo`, `netlogo.py`, `engine/**`, and active `model/**`) remains the source of truth. Phase 3 only added documentation-only `data/` planning folders and quarantined confirmed-unused legacy/sandbox files.
 
-Quarantined in Phase 3:
-* `model/robot_new.py` -> `src/rmfs/legacy/robot_new.py`
+Quarantined in Phase 3 (still retained):
 * `astar.py` -> `src/rmfs/legacy/astar.py`
 * `astar_only.py` -> `src/rmfs/legacy/astar_only.py`
 * `generate_pod.py` -> `src/rmfs/legacy/generate_pod.py`
 * `stock_out_probability.py` -> `src/rmfs/legacy/stock_out_probability.py`
+
+Deleted in Phase 4.1 (no active references found):
+* `src/rmfs/legacy/robot_new.py` — originally quarantined from `model/robot_new.py` in Phase 3.
 
 Retained at root in Phase 3:
 * `profile_netlogo.py`, because it is documented as a profiling entry point.
@@ -178,7 +180,7 @@ Retained at root in Phase 3:
 2. **Overlap between Pod Generators**:
    * What is the structural difference between `model/pod_generator.py` and `model/item_pod_generator.py`? They appear to share highly overlapping responsibilities for SKU allocation.
 3. **Dead Code / Experimental Files**:
-   * `src/rmfs/legacy/robot_new.py` preserves pre-existing local modifications from the former `model/robot_new.py` path. It is not imported by active code, but should be reviewed before any future deletion.
+   * `src/rmfs/legacy/robot_new.py` was deleted in Phase 4.1 after reference checks confirmed no active imports. Remaining quarantined legacy files are retained for auditability.
 4. **Teleportation Bug Fixes**:
    * There are inline comments indicating teleportation issues (e.g. `# try to fix teleport` around line 628 of `model/inventory.py`). We need to understand if these telemetry writes directly affect robot coordinates or if they are purely diagnostic.
 5. **RL Training Framework**:

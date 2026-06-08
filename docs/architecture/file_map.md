@@ -47,7 +47,7 @@ This planning table outlines the planned movement of existing repository files i
 | `model/item_pod_generator.py` | Alternate pod stock generator. | `src/rmfs/order_generation/item_pod_generator.py` | Later package refactor | Medium | Initial stock builder. Not moved in Phase 3. |
 | `model/layout.py` | Matrix grid builder. | `src/rmfs/simulation/layout.py` | Later package refactor | Medium | Builds grid layouts. Not moved in Phase 3. |
 | `model/live_advanced_table.py` | Experimental TKinter UI. | `src/rmfs/legacy/live_advanced_table.py` | Later cleanup decision | Low | Not moved in Phase 3; not part of the approved candidate list. |
-| `src/rmfs/legacy/robot_new.py` | Quarantined unused experimental Robot class. | `src/rmfs/legacy/robot_new.py` | Phase 3 quarantine | Low | Moved from `model/robot_new.py` after `git grep` found no active imports/references outside docs. Pre-existing local edits were preserved. |
+| `src/rmfs/legacy/robot_new.py` | ~~Quarantined unused experimental Robot class.~~ | ~~Deleted~~ | Phase 4.1 deletion | N/A | Deleted in Phase 4.1 after reference checks confirmed no active imports. |
 | `model/tools/job_task.py` | SQLite tasks updater. | `src/rmfs/runtime_io/job_task.py` | Later package refactor | Medium | Database writer. Not moved in Phase 3. |
 | `model/tools/order_history.py` | SQLite order updater. | `src/rmfs/runtime_io/order_history.py` | Later package refactor | Medium | Database writer. Not moved in Phase 3. |
 | `model/tools/pod_location.py` | SQLite pod coordinate registry. | `src/rmfs/runtime_io/pod_location.py` | Later package refactor | **High** | Database coordinate sync. Not moved in Phase 3. |
@@ -62,5 +62,5 @@ This planning table outlines the planned movement of existing repository files i
 | `src/rmfs/legacy/generate_pod.py` | Quarantined matrix generator. | `src/rmfs/legacy/generate_pod.py` | Phase 3 quarantine | Low | Moved from `generate_pod.py`; no active imports/references found outside docs. |
 | `requirements.txt` | Package manifest. | `requirements.txt` (Keep at Root) | N/A | Low | Unmodified python configs. |
 | `docs/` | Repository documentation. | `docs/` (Keep at Root) | N/A | Low | Baseline project docs. |
-| `generated_pod.csv` (and other CSVs) | Root baseline input CSVs. | `data/input/` | Later data relocation | **High** | No baseline CSVs were moved in Phase 3; all code references will need paths updated in a later phase. |
+| `generated_pod.csv` | Root canonical baseline input CSV. | `data/input/` | Later data relocation | **High** | Canonical grid template; no baseline CSVs were moved. Noncanonical variants (`generated_pod2.csv`, `generated_pod3.csv`, `generated_pod4.csv`, `generated_pod5n2.csv`) were deleted in Phase 4.1 after no active code references were found. |
 | `warehouse.db` (and outputs) | Dynamic runtime logs. | `data/runtime/` | Later data relocation | **High** | No runtime artifacts were moved in Phase 3; SQLite relative path strings must be updated in a later phase. |

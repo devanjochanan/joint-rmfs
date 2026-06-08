@@ -104,3 +104,25 @@ For all future refactoring stages, developers must append entries in the followi
   * If NetLogo's `py` extension sets an unexpected working directory, the `sys.path` fixup in the shim should handle it, but this should be confirmed during the next interactive simulation run.
   * `from pip._internal import main as pipmain` in `netlogo_api.py` is preserved from the original; it is a fragile import that may break across pip versions.
 
+### 2026-06-08 Phase 4.1 - Post-Bridge Cleanup
+* **Files Changed/Created/Deleted**:
+  * `[DELETE] generated_pod2.csv` (noncanonical generated-pod variant; no active code references)
+  * `[DELETE] generated_pod3.csv` (noncanonical generated-pod variant; no active code references)
+  * `[DELETE] generated_pod4.csv` (noncanonical generated-pod variant; no active code references)
+  * `[DELETE] generated_pod5n2.csv` (noncanonical generated-pod variant; no active code references)
+  * `[DELETE] src/rmfs/legacy/robot_new.py` (quarantined unused duplicate Robot class; no active imports found)
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/architecture/file_map.md`
+  * `[MODIFY] docs/architecture/module_map.md`
+  * `[MODIFY] docs/architecture/current_architecture_map.md`
+  * `[MODIFY] docs/changelog/README.md`
+  * `[MODIFY] src/rmfs/legacy/README.md`
+* **Behavior Changes**: No. No active behavior files were modified. Only noncanonical CSV variants and a quarantined unused legacy file were removed.
+* **Validation Run**:
+  * `git grep` confirmed zero active-code references to `generated_pod2`, `generated_pod3`, `generated_pod4`, `generated_pod5n2`, and `robot_new` in `simulation.nlogo`, `netlogo.py`, `src/rmfs/app/`, `engine/`, `model/`, and `profile_netlogo.py`.
+  * `py_compile` passed for `netlogo.py`, `src/rmfs/app/netlogo_api.py`, `profile_netlogo.py`, and all tracked `engine/*.py`, `model/*.py`, `model/tools/*.py` files.
+  * Import compatibility test confirmed `setup`, `tick`, `console_tick`, `setup_py` are accessible via `import netlogo`.
+  * `git grep` confirmed no remaining "planned for Phase 4" stale wording in docs/src.
+* **Residual Risks**:
+  * Full simulation run has not been executed. Behavior equivalence remains a Phase 5 acceptance-check item.
+  * `docs/architecture/file_inventory.md` still references `generated_pod2.csv` etc. and `model/robot_new.py` in historical inspection notes. These are Phase 1 audit records and were intentionally not edited.
