@@ -12,6 +12,8 @@ import subprocess
 import sys
 import traceback
 
+from src.rmfs.orchestration.input_snapshot import create_input_snapshot
+from src.rmfs.orchestration.run_manifest import write_run_manifest
 from src.rmfs.orchestration.run_spec import RunSpec
 
 
@@ -73,7 +75,10 @@ def stable_digest(payload):
         if isinstance(obj, dict):
             return {str(k): sanitize(v) for k, v in sorted(obj.items())}
         if isinstance(obj, set):
-            return sorted(sanitize(item) for item in obj)
+            return sorted(
+                (sanitize(item) for item in obj),
+                key=lambda x: json.dumps(x, sort_keys=True, default=str),
+            )
         if isinstance(obj, (list, tuple)):
             return [sanitize(item) for item in obj]
         if hasattr(obj, "__dict__"):
@@ -133,7 +138,7 @@ def run_worker(spec: RunSpec):
         import netlogo
 
         netlogo_module = netlogo
-        ctx = RunContext.isolated(spec.runtime_root, repo_root=spec.repo_root)
+        ctx = RunContext.isolated(spec.runtime_root, repo_root=spec.repo_root, input_root=spec.input_root)
         ctx.ensure_runtime_dirs()
         netlogo.configure_run_context(ctx)
 
@@ -248,11 +253,17 @@ def run_controller(
     debug_trace: bool = False,
     trace_cadence: int = 1000,
     trace_first_n: int = 0,
+    snapshot_inputs: bool = False,
 ):
     output_root.mkdir(parents=True, exist_ok=True)
     branch = git_value(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
     commit = git_value(repo_root, "rev-parse", "HEAD")
     timestamp = datetime.datetime.now().isoformat()
+    input_snapshot_root = output_root / "input_snapshot" if snapshot_inputs else None
+    input_manifest_path = None
+    input_manifest = None
+    if snapshot_inputs:
+        input_manifest_path, input_manifest = create_input_snapshot(repo_root, input_snapshot_root)
 
     manifest = {
         "status": "started",
@@ -269,8 +280,30 @@ def run_controller(
         "debug_trace": debug_trace,
         "trace_cadence": trace_cadence,
         "trace_first_n": trace_first_n,
+        "snapshot_inputs": snapshot_inputs,
+        "input_snapshot_root": str(input_snapshot_root) if input_snapshot_root is not None else None,
+        "input_manifest_path": str(input_manifest_path) if input_manifest_path is not None else None,
     }
     write_json(output_root / "manifest.json", manifest)
+    write_run_manifest(
+        output_root / "run_manifest.json",
+        created_at=timestamp,
+        branch=branch,
+        commit=commit,
+        python_executable=python_executable,
+        repo_root=repo_root,
+        output_root=output_root,
+        input_snapshot_root=input_snapshot_root,
+        input_manifest_path=input_manifest_path,
+        input_manifest=input_manifest,
+        runs=runs,
+        ticks=ticks,
+        max_workers=max_workers,
+        debug_trace=debug_trace,
+        trace_cadence=trace_cadence,
+        trace_first_n=trace_first_n,
+        root_sensitive_files=ROOT_SENSITIVE_FILES,
+    )
 
     specs = []
     for index in range(runs):
@@ -280,6 +313,7 @@ def run_controller(
             ticks=ticks,
             runtime_root=output_root / run_id,
             repo_root=repo_root,
+            input_root=input_snapshot_root,
             branch=branch,
             commit=commit,
             python_executable=python_executable,
@@ -426,6 +460,9 @@ def run_controller(
         "commit": commit,
         "root_changed_files": root_changed,
         "deferred_root_read_only_inputs": DEFERRED_ROOT_READ_ONLY_INPUTS,
+        "snapshot_inputs": snapshot_inputs,
+        "input_snapshot_root": str(input_snapshot_root) if input_snapshot_root is not None else None,
+        "input_manifest_path": str(input_manifest_path) if input_manifest_path is not None else None,
         "debug_trace_enabled": debug_trace,
         "trace_cadence": trace_cadence,
         "trace_first_n": trace_first_n,
@@ -456,6 +493,7 @@ def main(argv=None):
     controller_parser.add_argument("--debug-trace", action="store_true", default=False)
     controller_parser.add_argument("--trace-cadence", type=int, default=1000)
     controller_parser.add_argument("--trace-first-n", type=int, default=0)
+    controller_parser.add_argument("--snapshot-inputs", action="store_true", default=False)
 
     args = parser.parse_args(argv)
 
@@ -486,6 +524,7 @@ def main(argv=None):
         debug_trace=args.debug_trace,
         trace_cadence=args.trace_cadence,
         trace_first_n=args.trace_first_n,
+        snapshot_inputs=args.snapshot_inputs,
     )
     return 0
 

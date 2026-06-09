@@ -49,3 +49,19 @@ Generated outputs under `data/runtime/` are ignored local artifacts and should n
 This smoke does not prove behavior equivalence, benchmark equivalence, paper fidelity, performance improvement, throughput improvement, or congestion improvement. It is not BehaviorSpace, PPO, DoE, training, checkpointing, TensorBoard, or DuckDB.
 
 For this slice, `generated_order.csv`, `generated_pod.csv`, and `pods.csv` remain root-read-only/deferred. Phase 4 should handle fuller manifests and data contracts.
+
+### Phase 4 Snapshot Mode
+Run with `--snapshot-inputs` to create `run_manifest.json`, `input_snapshot/`, and `input_snapshot/input_manifest.json`:
+
+```bash
+/home/dewan/torch-gpu/bin/python scripts/run/local_executor_smoke.py \
+  --runs 2 \
+  --ticks 3 \
+  --max-workers 2 \
+  --snapshot-inputs \
+  --output-root data/runtime/local_executor_smoke/phase4_validation
+```
+
+Phase 4 snapshots `generated_order.csv`, `generated_pod.csv`, `pods.csv`, `items.csv`, `generated_backlog.csv`, and `generated_database_order.csv`.
+
+`items_dictionary.csv`, `items_slots_configuration.csv`, and `pods_dictionary.csv` are hash-only for now. `raw_order.csv` is excluded/deferred as legacy-only. Phase 4 records reproducibility metadata and input hashes; it does not change simulator behavior.

@@ -56,16 +56,19 @@ class RunContext:
         )
 
     @classmethod
-    def isolated(cls, runtime_root, repo_root=None):
+    def isolated(cls, runtime_root, repo_root=None, input_root=None):
         root = Path(repo_root).resolve() if repo_root is not None else _find_repo_root()
         runtime = Path(runtime_root)
         if not runtime.is_absolute():
             runtime = root / runtime
         runtime = runtime.resolve()
-        default = cls.default(root)
+        inputs = Path(input_root) if input_root is not None else root
+        if not inputs.is_absolute():
+            inputs = root / inputs
+        inputs = inputs.resolve()
         return cls(
             repo_root=root,
-            input_root=root,
+            input_root=inputs,
             runtime_root=runtime,
             output_root=runtime / "output",
             state_file=runtime / "netlogo.state",
@@ -74,13 +77,13 @@ class RunContext:
             pod_info_csv=runtime / "pod_info.csv",
             skus_data_csv=runtime / "skus_data.csv",
             sorted_skus_data_csv=runtime / "sorted_skus_data.csv",
-            generated_order_csv=default.generated_order_csv,
-            generated_backlog_csv=default.generated_backlog_csv,
-            generated_database_order_csv=default.generated_database_order_csv,
-            generated_pod_csv=default.generated_pod_csv,
-            pods_csv=default.pods_csv,
-            items_csv=default.items_csv,
-            saved_models_dir=default.saved_models_dir,
+            generated_order_csv=inputs / "generated_order.csv",
+            generated_backlog_csv=inputs / "generated_backlog.csv",
+            generated_database_order_csv=inputs / "generated_database_order.csv",
+            generated_pod_csv=inputs / "generated_pod.csv",
+            pods_csv=inputs / "pods.csv",
+            items_csv=inputs / "items.csv",
+            saved_models_dir=root / "saved_models",
         )
 
     def ensure_runtime_dirs(self):

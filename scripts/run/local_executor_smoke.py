@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--debug-trace", action="store_true", default=False)
     parser.add_argument("--trace-cadence", type=int, default=1000)
     parser.add_argument("--trace-first-n", type=int, default=0)
+    parser.add_argument("--snapshot-inputs", action="store_true", default=False)
     args = parser.parse_args()
 
     if args.runs < 1:
@@ -43,6 +44,7 @@ def main():
         debug_trace=args.debug_trace,
         trace_cadence=args.trace_cadence,
         trace_first_n=args.trace_first_n,
+        snapshot_inputs=args.snapshot_inputs,
     )
 
 
