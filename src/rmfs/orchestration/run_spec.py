@@ -14,6 +14,9 @@ class RunSpec:
     commit: str | None = None
     python_executable: str | None = None
     timestamp: str | None = None
+    debug_trace: bool = False
+    trace_cadence: int = 1000
+    trace_first_n: int = 0
 
     def to_json_dict(self):
         data = asdict(self)

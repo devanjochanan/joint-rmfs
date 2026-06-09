@@ -15,6 +15,9 @@ def main():
     parser.add_argument("--ticks", type=int, default=3)
     parser.add_argument("--max-workers", type=int, default=2)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--debug-trace", action="store_true", default=False)
+    parser.add_argument("--trace-cadence", type=int, default=1000)
+    parser.add_argument("--trace-first-n", type=int, default=0)
     args = parser.parse_args()
 
     if args.runs < 1:
@@ -37,6 +40,9 @@ def main():
         ticks=args.ticks,
         max_workers=args.max_workers,
         python_executable=sys.executable,
+        debug_trace=args.debug_trace,
+        trace_cadence=args.trace_cadence,
+        trace_first_n=args.trace_first_n,
     )
 
 

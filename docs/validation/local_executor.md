@@ -14,10 +14,27 @@ Run the default Phase 3B smoke with:
   --output-root data/runtime/local_executor_smoke/manual
 ```
 
-The controller writes `manifest.json` and `controller_summary.json` under the output root. Each worker writes `run_spec.json`, `worker_summary.json`, and worker stdout/stderr logs under its own run directory.
+The controller writes `manifest.json` and `controller_summary.json` under the output root. By default, `worker_summary.json` is **aggregate-only** (containing setup information, boundary/final tick digests, and final scalar metrics) to prevent file bloat on long runs.
 
-Expected per-worker runtime files are:
+### Debug Trace Mode
+To record detailed per-tick trace lines, enable debug trace mode:
+```bash
+/home/dewan/torch-gpu/bin/python scripts/run/local_executor_smoke.py \
+  --runs 2 \
+  --ticks 5 \
+  --max-workers 2 \
+  --output-root data/runtime/local_executor_smoke/debug_manual \
+  --debug-trace \
+  --trace-cadence 2 \
+  --trace-first-n 1
+```
 
+When `--debug-trace` is enabled, a `debug_trace.jsonl` file is created inside each worker's runtime root. It records:
+* The first `trace_first_n` ticks (if > 0)
+* Every `trace_cadence` ticks (if > 0)
+* The final tick of the simulation
+
+Each worker runtime directory contains:
 - `netlogo.state`
 - `warehouse.db`
 - `assign_order.csv`
@@ -25,6 +42,7 @@ Expected per-worker runtime files are:
 - `skus_data.csv`
 - `sorted_skus_data.csv`
 - `worker_summary.json`
+- `debug_trace.jsonl` (only if `--debug-trace` is explicitly set)
 
 Generated outputs under `data/runtime/` are ignored local artifacts and should not be committed.
 

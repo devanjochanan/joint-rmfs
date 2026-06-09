@@ -112,13 +112,18 @@ def run_worker(spec: RunSpec):
         "run_id": spec.run_id,
         "status": "failure",
         "ticks_requested": spec.ticks,
-        "runtime_root": str(spec.runtime_root),
-        "repo_root": str(spec.repo_root),
+        "ticks_completed": 0,
         "setup_digest": None,
         "setup_signature": None,
-        "tick_digests": [],
-        "tick_signatures": [],
+        "first_tick_digest": None,
+        "final_tick_digest": None,
+        "first_tick_signature": None,
+        "final_tick_signature": None,
+        "final_metrics": None,
+        "runtime_root": str(spec.runtime_root),
+        "repo_root": str(spec.repo_root),
     }
+    debug_rows = []
 
     try:
         sys.path.insert(0, str(spec.repo_root))
@@ -138,16 +143,72 @@ def run_worker(spec: RunSpec):
         summary["setup_digest"] = stable_digest(setup_result)
         summary["setup_signature"] = return_signature(setup_result)
 
+        first_result = None
+        final_result = None
+        ticks_done = 0
+
         for index in range(spec.ticks):
             tick_result = netlogo.tick()
             if isinstance(tick_result, str) and "An error occurred" in tick_result:
                 raise RuntimeError(tick_result)
-            summary["tick_digests"].append(stable_digest(tick_result))
-            signature = return_signature(tick_result)
-            signature["tick_index"] = index + 1
-            summary["tick_signatures"].append(signature)
+            
+            ticks_done += 1
+            digest = stable_digest(tick_result)
+            sig = return_signature(tick_result)
+            
+            if index == 0:
+                first_result = (digest, sig)
+            final_result = (digest, sig, tick_result)
 
-        summary.update({"status": "success", "ticks_completed": spec.ticks})
+            if spec.debug_trace:
+                record = False
+                if spec.trace_first_n > 0 and index < spec.trace_first_n:
+                    record = True
+                if spec.trace_cadence > 0 and (index + 1) % spec.trace_cadence == 0:
+                    record = True
+                if index == spec.ticks - 1:
+                    record = True
+
+                if record:
+                    metrics = {}
+                    if isinstance(tick_result, list) and len(tick_result) >= 6:
+                        metrics = {
+                            "total_energy": tick_result[1],
+                            "job_queue_len": tick_result[2],
+                            "stop_and_go": tick_result[3],
+                            "total_turning": tick_result[4],
+                        }
+                    debug_rows.append({
+                        "tick_index": index + 1,
+                        "digest": digest,
+                        "signature": sig,
+                        "metrics": metrics,
+                    })
+
+        summary["ticks_completed"] = ticks_done
+        if first_result:
+            summary["first_tick_digest"] = first_result[0]
+            summary["first_tick_signature"] = first_result[1]
+        if final_result:
+            summary["final_tick_digest"] = final_result[0]
+            summary["final_tick_signature"] = final_result[1]
+            tick_res = final_result[2]
+            if isinstance(tick_res, list) and len(tick_res) >= 6:
+                summary["final_metrics"] = {
+                    "total_energy": tick_res[1],
+                    "job_queue_len": tick_res[2],
+                    "stop_and_go": tick_res[3],
+                    "total_turning": tick_res[4],
+                }
+
+        summary["status"] = "success"
+
+        if spec.debug_trace and debug_rows:
+            trace_path = spec.runtime_root / "debug_trace.jsonl"
+            with trace_path.open("w") as fh:
+                for row in debug_rows:
+                    fh.write(json.dumps(row) + "\n")
+
         return 0
     except Exception as exc:
         summary.update(
@@ -177,7 +238,17 @@ def load_worker_summary(runtime_root: Path):
         return json.load(fh)
 
 
-def run_controller(repo_root: Path, output_root: Path, runs: int, ticks: int, max_workers: int, python_executable: str):
+def run_controller(
+    repo_root: Path,
+    output_root: Path,
+    runs: int,
+    ticks: int,
+    max_workers: int,
+    python_executable: str,
+    debug_trace: bool = False,
+    trace_cadence: int = 1000,
+    trace_first_n: int = 0,
+):
     output_root.mkdir(parents=True, exist_ok=True)
     branch = git_value(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
     commit = git_value(repo_root, "rev-parse", "HEAD")
@@ -195,6 +266,9 @@ def run_controller(repo_root: Path, output_root: Path, runs: int, ticks: int, ma
         "python_executable": python_executable,
         "timestamp": timestamp,
         "deferred_root_read_only_inputs": DEFERRED_ROOT_READ_ONLY_INPUTS,
+        "debug_trace": debug_trace,
+        "trace_cadence": trace_cadence,
+        "trace_first_n": trace_first_n,
     }
     write_json(output_root / "manifest.json", manifest)
 
@@ -210,6 +284,9 @@ def run_controller(repo_root: Path, output_root: Path, runs: int, ticks: int, ma
             commit=commit,
             python_executable=python_executable,
             timestamp=timestamp,
+            debug_trace=debug_trace,
+            trace_cadence=trace_cadence,
+            trace_first_n=trace_first_n,
         )
         specs.append(spec)
         write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
@@ -317,18 +394,42 @@ def run_controller(repo_root: Path, output_root: Path, runs: int, ticks: int, ma
         controller_status = "failure"
         failure_reasons.append("runtime_path_collisions")
 
+    workers_succeeded = sum(
+        1
+        for r in worker_results
+        if r["return_code"] == 0 and r["summary"].get("status") == "success"
+    )
+    workers_failed = len(worker_results) - workers_succeeded
+
+    compact_worker_list = []
+    for r in worker_results:
+        compact_worker_list.append(
+            {
+                "run_id": r["run_id"],
+                "return_code": r["return_code"],
+                "status": r["summary"].get("status"),
+                "ticks_completed": r["summary"].get("ticks_completed", 0),
+                "final_metrics": r["summary"].get("final_metrics"),
+            }
+        )
+
     summary = {
         "status": controller_status,
         "failure_reasons": failure_reasons,
-        "runs": runs,
+        "runs_requested": runs,
         "ticks": ticks,
         "max_workers": max_workers,
+        "workers_succeeded": workers_succeeded,
+        "workers_failed": workers_failed,
         "output_root": str(output_root),
         "branch": branch,
         "commit": commit,
         "root_changed_files": root_changed,
         "deferred_root_read_only_inputs": DEFERRED_ROOT_READ_ONLY_INPUTS,
-        "worker_results": worker_results,
+        "debug_trace_enabled": debug_trace,
+        "trace_cadence": trace_cadence,
+        "trace_first_n": trace_first_n,
+        "worker_statuses": compact_worker_list,
         "runtime_path_collisions": collisions,
     }
     write_json(output_root / "controller_summary.json", summary)
@@ -352,6 +453,9 @@ def main(argv=None):
     controller_parser.add_argument("--max-workers", type=int, default=2)
     controller_parser.add_argument("--output-root", required=True)
     controller_parser.add_argument("--repo-root", default=None)
+    controller_parser.add_argument("--debug-trace", action="store_true", default=False)
+    controller_parser.add_argument("--trace-cadence", type=int, default=1000)
+    controller_parser.add_argument("--trace-first-n", type=int, default=0)
 
     args = parser.parse_args(argv)
 
@@ -379,6 +483,9 @@ def main(argv=None):
         ticks=args.ticks,
         max_workers=args.max_workers,
         python_executable=sys.executable,
+        debug_trace=args.debug_trace,
+        trace_cadence=args.trace_cadence,
+        trace_first_n=args.trace_first_n,
     )
     return 0
 
