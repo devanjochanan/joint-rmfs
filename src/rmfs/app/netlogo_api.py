@@ -25,6 +25,7 @@ import numpy as np
 from pandas import DataFrame
 from sklearn.cluster import KMeans
 
+from src.rmfs.runtime_io import RunContext
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
 from model.intersection import Intersection
@@ -38,8 +39,17 @@ from model.station import Station
 from model.layout import Layout
 from model.pod_generator import PodGenerator
 # DB
-from model.tools.pod_location import clear_pod_locations, initialize_pod_location_table, upsert_pod_location
-from model.tools.pod_travel import clear_pod_travel, initialize_pod_travel_table
+from model.tools.pod_location import (
+    clear_pod_locations,
+    configure_default_db_path as configure_default_pod_location_db_path,
+    initialize_pod_location_table,
+    upsert_pod_location,
+)
+from model.tools.pod_travel import (
+    clear_pod_travel,
+    configure_default_db_path as configure_default_pod_travel_db_path,
+    initialize_pod_travel_table,
+)
 from model.tools.job_task import clear_job_task_table, initialize_job_task_table
 from model.tools.order_history import clear_order_history, initialize_order_history_table
 
@@ -74,9 +84,40 @@ __all__ = [
     "tick",
     "console_tick",
     "setup_py",
+    "get_run_context",
+    "configure_run_context",
+    "reset_run_context",
 ]
 
 ACTIVATE_NEAREST = True
+_RUN_CONTEXT = RunContext.default()
+
+
+def get_run_context():
+    return _RUN_CONTEXT
+
+
+def configure_run_context(context=None, runtime_root=None):
+    global _RUN_CONTEXT
+    if context is not None and runtime_root is not None:
+        raise ValueError("Pass either context or runtime_root, not both.")
+    if context is None:
+        context = RunContext.isolated(runtime_root) if runtime_root is not None else RunContext.default()
+    context.ensure_runtime_dirs()
+    _RUN_CONTEXT = context
+    return _RUN_CONTEXT
+
+
+def reset_run_context():
+    return configure_run_context(RunContext.default())
+
+
+def _path(name):
+    return getattr(get_run_context(), name)
+
+
+def _str_path(name):
+    return str(_path(name))
 
 
 class DirectedGraph:
@@ -287,7 +328,7 @@ def initRobots(universe: Inventory):
 
 def draw_layout(universe):
     # Check if generated_pod.csv exists in the current directory
-    if os.path.exists('generated_pod.csv'):
+    if _path("generated_pod_csv").exists():
         print("Generated pod already exist, delete generated_pod.csv if you want to change")
         draw_layout_from_generated_file(universe)
     else:
@@ -407,9 +448,9 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
     temp = float('inf')
     new_order = None
 
-    orders_df = pd.read_csv('generated_order.csv')
+    orders_df = pd.read_csv(_str_path("generated_order_csv"))
 
-    file_path = 'assign_order.csv'
+    file_path = _str_path("assign_order_csv")
     if os.path.exists(file_path):
         assign_order_df = pd.read_csv(file_path)
         # pass
@@ -420,7 +461,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
         assign_order_df['status'] = -3
         assign_order_df['order_processed'] = None
         assign_order_df['order_finished'] = None
-        assign_order_df.to_csv('assign_order.csv', index=False)
+        assign_order_df.to_csv(_str_path("assign_order_csv"), index=False)
 
     unique_orders = set()
     order_sku_map = {}
@@ -439,7 +480,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'status'] = -1
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'order_processed'] = int(
                 universe.tick_to_second)
-            assign_order_df.to_csv('assign_order.csv', index=False)
+            assign_order_df.to_csv(_str_path("assign_order_csv"), index=False)
             new_order.assign_station(station_id)
             station = universe.station_manager.get_station_by_id(station_id)
             universe.order_manager.add_order(new_order)
@@ -460,7 +501,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
 
 def assign_backlog_orders(universe: Inventory):
     # open file order
-    order_path = "generated_order.csv"
+    order_path = _str_path("generated_order_csv")
     data_order_df = pd.read_csv(order_path)
 
     # filter order_id < 0
@@ -504,7 +545,7 @@ def draw_storage_from_generated_file(universe: Inventory):
     graph_pod.key = 'pod'
     universe.graph = graph
     universe.graph_pod = graph_pod
-    data = pd.read_csv("generated_pod.csv", header=None)
+    data = pd.read_csv(_str_path("generated_pod_csv"), header=None)
     total_rows = len(data)
     total_cols = 0
     for y, row in data.iterrows():
@@ -547,7 +588,7 @@ def draw_storage_from_generated_file(universe: Inventory):
                     # obj.coordinate = NetLogoCoordinate(x, y)
                     obj.pos_x = x
                     obj.pos_y = y
-                    upsert_pod_location(obj.pod_id, obj.pos_x, obj.pos_y)
+                    upsert_pod_location(obj.pod_id, obj.pos_x, obj.pos_y, db_path=_str_path("sqlite_db"))
                     
                     if ACTIVATE_NEAREST:
                         universe.storage_manager.addPodToStorage(obj, storage)
@@ -799,7 +840,7 @@ def add_all_direction_paths(graph, obj_key, weight):
 
 def assign_skus_to_pods(pod_manager):
     # Check if pods.csv exists in the current directory
-    if os.path.exists('pods.csv'):
+    if _path("pods_csv").exists():
         assign_skus_to_pods_from_file(pod_manager)
     else:
         # Fungsi generate pods.csv
@@ -824,7 +865,7 @@ def assign_skus_to_pods(pod_manager):
 
 def assign_skus_to_pods_from_file(pod_manager: PodManager):
 
-    with open('pods.csv', mode='r', newline='') as file:
+    with open(_str_path("pods_csv"), mode='r', newline='') as file:
         reader = csv.DictReader(file)
         for row in reader:
             pod_id = int(row['pod_id'])
@@ -843,7 +884,7 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             # Add SKU Data of level
             pod_manager.add_sku_data(sku, current_qty, limit_qty, global_threshold_inv_level)
 
-    csv_file = 'skus_data.csv'
+    csv_file = _str_path("skus_data_csv")
     if os.path.exists(csv_file):
         os.remove(csv_file)
     skus_data = pod_manager.get_all_skus_data()
@@ -855,40 +896,45 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             writer.writerow([key, value['current_global_qty'], value['max_global_qty'], value['global_inv_level']])
 
     pod_info = pd.DataFrame(columns=["pod_id", "item_id", "qty", "order_id", "processed_time", "task_type"])
-    pod_info.to_csv("pod_info.csv", index=False)
+    pod_info.to_csv(_str_path("pod_info_csv"), index=False)
 
     print(f"Data has been saved to {csv_file}")
     df = pd.read_csv(csv_file)
     df_sorted = df.sort_values(by='item_id')
-    sorted_csv_file = 'sorted_skus_data.csv'
+    sorted_csv_file = _str_path("sorted_skus_data_csv")
     df_sorted.to_csv(sorted_csv_file, index=False)
 
 
 def setup():
     try:
+        ctx = get_run_context()
+        ctx.ensure_runtime_dirs()
         # Initiate DB
         from datetime import datetime
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        db_path = _str_path("sqlite_db")
+        configure_default_pod_location_db_path(db_path)
+        configure_default_pod_travel_db_path(db_path)
 
-        initialize_job_task_table(timestamp)
-        initialize_order_history_table(timestamp)
-        initialize_pod_location_table(timestamp)
-        initialize_pod_travel_table(timestamp)
+        initialize_job_task_table(timestamp, db_path=db_path)
+        initialize_order_history_table(timestamp, db_path=db_path)
+        initialize_pod_location_table(timestamp, db_path=db_path)
+        initialize_pod_travel_table(timestamp, db_path=db_path)
 
-        clear_job_task_table()
-        clear_order_history()
-        clear_pod_locations()
-        clear_pod_travel()
+        clear_job_task_table(db_path=db_path)
+        clear_order_history(db_path=db_path)
+        clear_pod_locations(db_path=db_path)
+        clear_pod_travel(db_path=db_path)
         # Initialize the simulation universe
-        assignment_path = "assign_order.csv"
+        assignment_path = _str_path("assign_order_csv")
         if os.path.exists(assignment_path):
             os.remove(assignment_path)
 
-        pod_info = "pod_info.csv"
+        pod_info = _str_path("pod_info_csv")
         if os.path.exists(pod_info):
             os.remove(pod_info)
-        universe = Inventory()
+        universe = Inventory(runtime_paths=ctx.inventory_paths(), sqlite_db_path=db_path)
 
         # Populate the universe with objects and connections
         draw_layout(universe)
@@ -900,7 +946,7 @@ def setup():
         next_result = universe.generateResult()
 
         # Save the universe state for future ticks
-        with open('netlogo.state', 'wb') as config_dictionary_file:
+        with open(_str_path("state_file"), 'wb') as config_dictionary_file:
             pickle.dump(universe, config_dictionary_file)
 
         # Return only the first element (object positions) as NetLogo setup doesn't need station info
@@ -915,7 +961,7 @@ def setup():
 def tick():
     try:
         # Load the simulation state
-        with open('netlogo.state', 'rb') as file:
+        with open(_str_path("state_file"), 'rb') as file:
             universe: Inventory = pickle.load(file)
 
         # Update each object with the current universe context
@@ -928,7 +974,7 @@ def tick():
             return IndexError
 
         # Save updated state
-        with open('netlogo.state', 'wb') as config_dictionary_file:
+        with open(_str_path("state_file"), 'wb') as config_dictionary_file:
             pickle.dump(universe, config_dictionary_file)
 
         # Return all required information for NetLogo
@@ -945,7 +991,7 @@ def tick():
 def console_tick():
     try:
         # Load the simulation state
-        with open('netlogo.state', 'rb') as file:
+        with open(_str_path("state_file"), 'rb') as file:
             universe: Inventory = pickle.load(file)
 
         # Update each object with the current universe context
@@ -958,7 +1004,7 @@ def console_tick():
                 return IndexError
 
         # Save updated state
-        with open('netlogo.state', 'wb') as config_dictionary_file:
+        with open(_str_path("state_file"), 'wb') as config_dictionary_file:
             pickle.dump(universe, config_dictionary_file)
 
         # Return all required information for NetLogo

@@ -51,8 +51,10 @@ class Inventory(Universe):
     graph = None
     graph_pod = None
 
-    def __init__(self):
+    def __init__(self, runtime_paths=None, sqlite_db_path="warehouse.db"):
         self._tick = 0  #current counter
+        self.runtime_paths = runtime_paths or {}
+        self.sqlite_db_path = sqlite_db_path
         # self.ignored_types = ["pod", "station", "way-direction"]
         self.ignored_types = ["station", "way-direction"]
         self.tick_to_second = 0.25
@@ -90,9 +92,24 @@ class Inventory(Universe):
 
         if self.poa_second:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            initialize_pre_assign_table(timestamp)
-            clear_pre_assign_table()
+            initialize_pre_assign_table(timestamp, db_path=self.sqlite_db_path)
+            clear_pre_assign_table(db_path=self.sqlite_db_path)
         super().__init__()
+
+    def runtime_path(self, key, default):
+        return self.runtime_paths.get(key, default)
+
+    @property
+    def assign_order_csv(self):
+        return self.runtime_path("assign_order_csv", "assign_order.csv")
+
+    @property
+    def pod_info_csv(self):
+        return self.runtime_path("pod_info_csv", "pod_info.csv")
+
+    @property
+    def generated_order_csv(self):
+        return self.runtime_path("generated_order_csv", "generated_order.csv")
 
     def addObject(self, object):
         if object.object_type == "robot":
@@ -154,6 +171,7 @@ class Inventory(Universe):
                             sku=str(triplet[1]),
                             qty=str(triplet[2]),
                             status="otw",
+                            db_path=self.sqlite_db_path,
                         )
             
 
@@ -181,12 +199,13 @@ class Inventory(Universe):
                             sku=str(triplet[1]),
                             qty=str(triplet[2]),
                             status="finish",
-                            finish_time=self._tick
+                            finish_time=self._tick,
+                            db_path=self.sqlite_db_path,
                         )
                     if need_replenish_pod:
                         # pod: Pod = self.pod_manager.get_pod_by_coordinate(o.job.pod_coordinate.x, o.job.pod_coordinate.y)
                         pod: Pod = self.pod_manager.get_pod_by_id(o.job.pod.pod_id)
-                        latest_pod_location = get_pod_location(pod.pod_id)
+                        latest_pod_location = get_pod_location(pod.pod_id, db_path=self.sqlite_db_path)
                         if latest_pod_location:
                             pod.pos_x, pod.pos_y = latest_pod_location
                         station_replenish = self.station_manager.find_available_replenish_station()
@@ -247,7 +266,7 @@ class Inventory(Universe):
     def finish_picking_task(self, job: RobotJob):
         # pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
         pod: Pod = self.pod_manager.get_pod_by_id(job.pod.pod_id)
-        pod_info_df = pd.read_csv('pod_info.csv')
+        pod_info_df = pd.read_csv(self.pod_info_csv)
         sku_need_replenished = []
         for order_id, sku, quantity in job.orders:
             order: Order = self.order_manager.get_order_by_id(order_id)
@@ -262,10 +281,10 @@ class Inventory(Universe):
             # SKU Replenished Triggered
             if(replenished_status == True): sku_need_replenished.append(sku)
     
-            assign_order_df = pd.read_csv('assign_order.csv')
+            assign_order_df = pd.read_csv(self.assign_order_csv)
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'order_finished'] = int(self._tick)
-            assign_order_df.to_csv('assign_order.csv', index=False)
+            assign_order_df.to_csv(self.assign_order_csv, index=False)
             new_row = {
                 "pod_id": pod.pod_id,
                 "item_id": sku,
@@ -286,11 +305,11 @@ class Inventory(Universe):
                 # DB
                 # if not isinstance(order.order_id, int):
                     # raise AssertionError(f"WHAT? order {order} order_id {order.order_id} order_id {order_id}")
-                upsert_order_history(order_id, order_finish_time=self._tick)
+                upsert_order_history(order_id, order_finish_time=self._tick, db_path=self.sqlite_db_path)
         station = self.station_manager.get_station_by_id(job.station_id)
         station.remove_pod(pod.pod_id)
         
-        pod_info_df.to_csv('pod_info.csv', index=False)
+        pod_info_df.to_csv(self.pod_info_csv, index=False)
         # Replenishment baseline
         # job.is_finished = True
         job.set_job_finish()
@@ -306,7 +325,7 @@ class Inventory(Universe):
         # pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
         pod: Pod = self.pod_manager.get_pod_by_id(job.pod.pod_id)
         pod.replenish_all_skus()
-        pod_info_df = pd.read_csv('pod_info.csv')
+        pod_info_df = pd.read_csv(self.pod_info_csv)
         new_row = {
                 "pod_id": pod.pod_id,
                 "item_id": -1,
@@ -318,7 +337,7 @@ class Inventory(Universe):
             
         new_row_df = pd.DataFrame([new_row])
         pod_info_df = pd.concat([pod_info_df, new_row_df], ignore_index=True)
-        pod_info_df.to_csv('pod_info.csv', index= False)
+        pod_info_df.to_csv(self.pod_info_csv, index= False)
         # job.is_finished = True
         job.set_job_finish()
         station = self.station_manager.get_station_by_id(job.station_id)
@@ -333,17 +352,17 @@ class Inventory(Universe):
         self.write_to_csv("order-finished.csv", header, data)
 
     def find_new_orders(self):
-        file_path = 'assign_order.csv'
+        file_path = self.assign_order_csv
         if os.path.exists(file_path):
             assign_order_df = pd.read_csv(file_path)
             # pass
         else:
-            orders_df = pd.read_csv('generated_order.csv')
+            orders_df = pd.read_csv(self.generated_order_csv)
             assign_order_df = orders_df.copy()
             assign_order_df['assigned_station'] = None
             assign_order_df['assigned_pod'] = None
             assign_order_df['status'] = -3
-            assign_order_df.to_csv('assign_order.csv', index=False)
+            assign_order_df.to_csv(self.assign_order_csv, index=False)
         new_file_df = pd.read_csv(file_path)
                   
         current_second = self.next_process_tick
@@ -365,7 +384,7 @@ class Inventory(Universe):
 
             self.order_manager.add_order(order)
             # DB
-            upsert_order_history(order.order_id, arrival_time=self._tick)
+            upsert_order_history(order.order_id, arrival_time=self._tick, db_path=self.sqlite_db_path)
 
         return new_orders
 
@@ -402,13 +421,13 @@ class Inventory(Universe):
                 self.last_order[st.station_id] = advanced_table.loc[advanced_table['station_id'] == st.station_id, 'order_id'].tolist()
             print(self.last_order)
         # Step 5: Start unfinished orders
-        assign_order_df = pd.read_csv('assign_order.csv')
+        assign_order_df = pd.read_csv(self.assign_order_csv)
         for order in self.order_manager.unfinished_orders:
             if order.station_id is None:
                 continue
             if order.process_start_time <= 0:
                 order.start_processing(int(self._tick))
-        assign_order_df.to_csv('assign_order.csv', index=False)
+        assign_order_df.to_csv(self.assign_order_csv, index=False)
         # Step 6: Process PPS logic
         if self.pps_demand or self.pps_pileon:
             for station in filter(lambda s: s.station_type == 'picker' and len(s.incoming_pod) < 11, self.station_manager.stations):
@@ -452,6 +471,7 @@ class Inventory(Universe):
                                         assigned_station=station.station_id,
                                         pod_assigned_time=self._tick,
                                         status="queue",
+                                        db_path=self.sqlite_db_path,
                                     )
                                 # write_record_to("record_record.csv", [f"{self._tick:.2f}", 'job_append', pod, pod.coordinate], ['Time', 'Event', 'Pod ID', 'Location'])
                                 pod_assigned = True
@@ -497,6 +517,7 @@ class Inventory(Universe):
                             assigned_station=station.station_id,
                             pod_assigned_time=self._tick,
                             status="queue",
+                            db_path=self.sqlite_db_path,
                         )
 
     # def process_orders(self):
@@ -701,7 +722,7 @@ class Inventory(Universe):
         return ranked_pods[0]
 
     def add_picking_task_after_pps(self, station: Station, pod: Pod, sku_to_list_order_id_and_quantity: dict, sku_to_quantity: dict):
-        latest_pod_location = get_pod_location(pod.pod_id)
+        latest_pod_location = get_pod_location(pod.pod_id, db_path=self.sqlite_db_path)
         if latest_pod_location:
             pod.pos_x, pod.pos_y = latest_pod_location
         job = RobotJob(pod.coordinate, station_id=station.station_id, pod=pod)
@@ -1038,7 +1059,7 @@ class Inventory(Universe):
         return final_selection
         
     def put_order_to_picking_station(self, final_selection):
-        assign_order_df = pd.read_csv('assign_order.csv')
+        assign_order_df = pd.read_csv(self.assign_order_csv)
 
         for picker_name, order_ids in final_selection.items():
             for order_id in order_ids:
@@ -1049,9 +1070,14 @@ class Inventory(Universe):
                 assign_order_df.loc[assign_order_df['order_id'] == order.order_id, 'assigned_station'] = picker_name
                 assign_order_df.loc[assign_order_df['order_id'] == order.order_id, 'status'] = -1
                 # DB
-                upsert_order_history(order_id, assigned_station=picker_name, order_assigned_time=self._tick)
+                upsert_order_history(
+                    order_id,
+                    assigned_station=picker_name,
+                    order_assigned_time=self._tick,
+                    db_path=self.sqlite_db_path,
+                )
             
-        assign_order_df.to_csv('assign_order.csv', index=False)
+        assign_order_df.to_csv(self.assign_order_csv, index=False)
 
     @staticmethod
     def _calculate_two_coordinates(p1, p2):
@@ -1440,7 +1466,8 @@ class Inventory(Universe):
                         idx,
                         val,
                         best_picker,
-                        best_value
+                        best_value,
+                        db_path=self.sqlite_db_path,
                     )
                     self.preassign_per_station[best_picker].append(idx)
                     next_bin_counts[best_picker] -= 1

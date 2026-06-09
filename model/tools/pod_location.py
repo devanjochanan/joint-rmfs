@@ -1,12 +1,22 @@
 import sqlite3
 
 TS = None
+DEFAULT_DB_PATH = "warehouse.db"
+
+
+def configure_default_db_path(db_path):
+    global DEFAULT_DB_PATH
+    DEFAULT_DB_PATH = db_path
+
+
+def _connect(db_path):
+    return sqlite3.connect(DEFAULT_DB_PATH if db_path == "warehouse.db" else db_path)
 
 def clear_pod_locations(db_path="warehouse.db"):
     """
     Delete all rows from the pod_location table.
     """
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     cursor = conn.cursor()
 
     cursor.execute(f"DELETE FROM pod_location_{TS}")
@@ -19,7 +29,7 @@ def initialize_pod_location_table(timestamp: str, db_path="warehouse.db"):
     global TS
     TS = timestamp   
     
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     cursor = conn.cursor()
 
     cursor.execute(f"""
@@ -38,7 +48,7 @@ def upsert_pod_location(pod_id: str, x: int, y: int, db_path="warehouse.db"):
     """
     Insert or update a pod's (x, y) location.
     """
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     cursor = conn.cursor()
 
     cursor.execute(f"""
@@ -56,7 +66,7 @@ def get_pod_location(pod_id: str, db_path="warehouse.db"):
     Retrieve (x, y) location of a pod by ID.
     Returns a tuple (x, y) or None if not found.
     """
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     cursor = conn.cursor()
 
     cursor.execute(f"SELECT x, y FROM pod_location_{TS} WHERE id = ?", (pod_id,))

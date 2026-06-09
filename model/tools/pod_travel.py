@@ -1,6 +1,16 @@
 import sqlite3
 
 TS = None
+DEFAULT_DB_PATH = "warehouse.db"
+
+
+def configure_default_db_path(db_path):
+    global DEFAULT_DB_PATH
+    DEFAULT_DB_PATH = db_path
+
+
+def _connect(db_path):
+    return sqlite3.connect(DEFAULT_DB_PATH if db_path == "warehouse.db" else db_path)
 
 def initialize_pod_travel_table(timestamp: str, db_path="warehouse.db"):
     """
@@ -9,7 +19,7 @@ def initialize_pod_travel_table(timestamp: str, db_path="warehouse.db"):
     global TS
     TS = timestamp
 
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     cursor = conn.cursor()
 
     cursor.execute(f"""
@@ -34,7 +44,7 @@ def clear_pod_travel(db_path="warehouse.db"):
     """
     Delete all rows from the pod_travel table.
     """
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     cursor = conn.cursor()
 
     cursor.execute(f"DELETE FROM pod_travel_{TS}")
@@ -57,7 +67,7 @@ def upsert_pod_travel(
     Upsert a pod travel record.
     Updates only provided fields. Identified by (job_id, robot_id, pod_id, task).
     """
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     cursor = conn.cursor()
     # print(f"[DEBUG] job_id={job_id} ({type(job_id)}), robot_id={robot_id} ({type(robot_id)}), pod_id={pod_id} ({type(pod_id)}), task={task} ({type(task)})")
     # print(f"[DEBUG] from_position={from_position} ({type(from_position)}), to_position={to_position} ({type(to_position)}), start_time={start_time} ({type(start_time)}), finish_time={finish_time} ({type(finish_time)})")
@@ -118,7 +128,7 @@ def get_pod_travel(pod_id: int = None, db_path: str = "warehouse.db"):
     - If pod_id is provided, returns all matching rows.
     - If pod_id is None, returns all rows.
     """
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
