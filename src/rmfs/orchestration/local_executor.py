@@ -62,6 +62,17 @@ def snapshot_root(repo_root: Path):
     return {name: file_digest(repo_root / name) for name in ROOT_SENSITIVE_FILES}
 
 
+def hash_snapshot_files(snapshot_root_dir: Path):
+    if not snapshot_root_dir.exists():
+        return {}
+    digests = {}
+    for path in snapshot_root_dir.rglob("*"):
+        if path.is_file():
+            rel_path = path.relative_to(snapshot_root_dir).as_posix()
+            digests[rel_path] = file_digest(path)
+    return digests
+
+
 def changed_root_files(before, after):
     return [name for name in ROOT_SENSITIVE_FILES if before[name] != after[name]]
 
@@ -265,6 +276,13 @@ def run_controller(
     if snapshot_inputs:
         input_manifest_path, input_manifest = create_input_snapshot(repo_root, input_snapshot_root)
 
+    if snapshot_inputs:
+        deferred_root_read_only_inputs = []
+        snapshot_copied_inputs = [r["repo_path"] for r in input_manifest.get("copied_inputs", [])] if input_manifest else []
+    else:
+        deferred_root_read_only_inputs = DEFERRED_ROOT_READ_ONLY_INPUTS
+        snapshot_copied_inputs = []
+
     manifest = {
         "status": "started",
         "runs": runs,
@@ -276,7 +294,8 @@ def run_controller(
         "commit": commit,
         "python_executable": python_executable,
         "timestamp": timestamp,
-        "deferred_root_read_only_inputs": DEFERRED_ROOT_READ_ONLY_INPUTS,
+        "deferred_root_read_only_inputs": deferred_root_read_only_inputs,
+        "snapshot_copied_inputs": snapshot_copied_inputs,
         "debug_trace": debug_trace,
         "trace_cadence": trace_cadence,
         "trace_first_n": trace_first_n,
@@ -326,6 +345,7 @@ def run_controller(
         write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
 
     root_before = snapshot_root(repo_root)
+    snapshot_before = hash_snapshot_files(input_snapshot_root) if snapshot_inputs else {}
     processes = []
     completed = []
 
@@ -371,6 +391,17 @@ def run_controller(
 
     root_after = snapshot_root(repo_root)
     root_changed = changed_root_files(root_before, root_after)
+
+    snapshot_after = hash_snapshot_files(input_snapshot_root) if snapshot_inputs else {}
+    snapshot_changed = []
+    if snapshot_inputs:
+        for rel_path, digest_before in snapshot_before.items():
+            digest_after = snapshot_after.get(rel_path)
+            if digest_after is None or digest_before != digest_after:
+                snapshot_changed.append(rel_path)
+        for rel_path in snapshot_after:
+            if rel_path not in snapshot_before:
+                snapshot_changed.append(rel_path)
 
     worker_results = []
     collisions = []
@@ -421,6 +452,9 @@ def run_controller(
     if root_changed:
         controller_status = "failure"
         failure_reasons.append("root_sensitive_files_changed")
+    if snapshot_changed:
+        controller_status = "failure"
+        failure_reasons.append("snapshot_files_changed")
     if failed_workers:
         controller_status = "failure"
         failure_reasons.append("worker_failures")
@@ -459,7 +493,9 @@ def run_controller(
         "branch": branch,
         "commit": commit,
         "root_changed_files": root_changed,
-        "deferred_root_read_only_inputs": DEFERRED_ROOT_READ_ONLY_INPUTS,
+        "snapshot_changed_files": snapshot_changed,
+        "deferred_root_read_only_inputs": deferred_root_read_only_inputs,
+        "snapshot_copied_inputs": snapshot_copied_inputs,
         "snapshot_inputs": snapshot_inputs,
         "input_snapshot_root": str(input_snapshot_root) if input_snapshot_root is not None else None,
         "input_manifest_path": str(input_manifest_path) if input_manifest_path is not None else None,
@@ -508,6 +544,10 @@ def main(argv=None):
         parser.error("--ticks must be >= 0")
     if args.max_workers < 1:
         parser.error("--max-workers must be >= 1")
+    if args.trace_cadence < 0:
+        parser.error("--trace-cadence must be >= 0")
+    if args.trace_first_n < 0:
+        parser.error("--trace-first-n must be >= 0")
 
     repo_root = Path(args.repo_root).resolve() if args.repo_root else Path.cwd().resolve()
     output_root = Path(args.output_root)

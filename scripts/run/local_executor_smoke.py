@@ -27,6 +27,10 @@ def main():
         parser.error("--ticks must be >= 0")
     if args.max_workers < 1:
         parser.error("--max-workers must be >= 1")
+    if args.trace_cadence < 0:
+        parser.error("--trace-cadence must be >= 0")
+    if args.trace_first_n < 0:
+        parser.error("--trace-first-n must be >= 0")
 
     from src.rmfs.orchestration.local_executor import run_controller
 

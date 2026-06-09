@@ -24,3 +24,6 @@ Excluded for now:
 Runtime/state/output/checkpoint artifacts are never copied as inputs: `netlogo.state`, `warehouse.db`, `assign_order.csv`, `pod_info.csv`, `skus_data.csv`, `sorted_skus_data.csv`, `output/`, `result/`, `saved_models/`, `profile.prof`, and `netlogo_profile_summary.txt`.
 
 When an input snapshot is used, workers call `RunContext.isolated(..., input_root=input_snapshot_root)`. Mutable runtime files still go to each worker runtime directory.
+
+### Residual Root Dependency Note
+Phase 4 snapshots active generated inputs for worker reads, but does not refactor legacy generator path ownership. The order/pod generation modules remain root-compatible and should not be modified until a dedicated data-generation phase or owner handoff. This avoids overclaiming "full snapshot independence."
