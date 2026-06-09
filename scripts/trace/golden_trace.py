@@ -118,7 +118,9 @@ def get_stable_digest(payload):
             return f"{obj:.6f}"
         elif isinstance(obj, dict):
             return {str(k): sanitize(v) for k, v in sorted(obj.items())}
-        elif isinstance(obj, (list, tuple, set)):
+        elif isinstance(obj, set):
+            return sorted((sanitize(x) for x in obj), key=lambda x: json.dumps(x, sort_keys=True, default=str))
+        elif isinstance(obj, (list, tuple)):
             return [sanitize(x) for x in obj]
         elif hasattr(obj, '__dict__'):
             return sanitize(obj.__dict__)
@@ -149,7 +151,10 @@ def main():
     original_cwd = os.getcwd()
     # Script is in <root>/scripts/trace/golden_trace.py
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    output_dir = os.path.abspath(os.path.join(original_cwd, args.output))
+    if os.path.isabs(args.output):
+        output_dir = os.path.abspath(args.output)
+    else:
+        output_dir = os.path.abspath(os.path.join(repo_root, args.output))
 
     # Retrieve Git commit and branch
     commit, branch = get_git_info(repo_root)
