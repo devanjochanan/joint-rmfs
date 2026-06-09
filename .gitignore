@@ -38,3 +38,6 @@ robot sa data/
 AGENTS.md
 agents.md
 
+# Local generated trace output
+data/runtime/golden_trace/
+
