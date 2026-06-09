@@ -84,9 +84,11 @@ def main():
         "expected_runtime_files": {},
     }
 
+    netlogo_module = None
     before = snapshot(repo_root)
     try:
         import netlogo
+        netlogo_module = netlogo
         from src.rmfs.runtime_io import RunContext
 
         ctx = RunContext.isolated(runtime_root, repo_root=repo_root)
@@ -141,7 +143,8 @@ def main():
                 json.dump(summary, fh, indent=2)
         finally:
             try:
-                netlogo.reset_run_context()
+                if netlogo_module is not None:
+                    netlogo_module.reset_run_context()
             except Exception:
                 pass
             os.chdir(original_cwd)
