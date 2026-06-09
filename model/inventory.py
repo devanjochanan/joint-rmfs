@@ -30,6 +30,8 @@ from .tools.order_history import upsert_order_history
 from .tools.job_task import upsert_job_task, update_job_task
 from .tools.pre_assign import initialize_pre_assign_table, clear_pre_assign_table, insert_pre_assign
 # from .live_advanced_table import start_gui
+# RTS decision seam (Phase 5B)
+from src.rmfs.decisions.rts import CurrentRTSPolicy
 
 # Show full column content
 pd.set_option('display.max_colwidth', None)
@@ -94,6 +96,8 @@ class Inventory(Universe):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M")
             initialize_pre_assign_table(timestamp, db_path=self.sqlite_db_path)
             clear_pre_assign_table(db_path=self.sqlite_db_path)
+        # RTS decision seam (Phase 5B): default policy preserves current behavior
+        self.rts_policy = CurrentRTSPolicy()
         super().__init__()
 
     def runtime_path(self, key, default):
