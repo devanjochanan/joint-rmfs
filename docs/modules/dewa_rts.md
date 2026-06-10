@@ -13,10 +13,11 @@ This profile documents the ownership details, current code mappings, and plans f
 
 ## 2. Refactoring Phase Status
 
-* **Status**: Scaffold placeholder only.
+* **Status**: Phase 6 adds an opt-in RTS-RL decision/model layer under `src/rmfs/rl/rts/`.
+* **Default behavior**:
+  * `CurrentRTSPolicy` remains the simulator default.
+  * RTS-RL remains disabled unless an integration explicitly instantiates `RTSRLPolicy`.
 * **Restrictions**:
-  * Do not write execution code in the scaffold directories.
-  * Do not import regret-k or RTS-RL algorithms yet.
   * Do not modify or edit POA, PPS, charging, or order generation logic.
   * Preserving current baseline simulation behavior is paramount.
 
@@ -34,3 +35,11 @@ Refactoring RTS logic in future phases affects:
 * **Robot kinematics**: Changes to routing paths affect travel time and battery usage.
 * **Storage state corruption**: If storage maps lag or fail to book correctly, multiple pods can "teleport" or try to occupies the same coordinate.
 * **Deadlock checks**: Modifying return paths can result in intersection blockages.
+
+## 5. Phase 6 RTS-RL Port
+
+Phase 6 ports the RTS-RL action space, state/features, stock encoder, masked actor-critic model, inference helpers, reward/cycle-reference helpers, and a validation smoke. The optional `RTSRLPolicy` requires an explicit model and safe zone-to-storage resolver; it does not load checkpoints automatically and is not the default policy.
+
+Raw threshold constants are excluded from model feature names. The model receives derived stock-risk signals such as fill ratios, below-threshold ratios, shortage depth, and replenishment signals.
+
+Deferred work includes rollout collection, training, checkpoint/artifact loading, and richer zone/storage contracts.
