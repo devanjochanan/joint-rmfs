@@ -25,7 +25,7 @@ from src.rmfs.rl.rts.training.rollout_dataset import build_feature_tensors_from_
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Synthetic RTS training smoke.")
     parser.add_argument("--artifact-label", default="phase8_synthetic_smoke")
-    parser.add_argument("--output-root", default="data/runtime/rts_training_smoke/phase8_synthetic_smoke")
+    parser.add_argument("--output-root", default="data/runtime/rts_training_smoke")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args(argv)
 
@@ -48,8 +48,9 @@ def main(argv=None):
     )
     validate_training_config(config)
     torch.manual_seed(config.seed)
-    output_root.mkdir(parents=True, exist_ok=True)
-    reference_path = output_root / "cycle_reference.json"
+    run_root = output_root / args.artifact_label
+    run_root.mkdir(parents=True, exist_ok=True)
+    reference_path = run_root / "cycle_reference.json"
     reference = write_synthetic_cycle_reference(reference_path)
     dataset = build_training_steps(synthetic_events())
     padded = build_feature_tensors_from_steps(dataset.steps)

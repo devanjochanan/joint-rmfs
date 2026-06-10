@@ -162,8 +162,38 @@ def assert_raises(fn, expected):
 
 def main():
     torch.manual_seed(42)
-    dataset = build_training_steps(synthetic_events())
+    base_events = synthetic_events()
+    dataset = build_training_steps(base_events)
     assert dataset.summary["eligible_step_count"] == 2
+
+    # Verify duplicate event ID detection and exclusion
+    duplicate_events = list(base_events)
+    duplicate_events.append(
+        build_decision_event(
+            decision_event_id="d1",
+            tick=99,
+            robot_id=1,
+            job_id="job-1",
+            pod_id="pod-1",
+            source_station_id="picker-1",
+            source_station_type="picker",
+            policy_name="synthetic",
+            zone_ids=("A", "B"),
+            action_mask=(1, 1, 0, 0),
+            selected_action_index=0,
+            selected_action_branch="store",
+            selected_zone_id="A",
+            selected_storage=None,
+            state_json=synthetic_state(0.99),
+            feature_shapes={},
+        )
+    )
+    dup_dataset = build_training_steps(duplicate_events)
+    assert dup_dataset.summary["duplicate_decision_id_count"] == 1
+    assert dup_dataset.summary["skipped_duplicate_event_id"] == 2
+    assert dup_dataset.summary["eligible_step_count"] == 1
+    assert dup_dataset.steps[0].decision_event_id == "d2"
+
     padded = build_feature_tensors_from_steps(dataset.steps)
     model = RTSMaskedActorCritic(
         action_feature_dim=padded.X_actions.shape[-1],

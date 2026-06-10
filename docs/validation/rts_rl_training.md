@@ -13,7 +13,7 @@ This smoke builds synthetic Phase 7-style decision/outcome rows, reconstructs fe
 Run:
 
 ```bash
-/home/dewan/torch-gpu/bin/python scripts/training/rts_train_smoke.py --artifact-label phase8_synthetic_smoke --output-root data/runtime/rts_training_smoke/phase8_synthetic_smoke
+/home/dewan/torch-gpu/bin/python scripts/training/rts_train_smoke.py --artifact-label phase8_synthetic_smoke --output-root data/runtime/rts_training_smoke
 ```
 
 This smoke writes a synthetic cycle reference under the smoke output directory, runs one synthetic PPO update, saves a checkpoint, writes `latest.json`, appends `checkpoint_history.jsonl`, writes `batch_summary.json`, loads the checkpoint back, and verifies a loaded-model forward path.

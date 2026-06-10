@@ -24,6 +24,7 @@ SKIP_REASONS = (
     "skipped_missing_state",
     "skipped_feature_error",
     "skipped_nonpositive_cycle_time",
+    "skipped_duplicate_event_id",
 )
 
 
@@ -70,24 +71,74 @@ def load_rollout_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def pair_decision_outcome_events(events: Sequence[Mapping[str, Any]]) -> tuple[list[tuple[dict, dict]], dict]:
-    decisions = {str(row.get("decision_event_id")): dict(row) for row in events if row.get("event_type") == DECISION_EVENT}
-    outcomes = {str(row.get("decision_event_id")): dict(row) for row in events if row.get("event_type") == OUTCOME_EVENT}
-    pairs = [(decision, outcomes[event_id]) for event_id, decision in decisions.items() if event_id in outcomes]
+    decisions_grouped: dict[str, list[dict]] = {}
+    outcomes_grouped: dict[str, list[dict]] = {}
+    for row in events:
+        event_type = row.get("event_type")
+        event_id = row.get("decision_event_id")
+        if event_id is None:
+            continue
+        event_id_str = str(event_id)
+        if event_type == DECISION_EVENT:
+            decisions_grouped.setdefault(event_id_str, []).append(dict(row))
+        elif event_type == OUTCOME_EVENT:
+            outcomes_grouped.setdefault(event_id_str, []).append(dict(row))
+    
+    duplicate_decision_ids = {k for k, v in decisions_grouped.items() if len(v) > 1}
+    duplicate_outcome_ids = {k for k, v in outcomes_grouped.items() if len(v) > 1}
+    duplicate_ids = duplicate_decision_ids.union(duplicate_outcome_ids)
+    
+    pairs = []
+    for event_id, decs in decisions_grouped.items():
+        if event_id in duplicate_ids:
+            continue
+        if event_id in outcomes_grouped:
+            outs = outcomes_grouped[event_id]
+            if len(outs) == 1:
+                pairs.append((decs[0], outs[0]))
+                
+    total_decisions = sum(len(lst) for lst in decisions_grouped.values())
+    total_outcomes = sum(len(lst) for lst in outcomes_grouped.values())
+    
     return pairs, {
-        "decision_count": len(decisions),
-        "outcome_count": len(outcomes),
+        "decision_count": total_decisions,
+        "outcome_count": total_outcomes,
         "paired_count": len(pairs),
-        "missing_outcome_count": len(decisions) - len(pairs),
+        "missing_outcome_count": sum(len(v) for k, v in decisions_grouped.items() if k not in outcomes_grouped and k not in duplicate_ids),
+        "duplicate_decision_id_count": len(duplicate_decision_ids),
+        "duplicate_outcome_id_count": len(duplicate_outcome_ids),
     }
 
 
 def build_training_steps(events: Sequence[Mapping[str, Any]]) -> RTSRolloutDataset:
     pairs, pair_summary = pair_decision_outcome_events(events)
-    decisions_with_outcome = {decision.get("decision_event_id") for decision, _outcome in pairs}
-    skipped = {reason: 0 for reason in SKIP_REASONS}
+    dec_counts: dict[str, int] = {}
+    out_counts: dict[str, int] = {}
     for row in events:
-        if row.get("event_type") == DECISION_EVENT and row.get("decision_event_id") not in decisions_with_outcome:
+        event_id = row.get("decision_event_id")
+        if event_id is None:
+            continue
+        event_id_str = str(event_id)
+        if row.get("event_type") == DECISION_EVENT:
+            dec_counts[event_id_str] = dec_counts.get(event_id_str, 0) + 1
+        elif row.get("event_type") == OUTCOME_EVENT:
+            out_counts[event_id_str] = out_counts.get(event_id_str, 0) + 1
+            
+    skipped = {reason: 0 for reason in SKIP_REASONS}
+    paired_decision_ids = {decision.get("decision_event_id") for decision, _outcome in pairs}
+    for row in events:
+        if row.get("event_type") != DECISION_EVENT:
+            continue
+        event_id = str(row.get("decision_event_id", ""))
+        if event_id in paired_decision_ids:
+            continue
+        if dec_counts.get(event_id, 0) > 1 or out_counts.get(event_id, 0) > 1:
+            skipped["skipped_duplicate_event_id"] += 1
+        elif event_id not in out_counts:
             skipped["skipped_missing_outcome"] += 1
+        else:
+            skipped["skipped_missing_outcome"] += 1
+            
     steps: list[RTSTrainingStep] = []
     for decision, outcome in pairs:
         step, reason = _build_step(decision, outcome)

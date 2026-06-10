@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -9,6 +10,12 @@ import torch
 
 from .metrics import append_jsonl, atomic_write_json, json_safe, write_json
 from .references import copy_cycle_reference_to_checkpoint
+
+
+def atomic_torch_save(payload: Any, path: Path) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, tmp)
+    os.replace(tmp, path)
 
 
 def checkpoint_root(output_root: Path, artifact_label: str) -> Path:
@@ -60,8 +67,8 @@ def save_training_checkpoint(
     root = checkpoint_root(config.output_root, config.artifact_label)
     checkpoint_dir = batch_checkpoint_dir(config.output_root, config.artifact_label, batch_id)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), checkpoint_dir / "model.pt")
-    torch.save(optimizer.state_dict(), checkpoint_dir / "optimizer.pt")
+    atomic_torch_save(model.state_dict(), checkpoint_dir / "model.pt")
+    atomic_torch_save(optimizer.state_dict(), checkpoint_dir / "optimizer.pt")
     feature_schema = write_feature_schema(
         checkpoint_dir / "feature_schema.json",
         action_feature_names=action_feature_names,
