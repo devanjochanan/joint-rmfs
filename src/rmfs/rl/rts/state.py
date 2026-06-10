@@ -46,8 +46,16 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
     pod = getattr(context, "pod", None)
     station = getattr(context, "station", None)
 
-    zone_rows, warnings = build_zone_rows(context, zones)
     stock_rows = stock_rows_from_pod(pod)
+    repl_signal_active = any(row.get("below_threshold", 0.0) > 0 for row in stock_rows)
+    repl_station_available = _station_count(warehouse, "replenishment") > 0
+
+    zone_rows, warnings = build_zone_rows(
+        context,
+        zones,
+        replenishment_signal_active=repl_signal_active,
+        replenishment_station_available=repl_station_available,
+    )
     station_type = str(getattr(station, "station_type", ""))
     station_id = str(getattr(station, "station_id", ""))
     next_retrieval_zone_one_hot = {zone_id: 0 for zone_id in zones}
@@ -82,7 +90,7 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         "next_retrieval_zone": "",
         "next_retrieval_zone_one_hot": next_retrieval_zone_one_hot,
         "estimated_queue_time": 0.0,
-        "replenishment_signal_active": 1 if any(row.get("below_threshold", 0.0) for row in stock_rows) else 0,
+        "replenishment_signal_active": 1 if repl_signal_active else 0,
         "zone_rows": zone_rows,
         "stock_rows": stock_rows,
         "spatial_context": spatial_context,

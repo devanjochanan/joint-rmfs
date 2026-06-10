@@ -14,7 +14,13 @@ def infer_zone_id(obj: Any) -> str:
     return f"col_{int(x) // 10 if _is_number(x) else 0}"
 
 
-def build_zone_rows(context: Any, zone_ids: Sequence[str]) -> tuple[list[dict[str, float | str]], list[str]]:
+def build_zone_rows(
+    context: Any,
+    zone_ids: Sequence[str],
+    *,
+    replenishment_signal_active: bool = False,
+    replenishment_station_available: bool = False,
+) -> tuple[list[dict[str, float | str]], list[str]]:
     warehouse = getattr(context, "warehouse", None)
     storage_manager = getattr(warehouse, "storage_manager", None)
     storages = list(getattr(storage_manager, "storages", []) or [])
@@ -29,6 +35,7 @@ def build_zone_rows(context: Any, zone_ids: Sequence[str]) -> tuple[list[dict[st
         free = [storage for storage in zone_storages if bool(getattr(storage, "is_empty", False)) and getattr(storage, "assigned_pod", None) is None]
         total = len(zone_storages)
         present_robot_count = sum(1 for robot in robots if infer_zone_id(robot) == zone_id)
+        replenish_valid = bool(free) and replenishment_signal_active and replenishment_station_available
         rows.append(
             {
                 "zone_id": zone_id,
@@ -48,7 +55,7 @@ def build_zone_rows(context: Any, zone_ids: Sequence[str]) -> tuple[list[dict[st
                 "candidate_zone_to_selected_replenishment_station_distance": 0.0,
                 "candidate_zone_to_nearest_replenishment_station_distance": 0.0,
                 "store_action_valid": 1.0 if free else 0.0,
-                "replenish_store_action_valid": 1.0 if free else 0.0,
+                "replenish_store_action_valid": 1.0 if replenish_valid else 0.0,
             }
         )
     return rows, warnings

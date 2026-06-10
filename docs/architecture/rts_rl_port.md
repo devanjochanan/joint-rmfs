@@ -15,6 +15,8 @@ Ported/adapted pieces:
 
 The adapter is not wired into the simulator default. `CurrentRTSPolicy` remains the default and RTS-RL remains disabled unless explicitly instantiated by a caller.
 
+Phase 6 replenish-store validity is conservative: it requires free storage, a replenishment signal, and replenishment-station availability; it does not dispatch replenishment or collect rollout outcomes.
+
 Raw threshold constants from the advanced source are excluded from model feature names. The model sees derived signals such as `pod_below_threshold_ratio`, `replenishment_signal_active`, `zero_global_low_sku_count`, `below_threshold_sku_ratio`, `shortage_depth`, `global_low_depth`, and fill ratios.
 
 Deferred to Phase 7:

@@ -99,6 +99,34 @@ def main():
 
     context = build_synthetic_context()
     state = build_state(context, zone_ids)
+
+    # Assert replenish_store_action_valid is 1.0 when replenishment is active and station exists
+    assert any(row["replenish_store_action_valid"] > 0 for row in state.state_json["zone_rows"]), "At least one replenish_store action must be valid when replenishment is active and station exists"
+
+    # Second case: no replenishment signal (stock rows have no below threshold SKUs)
+    no_need_pod = Obj(
+        pod_id=8,
+        skus={
+            1: {"current_qty": 9, "limit_qty": 10, "threshold": 0.3, "weight": 1.0},
+            2: {"current_qty": 8, "limit_qty": 8, "threshold": 0.2, "weight": 1.0},
+        },
+    )
+    no_need_context = Obj(
+        warehouse=Obj(
+            storage_manager=Obj(storages=context.warehouse.storage_manager.storages),
+            station_manager=Obj(stations=context.warehouse.station_manager.stations),
+            pod_manager=Obj(pods=[no_need_pod]),
+            _objects=context.warehouse._objects,
+        ),
+        robot=context.robot,
+        pod=no_need_pod,
+        station=context.station,
+    )
+    no_need_state = build_state(no_need_context, zone_ids)
+    # Store actions are valid, but replenish_store actions must be invalid (0.0)
+    assert any(row["store_action_valid"] > 0 for row in no_need_state.state_json["zone_rows"]), "Store actions should be valid"
+    assert all(row["replenish_store_action_valid"] == 0.0 for row in no_need_state.state_json["zone_rows"]), "Replenish store actions must be invalid when replenishment is inactive"
+
     json.dumps(state.state_json)
     features = build_feature_bundle(zone_ids, mask, state.state_json)
     validate_feature_matrix_shape(features.X_actions, features.action_feature_names)
