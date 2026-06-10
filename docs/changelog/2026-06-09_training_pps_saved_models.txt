@@ -1,0 +1,12 @@
+PPS training folder rename and saved-model relocation
+Date: 2026-06-09
+
+Changes:
+- Renamed docs/training_related/ to docs/training_pps/.
+- Updated training/evaluation commands and documentation to use docs/training_pps/.
+- Changed default PPS PPO training outputs to docs/training_pps/saved_models/.
+- Changed NetLogo PPO PPS default model load path to docs/training_pps/saved_models/pps_rl_best.zip.
+- Added docs/training_pps/saved_models/ with README, subfolders for runs/metrics/checkpoints, and gitignore rules for large generated artifacts.
+
+New default model path for NetLogo PPO PPS:
+docs/training_pps/saved_models/pps_rl_best.zip

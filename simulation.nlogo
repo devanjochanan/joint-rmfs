@@ -15,15 +15,45 @@ globals [
   robot_count
   _stop
   total_turning
+  throughput
+  avg_order_completion_time
+  pod_visits
+  pile_on_rate
+  picked_quantity
+  pps_mode
+  sim_seed
   station1_orders
   station2_orders
   station3_orders
 ]
 
 to setup
+  let requested_seed sim_seed
   ca
+  set sim_seed requested_seed
   let result ""
   py:setup py:python3
+  if sim_seed != 0 [
+    (py:run
+      "import netlogo"
+      (word "netlogo.set_sim_seed(" sim_seed ")"))
+  ]
+  if pps_mode = 0 [ set pps_mode "PPO PPS" ]
+  ifelse pps_mode = "Rika PPS" [
+    (py:run
+      "import netlogo"
+      "item = netlogo.set_pps_mode('rika')")
+  ] [
+    ifelse pps_mode = "Random PPS" [
+      (py:run
+        "import netlogo"
+        "item = netlogo.set_pps_mode('random')")
+    ] [
+      (py:run
+        "import netlogo"
+        "item = netlogo.set_pps_mode('ppo')")
+    ]
+  ]
   (py:run
     "import netlogo"
     "item = netlogo.setup()")
@@ -79,6 +109,11 @@ to go
   set total_energy item 1 result
   set _stop item 3 result
   set total_turning item 4 result
+  set throughput item 6 result
+  set avg_order_completion_time item 7 result
+  set pod_visits item 8 result
+  set pile_on_rate item 9 result
+  set picked_quantity item 10 result
   set average_total_energy total_energy / robot_count
 
   let station_status item 5 result
@@ -97,6 +132,27 @@ to setup-py
   (py:run
     "import netlogo"
     "item = netlogo.setup_py()")
+end
+
+to use-ppo-pps
+  set pps_mode "PPO PPS"
+  (py:run
+    "import netlogo"
+    "item = netlogo.set_pps_mode('ppo')")
+end
+
+to use-rika-pps
+  set pps_mode "Rika PPS"
+  (py:run
+    "import netlogo"
+    "item = netlogo.set_pps_mode('rika')")
+end
+
+to use-random-pps
+  set pps_mode "Random PPS"
+  (py:run
+    "import netlogo"
+    "item = netlogo.set_pps_mode('random')")
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -233,6 +289,17 @@ total_turning
 14
 
 MONITOR
+790
+500
+955
+557
+Throughput
+throughput
+17
+1
+14
+
+MONITOR
 970
 196
 1265
@@ -265,6 +332,50 @@ station3_orders
 1
 14
 
+MONITOR
+970
+425
+1265
+482
+Avg Order Completion Time
+avg_order_completion_time
+17
+1
+14
+
+MONITOR
+970
+500
+1265
+557
+Pod Visits
+pod_visits
+17
+1
+14
+
+MONITOR
+970
+575
+1265
+632
+Pile-on Rate
+pile_on_rate
+17
+1
+14
+
+MONITOR
+790
+575
+955
+632
+Picked Quantity
+picked_quantity
+17
+1
+14
+
 BUTTON
 895
 10
@@ -281,6 +392,68 @@ NIL
 NIL
 NIL
 1
+
+BUTTON
+1065
+10
+1160
+43
+PPO PPS
+use-ppo-pps
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+1170
+10
+1265
+43
+Rika PPS
+use-rika-pps
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+1275
+10
+1370
+43
+Random PPS
+use-random-pps
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+MONITOR
+1065
+60
+1265
+117
+PPS Mode
+pps_mode
+17
+1
+14
 
 @#$#@#$#@
 ## WHAT IS IT?
