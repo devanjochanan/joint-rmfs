@@ -6,7 +6,7 @@ the policy and the robot controller.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)

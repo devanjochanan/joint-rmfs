@@ -70,15 +70,7 @@ class CurrentRTSPolicy:
                 )
 
         # Neither flag is set — this path did not exist in the original
-        # code (one of the two flags was always True).  Preserve the
-        # implicit no-op by falling back to pod current position so the
-        # robot has *some* destination and does not crash.
-        destination = NetLogoCoordinate(pod.pos_x, pod.pos_y)
-        return RTSDecision(
-            storage=None,
-            destination=destination,
-            policy_name=POLICY_NAME,
-            mode="none",
-            reason="neither return_fix nor return_nearest is set; "
-                   "defensive fallback to pod position",
+        # code (one of the two flags was always True). Raise explicitly.
+        raise RuntimeError(
+            "Invalid RTS configuration: neither return_fix nor return_nearest is enabled"
         )

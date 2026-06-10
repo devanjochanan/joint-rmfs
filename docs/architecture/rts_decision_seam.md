@@ -35,11 +35,10 @@ The default `CurrentRTSPolicy` wraps the **exact same** decision logic
 that was previously inline in `model/robot.py` lines 730–758
 (commit `d690c77`):
 
-| Robot flag | Old behavior | New behavior |
-|---|---|---|
-| `return_fix = True` | Return pod to `job.pod_coordinate` | Policy returns `mode="fixed"`, same coordinate |
-| `return_nearest = True` | Query `getNearestEmptyStorageToLocation(...)` | Policy returns `mode="nearest"`, same query |
-| Nearest fallback (no empty storage) | Return pod to its current `(pos_x, pos_y)` | Policy returns `mode="nearest_fallback"`, same coordinate |
+- `return_fix=True` preserves fixed return
+- `return_nearest=True` preserves nearest return
+- `return_nearest` with no empty storage preserves original fallback to current pod position
+- neither `return_fix` nor `return_nearest` is treated as invalid configuration and raises explicitly
 
 All side effects are executed **in `model/robot.py`**, not in the policy:
 
