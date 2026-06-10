@@ -35,6 +35,7 @@ def write_run_manifest(
     input_snapshot_root: Path | None = None,
     input_manifest_path: Path | None = None,
     input_manifest: dict | None = None,
+    policy_config: dict | None = None,
     purpose: str = "local_executor_smoke",
 ):
     input_manifest = input_manifest or {}
@@ -63,7 +64,7 @@ def write_run_manifest(
         "trace_first_n": trace_first_n,
         "summary_mode": "aggregate",
         "purpose": purpose,
-        "policy_config": DEFAULT_POLICY_CONFIG,
+        "policy_config": policy_config if policy_config is not None else DEFAULT_POLICY_CONFIG,
         "snapshot_inputs": input_manifest.get("inputs", []),
         "copied_inputs": copied_inputs,
         "hash_only_inputs": hash_only_inputs,

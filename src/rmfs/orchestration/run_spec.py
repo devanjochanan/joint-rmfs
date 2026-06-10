@@ -18,6 +18,12 @@ class RunSpec:
     debug_trace: bool = False
     trace_cadence: int = 1000
     trace_first_n: int = 0
+    rts_policy_mode: str = "current"
+    rts_rollout_enabled: bool = False
+    rts_zone_ids: list[str] | None = None
+    rts_reward_reference_path: str | None = None
+    rts_random_seed: int | None = None
+    rts_max_events: int | None = None
 
     def to_json_dict(self):
         data = asdict(self)

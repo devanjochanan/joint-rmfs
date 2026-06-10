@@ -200,6 +200,7 @@ class Robot(Object):
             # input()
             # raise AssertionError
             upsert_pod_location(self.job.pod.pod_id, self.job.pod.pos_x, self.job.pod.pos_y)
+            self.warehouse.rts_rollout_runtime.on_return_completed(robot=self)
             e_li = self.load_mass * self._gravity * self._lift_coef
             self.energy_consumption += e_li
             self.load_mass = 0
@@ -906,6 +907,11 @@ class Robot(Object):
             station=station,
         )
         decision = self.warehouse.rts_policy.select_destination(context)
+        self.warehouse.rts_rollout_runtime.on_decision(
+            robot=self,
+            context=context,
+            decision=decision,
+        )
 
         if decision.mode == "fixed":
             # --- Fixed return: identical to old self.return_fix branch ---

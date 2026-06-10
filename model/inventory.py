@@ -32,6 +32,9 @@ from .tools.pre_assign import initialize_pre_assign_table, clear_pre_assign_tabl
 # from .live_advanced_table import start_gui
 # RTS decision seam (Phase 5B)
 from src.rmfs.decisions.rts import CurrentRTSPolicy
+from src.rmfs.rl.rts.outcome_tracker import NoopRTSRolloutRuntime
+from src.rmfs.rl.rts.runtime_install import install_rts_runtime
+from src.rmfs.rl.rts.runtime_registry import get_rts_runtime_config, get_rts_runtime_root
 
 # Show full column content
 pd.set_option('display.max_colwidth', None)
@@ -98,6 +101,8 @@ class Inventory(Universe):
             clear_pre_assign_table(db_path=self.sqlite_db_path)
         # RTS decision seam (Phase 5B): default policy preserves current behavior
         self.rts_policy = CurrentRTSPolicy()
+        self.rts_rollout_runtime = NoopRTSRolloutRuntime()
+        install_rts_runtime(self, get_rts_runtime_config(), get_rts_runtime_root())
         super().__init__()
 
     def runtime_path(self, key, default):

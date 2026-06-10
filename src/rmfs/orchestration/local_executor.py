@@ -146,12 +146,25 @@ def run_worker(spec: RunSpec):
         os.chdir(spec.repo_root)
 
         from src.rmfs.runtime_io import RunContext
+        from src.rmfs.rl.rts.runtime_config import RTSRuntimeConfig
+        from src.rmfs.rl.rts.runtime_registry import configure_rts_runtime, reset_rts_runtime
         import netlogo
 
         netlogo_module = netlogo
         ctx = RunContext.isolated(spec.runtime_root, repo_root=spec.repo_root, input_root=spec.input_root)
         ctx.ensure_runtime_dirs()
         netlogo.configure_run_context(ctx)
+        configure_rts_runtime(
+            RTSRuntimeConfig(
+                policy_mode=spec.rts_policy_mode,
+                rollout_enabled=spec.rts_rollout_enabled,
+                zone_ids=tuple(spec.rts_zone_ids or ()),
+                reward_reference_path=spec.rts_reward_reference_path,
+                random_seed=spec.rts_random_seed,
+                max_events=spec.rts_max_events,
+            ),
+            runtime_root=spec.runtime_root,
+        )
 
         setup_result = netlogo.setup()
         if isinstance(setup_result, str) and "An error occurred" in setup_result:
@@ -238,10 +251,19 @@ def run_worker(spec: RunSpec):
         return 1
     finally:
         try:
+            from src.rmfs.rl.rts.runtime_registry import reset_rts_runtime
+
+            reset_rts_runtime()
+        except Exception:
+            pass
+        try:
             if netlogo_module is not None:
                 netlogo_module.reset_run_context()
         except Exception:
             pass
+        rts_summary_path = spec.runtime_root / "rts_rollout_summary.json"
+        if rts_summary_path.exists():
+            summary["rts_rollout_summary_path"] = str(rts_summary_path)
         write_json(spec.runtime_root / "worker_summary.json", summary)
         os.chdir(original_cwd)
 
@@ -265,6 +287,12 @@ def run_controller(
     trace_cadence: int = 1000,
     trace_first_n: int = 0,
     snapshot_inputs: bool = False,
+    rts_policy_mode: str = "current",
+    rts_rollout_enabled: bool = False,
+    rts_zone_ids: list[str] | None = None,
+    rts_reward_reference_path: str | None = None,
+    rts_random_seed: int | None = None,
+    rts_max_events: int | None = None,
 ):
     output_root.mkdir(parents=True, exist_ok=True)
     branch = git_value(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
@@ -302,8 +330,24 @@ def run_controller(
         "snapshot_inputs": snapshot_inputs,
         "input_snapshot_root": str(input_snapshot_root) if input_snapshot_root is not None else None,
         "input_manifest_path": str(input_manifest_path) if input_manifest_path is not None else None,
+        "rts_policy_mode": rts_policy_mode,
+        "rts_rollout_enabled": rts_rollout_enabled,
+        "rts_zone_ids": rts_zone_ids,
+        "rts_reward_reference_path": rts_reward_reference_path,
+        "rts_random_seed": rts_random_seed,
+        "rts_max_events": rts_max_events,
     }
     write_json(output_root / "manifest.json", manifest)
+    policy_config = None
+    if rts_policy_mode != "current" or rts_rollout_enabled:
+        policy_config = {
+            "poa": "future_aware",
+            "pps": "station_match",
+            "rts": rts_policy_mode,
+            "charging": "disabled",
+            "rts_rollout_enabled": rts_rollout_enabled,
+        }
+
     write_run_manifest(
         output_root / "run_manifest.json",
         created_at=timestamp,
@@ -322,6 +366,7 @@ def run_controller(
         trace_cadence=trace_cadence,
         trace_first_n=trace_first_n,
         root_sensitive_files=ROOT_SENSITIVE_FILES,
+        policy_config=policy_config,
     )
 
     specs = []
@@ -340,6 +385,12 @@ def run_controller(
             debug_trace=debug_trace,
             trace_cadence=trace_cadence,
             trace_first_n=trace_first_n,
+            rts_policy_mode=rts_policy_mode,
+            rts_rollout_enabled=rts_rollout_enabled,
+            rts_zone_ids=rts_zone_ids,
+            rts_reward_reference_path=rts_reward_reference_path,
+            rts_random_seed=rts_random_seed,
+            rts_max_events=rts_max_events,
         )
         specs.append(spec)
         write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
@@ -504,6 +555,9 @@ def run_controller(
         "trace_first_n": trace_first_n,
         "worker_statuses": compact_worker_list,
         "runtime_path_collisions": collisions,
+        "rts_policy_mode": rts_policy_mode,
+        "rts_rollout_enabled": rts_rollout_enabled,
+        "rts_zone_ids": rts_zone_ids,
     }
     write_json(output_root / "controller_summary.json", summary)
 
@@ -530,6 +584,12 @@ def main(argv=None):
     controller_parser.add_argument("--trace-cadence", type=int, default=1000)
     controller_parser.add_argument("--trace-first-n", type=int, default=0)
     controller_parser.add_argument("--snapshot-inputs", action="store_true", default=False)
+    controller_parser.add_argument("--rts-policy-mode", choices=("current", "current_probe", "random_valid"), default="current")
+    controller_parser.add_argument("--rts-rollout", action="store_true", default=False)
+    controller_parser.add_argument("--rts-zone-ids", default=None)
+    controller_parser.add_argument("--rts-reward-reference", default=None)
+    controller_parser.add_argument("--rts-random-seed", type=int, default=None)
+    controller_parser.add_argument("--rts-max-events", type=int, default=None)
 
     args = parser.parse_args(argv)
 
@@ -548,6 +608,11 @@ def main(argv=None):
         parser.error("--trace-cadence must be >= 0")
     if args.trace_first_n < 0:
         parser.error("--trace-first-n must be >= 0")
+    if args.rts_max_events is not None and args.rts_max_events <= 0:
+        parser.error("--rts-max-events must be positive")
+    rts_zone_ids = None
+    if getattr(args, "rts_zone_ids", None):
+        rts_zone_ids = [zone.strip() for zone in args.rts_zone_ids.split(",") if zone.strip()]
 
     repo_root = Path(args.repo_root).resolve() if args.repo_root else Path.cwd().resolve()
     output_root = Path(args.output_root)
@@ -565,6 +630,12 @@ def main(argv=None):
         trace_cadence=args.trace_cadence,
         trace_first_n=args.trace_first_n,
         snapshot_inputs=args.snapshot_inputs,
+        rts_policy_mode=args.rts_policy_mode,
+        rts_rollout_enabled=args.rts_rollout,
+        rts_zone_ids=rts_zone_ids,
+        rts_reward_reference_path=args.rts_reward_reference,
+        rts_random_seed=args.rts_random_seed,
+        rts_max_events=args.rts_max_events,
     )
     return 0
 

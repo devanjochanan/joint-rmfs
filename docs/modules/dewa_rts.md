@@ -13,10 +13,10 @@ This profile documents the ownership details, current code mappings, and plans f
 
 ## 2. Refactoring Phase Status
 
-* **Status**: Phase 6 adds an opt-in RTS-RL decision/model layer under `src/rmfs/rl/rts/`.
+* **Status**: Phase 7 adds opt-in RTS-RL rollout/evaluation integration under `src/rmfs/rl/rts/`.
 * **Default behavior**:
   * `CurrentRTSPolicy` remains the simulator default.
-  * RTS-RL remains disabled unless an integration explicitly instantiates `RTSRLPolicy`.
+  * RTS-RL rollout/evaluation remains disabled unless an integration explicitly selects `current_probe` or `random_valid`.
 * **Restrictions**:
   * Do not modify or edit POA, PPS, charging, or order generation logic.
   * Preserving current baseline simulation behavior is paramount.
@@ -43,3 +43,13 @@ Phase 6 ports the RTS-RL action space, state/features, stock encoder, masked act
 Raw threshold constants are excluded from model feature names. The model receives derived stock-risk signals such as fill ratios, below-threshold ratios, shortage depth, and replenishment signals.
 
 Deferred work includes rollout collection, training, checkpoint/artifact loading, and richer zone/storage contracts.
+
+## 6. Phase 7 Rollout/Evaluation Integration
+
+Phase 7 adds a process-local RTS runtime registry, worker-local JSONL rollout writer, outcome tracker, storage resolver, random-valid evaluation policy, rollout summary, and local-executor RTS config propagation.
+
+`current_probe` logs decisions and outcomes while preserving `CurrentRTSPolicy` selection behavior. `random_valid` is explicit opt-in and samples only valid Phase 6 action-mask entries before resolving the selected zone to free storage.
+
+Reward is computed only with a valid cycle reference. Missing references produce `reward_computed=false`; no reward is fabricated.
+
+No PPO/training, checkpoint loading, TensorBoard, DuckDB, NetLogo bridge changes, path-planning changes, POA/PPS/order-generation changes, charging changes, or default-policy changes were added. Rollout files are worker-local, and short three-tick executor smokes may not produce RTS decisions.
