@@ -66,6 +66,8 @@ class RTSRolloutRuntime:
         self.summary_path = self.runtime_root / config.summary_filename
         self.tracker = RTSOutcomeTracker()
         self.reward_reference = _load_reward_reference(config.reward_reference_path)
+        if self.config.rollout_enabled:
+            self._write_summary()
 
     def on_decision(self, *, robot: Any, context: Any, decision: Any) -> None:
         if not self.config.rollout_enabled:
@@ -169,6 +171,8 @@ class RTSRolloutRuntime:
         return reward.to_json_dict()
 
     def _write_summary(self) -> None:
+        if not self.config.rollout_enabled:
+            return
         summary = summarize_rollout_events(self.writer.events, policy_mode=self.config.policy_mode)
         write_rollout_summary(self.summary_path, summary)
 

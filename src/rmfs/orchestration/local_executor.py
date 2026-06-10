@@ -251,6 +251,15 @@ def run_worker(spec: RunSpec):
         return 1
     finally:
         try:
+            runtime = None
+            if netlogo_module is not None:
+                universe = getattr(netlogo_module, "universe", None)
+                runtime = getattr(universe, "rts_rollout_runtime", None)
+            if runtime is not None:
+                runtime.close()
+        except Exception:
+            pass
+        try:
             from src.rmfs.rl.rts.runtime_registry import reset_rts_runtime
 
             reset_rts_runtime()

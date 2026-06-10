@@ -189,6 +189,46 @@ def main():
         runtime.close()
         rows = read_jsonl(tmp_path / "rts_rollout.jsonl")
         assert rows[-1]["reward_json"]["reward_computed"] is True
+    # Check that rollout enabled + zero events still writes rts_rollout_summary.json on close
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        runtime = RTSRolloutRuntime(
+            config=RTSRuntimeConfig(policy_mode="current_probe", rollout_enabled=True, zone_ids=("A", "B")),
+            runtime_root=tmp_path,
+        )
+        runtime.close()
+        summary_file = tmp_path / "rts_rollout_summary.json"
+        assert summary_file.exists()
+        with summary_file.open() as fh:
+            summary_data = json.load(fh)
+        assert summary_data["decision_count"] == 0
+        assert summary_data["outcome_count"] == 0
+        assert summary_data["policy_mode"] == "current_probe"
+
+    # Check that random_valid storage policy only executes store branch (forces replenish invalid)
+    from src.rmfs.rl.rts.evaluation_policy import RTSRandomValidStoragePolicy
+    context, storages = build_context()
+    context.warehouse.storage_manager.storages[0].is_empty = True
+    context.warehouse.storage_manager.storages[0].assigned_pod = None
+    random_valid_policy = RTSRandomValidStoragePolicy(zone_ids=("A", "B"), random_seed=123)
+    for _ in range(50):
+        decision_val = random_valid_policy.select_destination(context)
+        assert decision_val.metadata["selected_action_branch"] == STORE
+        mask_in_meta = decision_val.metadata["action_mask"]
+        assert mask_in_meta[2] == 0
+        assert mask_in_meta[3] == 0
+
+    import sys
+    from scripts.run.local_executor_smoke import main as cli_main
+    old_argv = sys.argv
+    try:
+        sys.argv = ["local_executor_smoke.py", "--output-root", "tmp_cli", "--rts-policy-mode", "current_probe"]
+        cli_main()
+        raise AssertionError("cli_main should fail without --rts-rollout")
+    except SystemExit:
+        pass
+    finally:
+        sys.argv = old_argv
 
     print("rts rl rollout smoke ok")
 

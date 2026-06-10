@@ -30,3 +30,6 @@ No NetLogo bridge, POA/PPS, charging, order generation, pod-SKU allocation, path
 
 Outcome rows include reward JSON. Reward is computed only when a valid cycle reference is configured and exists. If the reference is missing, Phase 7 records `reward_computed=false` and does not fabricate a reward.
 
+## Replenish-Store Execution Restriction in Evaluation
+random_valid is a behavior-changing evaluation mode, but in Phase 7 it executes store-branch actions only. Replenish-store action validity may still be logged in current_probe/state/mask data, but actual replenish-store execution is deferred until a real replenishment execution contract exists.
+

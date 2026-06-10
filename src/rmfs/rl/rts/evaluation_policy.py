@@ -33,7 +33,7 @@ class RTSRandomValidStoragePolicy:
             raise RuntimeError("random_valid RTS policy requires zone_ids or inferable storage zones")
         state = build_state(context, zones)
         store_valid = {row["zone_id"]: bool(row["store_action_valid"]) for row in state.state_json["zone_rows"]}
-        repl_valid = {row["zone_id"]: bool(row["replenish_store_action_valid"]) for row in state.state_json["zone_rows"]}
+        repl_valid = {zone_id: False for zone_id in zones}
         mask = build_action_mask(zones, store_valid_by_zone=store_valid, replenish_valid_by_zone=repl_valid)
         action = self.action_policy.select_action(zones, mask, self.rng)
         storage = find_free_storage_in_zone(context, action.zone_id, action.branch)

@@ -39,6 +39,8 @@ def main():
         parser.error("--trace-first-n must be >= 0")
     if args.rts_max_events is not None and args.rts_max_events <= 0:
         parser.error("--rts-max-events must be positive")
+    if args.rts_policy_mode in {"current_probe", "random_valid"} and not args.rts_rollout:
+        parser.error("--rts-policy-mode current_probe/random_valid requires --rts-rollout")
     rts_zone_ids = None
     if args.rts_zone_ids:
         rts_zone_ids = [zone.strip() for zone in args.rts_zone_ids.split(",") if zone.strip()]

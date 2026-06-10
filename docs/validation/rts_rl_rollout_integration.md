@@ -22,3 +22,6 @@ The three-tick executor smokes may produce zero RTS decisions. That is acceptabl
 
 This validation does not prove behavior equivalence, benchmark equivalence, paper fidelity, throughput improvement, congestion improvement, or performance improvement.
 
+## Replenish-Store Execution Restriction in Evaluation
+random_valid is a behavior-changing evaluation mode, but in Phase 7 it executes store-branch actions only. Replenish-store action validity may still be logged in current_probe/state/mask data, but actual replenish-store execution is deferred until a real replenishment execution contract exists.
+
