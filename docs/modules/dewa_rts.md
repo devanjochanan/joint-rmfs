@@ -13,7 +13,7 @@ This profile documents the ownership details, current code mappings, and plans f
 
 ## 2. Refactoring Phase Status
 
-* **Status**: Phase 7 adds opt-in RTS-RL rollout/evaluation integration under `src/rmfs/rl/rts/`.
+* **Status**: Phase 8.1/8.2 adds synthetic/offline RTS-RL PPO training infrastructure under `src/rmfs/rl/rts/training/`.
 * **Default behavior**:
   * `CurrentRTSPolicy` remains the simulator default.
   * RTS-RL rollout/evaluation remains disabled unless an integration explicitly selects `current_probe` or `random_valid`.
@@ -53,3 +53,11 @@ Phase 7 adds a process-local RTS runtime registry, worker-local JSONL rollout wr
 Reward is computed only with a valid cycle reference. Missing references produce `reward_computed=false`; no reward is fabricated.
 
 No PPO/training, checkpoint loading, TensorBoard, DuckDB, NetLogo bridge changes, path-planning changes, POA/PPS/order-generation changes, charging changes, or default-policy changes were added. Rollout files are worker-local, and short three-tick executor smokes may not produce RTS decisions.
+
+## 7. Phase 8.1/8.2 Training Infrastructure
+
+Phase 8.1/8.2 adds pure rollout dataset loading, feature reconstruction, masked PPO update helpers, synthetic PPO validation, checkpoint layout helpers, lineage metadata, latest/history files, and synthetic cycle-reference helpers.
+
+This is synthetic/offline PPO infrastructure only. It is not true on-policy PPO yet because Phase 7 rollout rows lack `old_log_prob`, `old_value`, and `policy_checkpoint_id`.
+
+No simulator behavior changed, no checkpoint auto-loading was added to the default simulator, and no real PPO training run was performed beyond synthetic smokes. Checkpoints live under ignored `data/runtime/**`; `latest.json` points to the latest checkpoint, and `checkpoint_history.jsonl` records batch history.
