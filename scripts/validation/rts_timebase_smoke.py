@@ -30,6 +30,8 @@ def main():
     assert validate_tick_to_second(0.5) == 0.5
     assert netlogo_steps_to_warehouse_time(4, 0.5) == 2.0
     assert warehouse_time_to_netlogo_steps(2.0, 0.5) == 4
+    assert warehouse_time_to_netlogo_steps(0.45, 0.15) == 3
+    assert warehouse_time_to_netlogo_steps(1.5, 0.15) == 10
     tb = RMFSTimebase(
         netlogo_steps_completed=4,
         tick_to_second=0.5,

@@ -71,3 +71,21 @@ PPO-trainable rows must be `actor_kind=rts_rl_explicit` and match the active `po
 Workers collect rollouts only. The controller owns model state, optimizer state, PPO updates, checkpoints, `latest.json`, and training logs. Training-facing duration uses `netlogo_steps_*` names, with warehouse time converted using runtime `tick_to_second`.
 
 Default simulator behavior remains unchanged, and no checkpoint auto-loading is added outside explicit mode. DuckDB ledgers, full evaluation, long runs, best-checkpoint ranking, and other Phase 10 items remain deferred.
+
+---
+
+## 9. Phase 9 Cleanup Patch
+
+The Phase 9 cleanup patch resolves critical device, metadata, timebase, CLI, and zone_ids issues:
+- **CLI Default Safety**: The controller defaults to a dry run unless `--execute` is explicitly set. `--dry-run` is deprecated.
+- **RTS-RL Explicit Behavior**: Under `rts_rl_explicit`, no fallback to nearest or random heuristic is permitted.
+- **Explicit zone_ids**: Explicit `--zone-ids` (or checkpoint metadata) is required for real training; no raw fallback.
+- **Consistent Device Resolution**: 
+  - Controller default: `auto` (cuda if available, else cpu).
+  - Worker default: `cpu` (safe multi-worker default).
+  - Worker `auto` resolves to `cuda` if available.
+  - Worker `cuda` fails clearly if CUDA is unavailable.
+- **Timebase Semantics**:
+  - `warehouse_time` is `Inventory._tick`.
+  - `netlogo_step` is derived dynamically as `round(warehouse_time / tick_to_second)`.
+  - Hardcoded scaling constants (e.g. 0.15, 0.25) are strictly forbidden.

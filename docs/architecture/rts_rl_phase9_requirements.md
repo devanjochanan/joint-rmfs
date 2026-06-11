@@ -24,3 +24,24 @@ Phase 9 adds explicit checkpoint loading, an `rts_rl_explicit` actor wrapper, on
 Training-facing duration names use `netlogo_steps_per_run`, `netlogo_steps_completed`, and `netlogo_step`. Warehouse time is derived from runtime `tick_to_second`.
 
 DuckDB experiment ledgers, full evaluation packs, best-checkpoint ranking, long training runs, DoE, benchmark sweeps, ablations, automatic cycle-reference updates, PPS-RL, charging learning, and advanced order-generation/pod-SKU learning remain deferred.
+
+## Phase 9 Cleanup Patch Requirements
+
+The Phase 9 cleanup patch implements the following additional requirements:
+1. **Consistent Device Resolution**:
+   - Learner default: `auto` (resolves to cuda if available, else cpu).
+   - Worker default: `cpu` (for multi-worker safety).
+   - Explicit `--worker-device auto` resolves to `cuda` if available.
+   - Explicit `--worker-device cuda` fails clearly if CUDA is unavailable.
+2. **CLI default safety**:
+   - Default CLI behavior is a safe dry run. `--execute` is strictly required to run real training or workers.
+   - `--dry-run` is deprecated.
+3. **Explicit zone_ids**:
+   - `zone_ids` must be explicitly determined for non-dry execution (passed via `--zone-ids` or checkpoint metadata).
+4. **Outcome timebase corrections**:
+   - `warehouse_time` equals `Inventory._tick`.
+   - `netlogo_step` equals `round(warehouse_time / tick_to_second)`.
+   - Hardcoded scaling constants (e.g. 0.15, 0.25) are forbidden.
+5. **RTS-RL Explicit Behavior**:
+   - Under `rts_rl_explicit`, no fallback to nearest or random heuristic is allowed.
+

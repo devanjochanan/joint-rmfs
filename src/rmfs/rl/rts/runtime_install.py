@@ -39,10 +39,11 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
     if config.policy_mode == "rts_rl_explicit":
         if runtime_root is None:
             raise RuntimeError("rts_rl_explicit requires a worker runtime_root")
+        from .training.device import resolve_rts_torch_device
         from .training.policy_actor import RTSOnPolicyActor, RTSOnPolicyActorConfig
         from .training.policy_loader import load_policy_from_checkpoint
 
-        load_device = "cpu" if config.policy_device == "auto" else config.policy_device
+        load_device = resolve_rts_torch_device(config.policy_device)
         loaded = load_policy_from_checkpoint(Path(config.policy_checkpoint_dir), device=load_device)
         if loaded.policy_checkpoint_id != config.policy_checkpoint_id:
             raise RuntimeError(

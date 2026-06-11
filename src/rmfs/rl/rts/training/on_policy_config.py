@@ -24,11 +24,13 @@ class RTSOnPolicyTrainingConfig:
     min_trainable_steps: int = 1
     ppo_epochs: int = 4
     minibatch_size: int = 64
+    zone_ids: tuple[str, ...] = ()
 
     def to_json_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["output_root"] = str(self.output_root)
         data["cycle_reference_path"] = str(self.cycle_reference_path)
+        data["zone_ids"] = list(self.zone_ids)
         return data
 
     @classmethod
@@ -36,6 +38,8 @@ class RTSOnPolicyTrainingConfig:
         payload = dict(data)
         payload["output_root"] = Path(payload["output_root"])
         payload["cycle_reference_path"] = Path(payload["cycle_reference_path"])
+        if "zone_ids" in payload:
+            payload["zone_ids"] = tuple(payload["zone_ids"])
         config = cls(**payload)
         validate_on_policy_training_config(config, require_cycle_reference_exists=True)
         return config

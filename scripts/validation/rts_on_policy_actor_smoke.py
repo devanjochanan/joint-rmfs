@@ -72,6 +72,8 @@ def main():
     decision = actor.select_destination(context)
     metadata = dict(decision.metadata)
     assert metadata["actor_kind"] == "rts_rl_explicit"
+    assert metadata["policy_mode"] == "sample"
+    assert decision.mode == "rl"
     assert np.isfinite(float(metadata["old_log_prob"]))
     assert np.isfinite(float(metadata["old_value"]))
     assert metadata["policy_checkpoint_id"] == "batch_000001"

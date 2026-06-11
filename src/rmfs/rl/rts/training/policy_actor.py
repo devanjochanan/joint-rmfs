@@ -13,6 +13,7 @@ from src.rmfs.rl.rts.action_space import build_action_mask, decode_action
 from src.rmfs.rl.rts.features import build_feature_bundle
 from src.rmfs.rl.rts.state import build_state
 from src.rmfs.rl.rts.storage_resolver import find_free_storage_in_zone
+from src.rmfs.rl.rts.training.device import resolve_rts_torch_device
 from src.rmfs.rl.rts.training.ppo import masked_categorical_from_logits
 
 
@@ -43,7 +44,8 @@ class RTSOnPolicyActor:
         repl_valid = {row["zone_id"]: bool(row["replenish_store_action_valid"]) for row in state.state_json["zone_rows"]}
         action_mask = build_action_mask(zones, store_valid_by_zone=store_valid, replenish_valid_by_zone=repl_valid)
         features = build_feature_bundle(zones, action_mask, state.state_json)
-        device = torch.device(self.config.policy_device if self.config.policy_device != "auto" else "cpu")
+        device_str = resolve_rts_torch_device(self.config.policy_device)
+        device = torch.device(device_str)
         with torch.no_grad():
             X_actions = torch.as_tensor(features.X_actions, dtype=torch.float32, device=device).unsqueeze(0)
             M_actions = torch.as_tensor(features.M_actions, dtype=torch.int64, device=device).unsqueeze(0)
@@ -67,12 +69,12 @@ class RTSOnPolicyActor:
             storage=storage,
             destination=NetLogoCoordinate(storage.pos_x, storage.pos_y),
             policy_name="rts_rl_explicit",
-            mode="nearest",
+            mode="rl",
             reason="explicit RTS-RL on-policy actor",
             metadata={
                 "actor_kind": "rts_rl_explicit",
                 "policy_checkpoint_id": self.config.policy_checkpoint_id,
-                "policy_mode": "rts_rl_explicit",
+                "policy_mode": self.config.policy_action_mode,
                 "old_log_prob": old_log_prob,
                 "old_value": old_value,
                 "policy_entropy": policy_entropy,

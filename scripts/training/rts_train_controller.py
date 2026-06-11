@@ -28,6 +28,7 @@ def main(argv=None):
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--worker-device", choices=("cpu", "cuda", "auto"), default="cpu")
     parser.add_argument("--policy-action-mode", choices=("sample", "greedy"), default="sample")
+    parser.add_argument("--zone-ids", default=None, help="Comma-separated list of explicit zone IDs.")
     progress = parser.add_mutually_exclusive_group()
     progress.add_argument("--progress", action="store_true", dest="progress")
     progress.add_argument("--no-progress", action="store_false", dest="progress")
@@ -36,8 +37,17 @@ def main(argv=None):
     tb.add_argument("--tensorboard", action="store_true", dest="tensorboard_enabled")
     tb.add_argument("--no-tensorboard", action="store_false", dest="tensorboard_enabled")
     parser.set_defaults(tensorboard_enabled=False)
-    parser.add_argument("--dry-run", action="store_true", default=False)
+    parser.add_argument("--dry-run", action="store_true", default=False, help="Deprecated no-op flag. Dry run is default.")
+    parser.add_argument("--execute", action="store_true", default=False, help="Run real training instead of a dry run.")
     args = parser.parse_args(argv)
+
+    if args.execute:
+        if not args.initial_checkpoint_dir and not args.resume_latest:
+            parser.error("real execution (--execute) requires either --initial-checkpoint-dir or --resume-latest")
+
+    zone_ids = ()
+    if args.zone_ids:
+        zone_ids = tuple(z.strip() for z in args.zone_ids.split(",") if z.strip())
 
     output_root = Path(args.output_root)
     if not output_root.is_absolute():
@@ -55,13 +65,14 @@ def main(argv=None):
         policy_action_mode=args.policy_action_mode,
         progress=args.progress,
         tensorboard_enabled=args.tensorboard_enabled,
+        zone_ids=zone_ids,
     )
     result = run_on_policy_training_controller(
         config=config,
         repo_root=REPO_ROOT,
         initial_checkpoint_dir=Path(args.initial_checkpoint_dir).resolve() if args.initial_checkpoint_dir else None,
         resume_latest=args.resume_latest,
-        dry_run=args.dry_run,
+        dry_run=not args.execute,
     )
     print(result["status"])
     return 0

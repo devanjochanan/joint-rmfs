@@ -17,6 +17,7 @@ from .rollout_writer import RTSRolloutWriter
 from .runtime_config import RTSRuntimeConfig
 from .state import build_state
 from .zone_features import infer_zone_id
+from .training.timebase import warehouse_time_to_netlogo_steps
 
 
 @dataclass
@@ -83,9 +84,11 @@ class RTSRolloutRuntime:
         mask = build_action_mask(zones, store_valid_by_zone=store_valid, replenish_valid_by_zone=repl_valid)
         selected = _selected_action(decision, zones)
         features = build_feature_bundle(zones, mask, state.state_json)
-        tick = getattr(getattr(context, "warehouse", None), "_tick", None)
-        tick_to_second = getattr(getattr(context, "warehouse", None), "tick_to_second", None)
-        warehouse_time = _warehouse_time(tick, tick_to_second)
+        warehouse = getattr(context, "warehouse", None)
+        tick = getattr(warehouse, "_tick", None)
+        tick_to_second = getattr(warehouse, "tick_to_second", None)
+        warehouse_time = _float_or_none(tick)
+        netlogo_step = _netlogo_step_or_none(warehouse_time, tick_to_second)
         metadata = dict(getattr(decision, "metadata", {}) or {})
         robot_id = _robot_id(robot)
         job = getattr(robot, "job", None)
@@ -121,7 +124,7 @@ class RTSRolloutRuntime:
             old_value=metadata.get("old_value"),
             policy_entropy=metadata.get("policy_entropy"),
             feature_schema_id=metadata.get("feature_schema_id"),
-            netlogo_step=int(float(tick or 0)),
+            netlogo_step=netlogo_step,
             warehouse_time=warehouse_time,
             tick_to_second=tick_to_second,
         )
@@ -153,11 +156,20 @@ class RTSRolloutRuntime:
         if pending is None:
             return
         tick = float(getattr(getattr(robot, "universe", None), "_tick", getattr(getattr(robot, "warehouse", None), "_tick", 0.0)))
-        realized = max(0.0, tick - pending.return_start_tick)
-        warehouse_time = _warehouse_time(tick, pending.tick_to_second)
-        start_warehouse_time = _warehouse_time(pending.return_start_tick, pending.tick_to_second)
-        reward_json = self._reward_json(pending.selected_action_branch, realized)
+        return_finish_warehouse_time = tick
+        return_start_warehouse_time = pending.return_start_tick
+        realized_warehouse_time = return_finish_warehouse_time - return_start_warehouse_time
+        
+        tick_to_second = pending.tick_to_second
+        if tick_to_second is not None:
+            netlogo_steps_elapsed_since_decision = warehouse_time_to_netlogo_steps(realized_warehouse_time, tick_to_second)
+        else:
+            netlogo_steps_elapsed_since_decision = 0
+            
+        warehouse_time_elapsed_since_decision = realized_warehouse_time
+        reward_json = self._reward_json(pending.selected_action_branch, realized_warehouse_time)
         destination = getattr(robot, "destination", None)
+        netlogo_step = _netlogo_step_or_none(tick, tick_to_second)
         row = build_outcome_event(
             decision_event_id=pending.decision_event_id,
             tick=tick,
@@ -167,19 +179,15 @@ class RTSRolloutRuntime:
             outcome_status="completed",
             return_start_tick=pending.return_start_tick,
             return_finish_tick=tick,
-            realized_cycle_time=realized,
+            realized_cycle_time=realized_warehouse_time,
             destination_x=getattr(destination, "x", None),
             destination_y=getattr(destination, "y", None),
             reward_json=reward_json,
-            netlogo_step=int(tick),
-            warehouse_time=warehouse_time,
-            tick_to_second=pending.tick_to_second,
-            netlogo_steps_elapsed_since_decision=realized,
-            warehouse_time_elapsed_since_decision=(
-                warehouse_time - start_warehouse_time
-                if warehouse_time is not None and start_warehouse_time is not None
-                else None
-            ),
+            netlogo_step=netlogo_step,
+            warehouse_time=tick,
+            tick_to_second=tick_to_second,
+            netlogo_steps_elapsed_since_decision=netlogo_steps_elapsed_since_decision,
+            warehouse_time_elapsed_since_decision=warehouse_time_elapsed_since_decision,
         )
         self.writer.write_outcome(row)
         self._write_summary()
@@ -252,10 +260,19 @@ def _text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def _warehouse_time(step: Any, tick_to_second: Any) -> float | None:
-    if step is None or tick_to_second is None:
+def _float_or_none(val: Any) -> float | None:
+    if val is None:
         return None
     try:
-        return float(step) * float(tick_to_second)
+        return float(val)
+    except Exception:
+        return None
+
+
+def _netlogo_step_or_none(warehouse_time: Any, tick_to_second: Any) -> int | None:
+    if warehouse_time is None or tick_to_second is None:
+        return None
+    try:
+        return warehouse_time_to_netlogo_steps(float(warehouse_time), float(tick_to_second))
     except Exception:
         return None

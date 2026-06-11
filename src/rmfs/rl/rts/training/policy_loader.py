@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 
+from src.rmfs.rl.rts.training.device import resolve_rts_torch_device
 from src.rmfs.rl.rts.model import RTSMaskedActorCritic
 
 
@@ -23,6 +24,7 @@ class LoadedRTSPolicy:
 
 def load_policy_from_checkpoint(checkpoint_dir: Path, *, device: str = "cpu") -> LoadedRTSPolicy:
     checkpoint = Path(checkpoint_dir)
+    resolved_device = resolve_rts_torch_device(device)
     metadata_path = checkpoint / "metadata.json"
     schema_path = checkpoint / "feature_schema.json"
     model_path = checkpoint / "model.pt"
@@ -41,8 +43,8 @@ def load_policy_from_checkpoint(checkpoint_dir: Path, *, device: str = "cpu") ->
         stock_hidden_sizes=tuple(training_config.get("stock_hidden_sizes", (32, 32))),
         stock_embedding_dim=int(training_config.get("stock_embedding_dim", 16)),
     )
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.to(device)
+    model.load_state_dict(torch.load(model_path, map_location=resolved_device))
+    model.to(resolved_device)
     model.eval()
     policy_checkpoint_id = str(metadata.get("policy_checkpoint_id") or _checkpoint_id_from_path(checkpoint))
     if not policy_checkpoint_id.strip():

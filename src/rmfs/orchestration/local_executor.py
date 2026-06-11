@@ -128,7 +128,9 @@ def run_worker(spec: RunSpec):
         "run_id": spec.run_id,
         "status": "failure",
         "ticks_requested": spec.ticks,
+        "netlogo_steps_requested": spec.ticks,
         "ticks_completed": 0,
+        "netlogo_steps_completed": 0,
         "setup_digest": None,
         "setup_signature": None,
         "first_tick_digest": None,
@@ -219,6 +221,7 @@ def run_worker(spec: RunSpec):
                     })
 
         summary["ticks_completed"] = ticks_done
+        summary["netlogo_steps_completed"] = ticks_done
         if first_result:
             summary["first_tick_digest"] = first_result[0]
             summary["first_tick_signature"] = first_result[1]

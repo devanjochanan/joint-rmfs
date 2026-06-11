@@ -14,3 +14,17 @@ Offline/off-policy training is not supported. `current`, `current_probe`, `rando
 
 DuckDB ledgers, full evaluation seed packs, best-checkpoint ranking, long runs, DoE, benchmarks, ablations, automatic cycle-reference updates, PPS-RL, charging learning, and advanced order-generation/pod-SKU learning are deferred to Phase 10 or later.
 
+## Execution Safety & Device Rules (Phase 9 Cleanup)
+
+- **Execution Safety**: The default command line behavior of the training controller is a safe dry run. The `--execute` flag is strictly required to run real worker subprocesses or optimize checkpoint parameters.
+- **Explicit zone_ids**: For real non-dry training, `zone_ids` must be explicitly configured and passed via the `--zone-ids` CLI parameter or checkpoint metadata. There is no automated fallback.
+- **RTS-RL Explicit Behavior**: The `rts_rl_explicit` policy executes the model in-loop with no heuristic fallback. If loading fails or zones/free storage cannot be resolved, execution halts.
+- **Device Resolution Rules**:
+  - The controller learner device defaults to `auto`, which resolves to PyTorch `cuda` if available, and falls back to `cpu` otherwise.
+  - Worker inference defaults to `cpu` for safety in multi-worker environments.
+  - Specifying `--worker-device auto` explicitly resolves to `cuda` if available, and `cpu` otherwise.
+  - Specifying `--worker-device cuda` explicitly requires CUDA to be available; if CUDA is unavailable, the run fails clearly with a ValueError.
+- **Timebase Semantics**:
+  - `warehouse_time` is equal to the internal `Inventory._tick` (which is already scaled).
+  - `netlogo_step` is derived dynamically as `warehouse_time / tick_to_second` (using rounded division).
+  - Training and recording code does not hard-code conversion factors (e.g. 0.15 or 0.25).

@@ -18,6 +18,7 @@ from src.rmfs.rl.rts.training.config import RTSTrainingConfig
 from src.rmfs.rl.rts.training.on_policy_dataset import build_on_policy_ppo_batch, build_on_policy_training_steps
 from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint
 
+from .device import resolve_rts_torch_device
 from .metrics import append_jsonl, atomic_write_json
 from .on_policy_config import RTSOnPolicyTrainingConfig, validate_on_policy_training_config
 from .progress import progress_bar, resolve_progress_enabled
@@ -59,7 +60,25 @@ def run_on_policy_training_controller(
         }
         atomic_write_json(rollout_input / "active_checkpoint_ref.json", active_ref)
         worker_specs = []
-        active_zone_ids = _zone_ids_from_checkpoint(active_checkpoint_dir) if active_checkpoint_dir else None
+        # Prefer explicit config.zone_ids
+        if config.zone_ids:
+            active_zone_ids = config.zone_ids
+        else:
+            # Try to load from checkpoint metadata
+            active_zone_ids = _zone_ids_from_checkpoint_metadata(active_checkpoint_dir)
+            # As last resort for dry-run/smoke, infer from checkpoint feature names
+            if not active_zone_ids and active_checkpoint_dir:
+                try:
+                    active_zone_ids = _zone_ids_from_checkpoint(active_checkpoint_dir)
+                except Exception:
+                    active_zone_ids = None
+
+        if not dry_run:
+            if not active_zone_ids:
+                raise RuntimeError("non-dry training execution requires zone_ids to be explicitly determined")
+            if any(not str(z).strip() for z in active_zone_ids) or len(set(active_zone_ids)) != len(active_zone_ids):
+                raise ValueError("zone_ids must be nonblank and unique for non-dry training")
+
         for worker_index in range(config.workers):
             run_id = f"run_{worker_index + 1:03d}"
             worker_root = workers_dir / run_id
@@ -94,6 +113,7 @@ def run_on_policy_training_controller(
                 "trainable_step_count": 0,
                 "ppo_update": None,
                 "latest_updated": False,
+                "zone_ids": list(active_zone_ids or ()),
             }
             atomic_write_json(batch_dir / "batch_summary.json", summary)
             append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_dry_run", **summary})
@@ -133,6 +153,7 @@ def run_on_policy_training_controller(
                 "active_checkpoint_id": active_checkpoint_id,
                 "dataset_summary": dataset.summary,
                 "latest_updated": False,
+                "zone_ids": list(active_zone_ids or ()),
             }
             atomic_write_json(batch_dir / "batch_summary.json", summary)
             append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_skipped", **summary})
@@ -173,6 +194,7 @@ def run_on_policy_training_controller(
             "ppo_update": update_result.to_json_dict(),
             "checkpoint_dir": str(checkpoint_dir),
             "latest_updated": True,
+            "zone_ids": list(active_zone_ids or ()),
         }
         atomic_write_json(batch_dir / "batch_summary.json", summary)
         append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_updated", **summary})
@@ -200,8 +222,17 @@ def run_on_policy_training_controller(
         )
         batch_summaries.append(summary)
     tb.close()
+    if dry_run:
+        status = "dry_run"
+    else:
+        updated_any = any(b["status"] == "updated" for b in batch_summaries)
+        if updated_any:
+            status = "completed"
+        else:
+            status = "completed_with_skips"
+
     return {
-        "status": "dry_run",
+        "status": status,
         "run_root": str(run_root),
         "batches": batch_summaries,
     }
@@ -248,9 +279,22 @@ def _zone_ids_from_checkpoint(checkpoint_dir: Path | None) -> tuple[str, ...] | 
 
 
 def _controller_device(device: str) -> str:
-    if device == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    return device
+    return resolve_rts_torch_device(device)
+
+
+def _zone_ids_from_checkpoint_metadata(checkpoint_dir: Path | None) -> tuple[str, ...] | None:
+    if checkpoint_dir is None:
+        return None
+    try:
+        with (checkpoint_dir / "metadata.json").open() as fh:
+            metadata = json.load(fh)
+        config_data = metadata.get("training_config", {}) or {}
+        zones = config_data.get("zone_ids")
+        if zones:
+            return tuple(str(z) for z in zones)
+    except Exception:
+        pass
+    return None
 
 
 def _learning_rate(metadata: dict[str, Any]) -> float:
