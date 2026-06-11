@@ -32,6 +32,16 @@ def build_decision_event(
     selected_storage: Any,
     state_json: Mapping[str, Any],
     feature_shapes: Mapping[str, Any],
+    actor_kind: str | None = None,
+    policy_checkpoint_id: str | None = None,
+    policy_mode: str | None = None,
+    old_log_prob: Any = None,
+    old_value: Any = None,
+    policy_entropy: Any = None,
+    feature_schema_id: str | None = None,
+    netlogo_step: Any = None,
+    warehouse_time: Any = None,
+    tick_to_second: Any = None,
 ) -> dict[str, Any]:
     return _json_safe(
         {
@@ -53,6 +63,16 @@ def build_decision_event(
             "selected_storage": _storage_json(selected_storage),
             "state_json": dict(state_json),
             "feature_shapes": dict(feature_shapes),
+            "actor_kind": actor_kind,
+            "policy_checkpoint_id": policy_checkpoint_id,
+            "policy_mode": policy_mode,
+            "old_log_prob": _number_or_text(old_log_prob),
+            "old_value": _number_or_text(old_value),
+            "policy_entropy": _number_or_text(policy_entropy),
+            "feature_schema_id": feature_schema_id,
+            "netlogo_step": _number_or_text(netlogo_step),
+            "warehouse_time": _number_or_text(warehouse_time),
+            "tick_to_second": _number_or_text(tick_to_second),
             "reward_json": None,
             "outcome": None,
         }
@@ -73,6 +93,11 @@ def build_outcome_event(
     destination_x: Any,
     destination_y: Any,
     reward_json: Mapping[str, Any] | None,
+    netlogo_step: Any = None,
+    warehouse_time: Any = None,
+    tick_to_second: Any = None,
+    netlogo_steps_elapsed_since_decision: Any = None,
+    warehouse_time_elapsed_since_decision: Any = None,
 ) -> dict[str, Any]:
     return _json_safe(
         {
@@ -90,6 +115,11 @@ def build_outcome_event(
             "destination_x": _number_or_text(destination_x),
             "destination_y": _number_or_text(destination_y),
             "reward_json": reward_json,
+            "netlogo_step": _number_or_text(netlogo_step),
+            "warehouse_time": _number_or_text(warehouse_time),
+            "tick_to_second": _number_or_text(tick_to_second),
+            "netlogo_steps_elapsed_since_decision": _number_or_text(netlogo_steps_elapsed_since_decision),
+            "warehouse_time_elapsed_since_decision": _number_or_text(warehouse_time_elapsed_since_decision),
         }
     )
 
@@ -129,4 +159,3 @@ def _json_safe(value: Any) -> Any:
     if hasattr(value, "tolist"):
         return _json_safe(value.tolist())
     return str(value)
-

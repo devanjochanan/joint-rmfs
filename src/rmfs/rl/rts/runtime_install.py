@@ -37,7 +37,28 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
         return inventory.rts_rollout_runtime
 
     if config.policy_mode == "rts_rl_explicit":
-        raise RuntimeError("rts_rl_explicit requires explicit Python model/resolver installation")
+        if runtime_root is None:
+            raise RuntimeError("rts_rl_explicit requires a worker runtime_root")
+        from .training.policy_actor import RTSOnPolicyActor, RTSOnPolicyActorConfig
+        from .training.policy_loader import load_policy_from_checkpoint
+
+        load_device = "cpu" if config.policy_device == "auto" else config.policy_device
+        loaded = load_policy_from_checkpoint(Path(config.policy_checkpoint_dir), device=load_device)
+        if loaded.policy_checkpoint_id != config.policy_checkpoint_id:
+            raise RuntimeError(
+                f"policy checkpoint id mismatch: loaded {loaded.policy_checkpoint_id!r}, expected {config.policy_checkpoint_id!r}"
+            )
+        inventory.rts_policy = RTSOnPolicyActor(
+            model=loaded.model,
+            zone_ids=config.zone_ids,
+            config=RTSOnPolicyActorConfig(
+                policy_checkpoint_id=config.policy_checkpoint_id,
+                policy_action_mode=config.policy_action_mode,
+                policy_device=load_device,
+                feature_schema_id=config.policy_checkpoint_id,
+            ),
+        )
+        inventory.rts_rollout_runtime = RTSRolloutRuntime(config=config, runtime_root=runtime_root)
+        return inventory.rts_rollout_runtime
 
     raise RuntimeError(f"unsupported RTS policy mode: {config.policy_mode}")
-

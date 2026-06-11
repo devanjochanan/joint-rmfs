@@ -13,7 +13,7 @@ This profile documents the ownership details, current code mappings, and plans f
 
 ## 2. Refactoring Phase Status
 
-* **Status**: Phase 8 adds synthetic RTS-RL PPO validation and checkpoint infrastructure under `src/rmfs/rl/rts/training/`.
+* **Status**: Phase 9 adds the first explicit RTS-RL on-policy PPO training spine under `src/rmfs/rl/rts/training/`.
 * **Default behavior**:
   * `CurrentRTSPolicy` remains the simulator default.
   * RTS-RL rollout/evaluation remains disabled unless an integration explicitly selects `current_probe` or `random_valid`.
@@ -61,3 +61,13 @@ Phase 8 provides synthetic PPO math/checkpoint validation under `src/rmfs/rl/rts
 Offline/off-policy PPO training is not supported. `current_probe` and `random_valid` rollout rows are diagnostics/evaluation only and are not PPO-trainable. True PPO training requires `rts_rl_explicit` on-policy rows and is deferred to Phase 9.
 
 No simulator behavior is changed, no checkpoint auto-loading is added to the default simulator, and no real PPO training run is performed beyond synthetic validation smokes. Checkpoints live under ignored `data/runtime/**`.
+
+## 8. Phase 9 On-Policy Training Spine
+
+Phase 9 adds a training-facing timebase, explicit policy checkpoint loader, `rts_rl_explicit` actor wrapper, trainable rollout metadata, active-checkpoint dataset filtering, optional TQDM/TensorBoard wrappers, and a controller dry-run spine.
+
+PPO-trainable rows must be `actor_kind=rts_rl_explicit` and match the active `policy_checkpoint_id`. Rows from `current`, `current_probe`, `random_valid`, `heuristic`, and `synthetic` policies are rejected for PPO training.
+
+Workers collect rollouts only. The controller owns model state, optimizer state, PPO updates, checkpoints, `latest.json`, and training logs. Training-facing duration uses `netlogo_steps_*` names, with warehouse time converted using runtime `tick_to_second`.
+
+Default simulator behavior remains unchanged, and no checkpoint auto-loading is added outside explicit mode. DuckDB ledgers, full evaluation, long runs, best-checkpoint ranking, and other Phase 10 items remain deferred.

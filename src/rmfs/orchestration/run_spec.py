@@ -24,6 +24,10 @@ class RunSpec:
     rts_reward_reference_path: str | None = None
     rts_random_seed: int | None = None
     rts_max_events: int | None = None
+    rts_policy_checkpoint_dir: str | None = None
+    rts_policy_checkpoint_id: str | None = None
+    rts_policy_action_mode: str = "sample"
+    rts_policy_device: str = "cpu"
 
     def to_json_dict(self):
         data = asdict(self)

@@ -16,3 +16,11 @@ Phase 9 target: complete the RTS-RL on-policy training spine.
 10. **Simulator Default Preservation**: No simulator default behavior is changed.
 11. **Opt-In Checkpoint Loading**: No checkpoint auto-loading is performed outside explicit training/evaluation mode.
 12. **Rejection of Offline Rows**: No training is allowed from `current_probe`/`random_valid`/`heuristic` rollout rows.
+
+## Implemented Phase 9 Spine
+
+Phase 9 adds explicit checkpoint loading, an `rts_rl_explicit` actor wrapper, on-policy rollout row metadata, active-checkpoint dataset filtering, optional TensorBoard/TQDM wrappers, and a dry-run controller that prepares batch directories and worker specs without launching simulator workers.
+
+Training-facing duration names use `netlogo_steps_per_run`, `netlogo_steps_completed`, and `netlogo_step`. Warehouse time is derived from runtime `tick_to_second`.
+
+DuckDB experiment ledgers, full evaluation packs, best-checkpoint ranking, long training runs, DoE, benchmark sweeps, ablations, automatic cycle-reference updates, PPS-RL, charging learning, and advanced order-generation/pod-SKU learning remain deferred.

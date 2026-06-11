@@ -162,6 +162,10 @@ def run_worker(spec: RunSpec):
                 reward_reference_path=spec.rts_reward_reference_path,
                 random_seed=spec.rts_random_seed,
                 max_events=spec.rts_max_events,
+                policy_checkpoint_dir=spec.rts_policy_checkpoint_dir,
+                policy_checkpoint_id=spec.rts_policy_checkpoint_id,
+                policy_action_mode=spec.rts_policy_action_mode,
+                policy_device=spec.rts_policy_device,
             ),
             runtime_root=spec.runtime_root,
         )
@@ -302,6 +306,10 @@ def run_controller(
     rts_reward_reference_path: str | None = None,
     rts_random_seed: int | None = None,
     rts_max_events: int | None = None,
+    rts_policy_checkpoint_dir: str | None = None,
+    rts_policy_checkpoint_id: str | None = None,
+    rts_policy_action_mode: str = "sample",
+    rts_policy_device: str = "cpu",
 ):
     output_root.mkdir(parents=True, exist_ok=True)
     branch = git_value(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
@@ -345,6 +353,10 @@ def run_controller(
         "rts_reward_reference_path": rts_reward_reference_path,
         "rts_random_seed": rts_random_seed,
         "rts_max_events": rts_max_events,
+        "rts_policy_checkpoint_dir": rts_policy_checkpoint_dir,
+        "rts_policy_checkpoint_id": rts_policy_checkpoint_id,
+        "rts_policy_action_mode": rts_policy_action_mode,
+        "rts_policy_device": rts_policy_device,
     }
     write_json(output_root / "manifest.json", manifest)
     policy_config = None
@@ -355,6 +367,8 @@ def run_controller(
             "rts": rts_policy_mode,
             "charging": "disabled",
             "rts_rollout_enabled": rts_rollout_enabled,
+            "rts_policy_checkpoint_id": rts_policy_checkpoint_id,
+            "rts_policy_action_mode": rts_policy_action_mode,
         }
 
     write_run_manifest(
@@ -400,6 +414,10 @@ def run_controller(
             rts_reward_reference_path=rts_reward_reference_path,
             rts_random_seed=rts_random_seed,
             rts_max_events=rts_max_events,
+            rts_policy_checkpoint_dir=rts_policy_checkpoint_dir,
+            rts_policy_checkpoint_id=rts_policy_checkpoint_id,
+            rts_policy_action_mode=rts_policy_action_mode,
+            rts_policy_device=rts_policy_device,
         )
         specs.append(spec)
         write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
@@ -567,6 +585,10 @@ def run_controller(
         "rts_policy_mode": rts_policy_mode,
         "rts_rollout_enabled": rts_rollout_enabled,
         "rts_zone_ids": rts_zone_ids,
+        "rts_policy_checkpoint_dir": rts_policy_checkpoint_dir,
+        "rts_policy_checkpoint_id": rts_policy_checkpoint_id,
+        "rts_policy_action_mode": rts_policy_action_mode,
+        "rts_policy_device": rts_policy_device,
     }
     write_json(output_root / "controller_summary.json", summary)
 
@@ -593,12 +615,16 @@ def main(argv=None):
     controller_parser.add_argument("--trace-cadence", type=int, default=1000)
     controller_parser.add_argument("--trace-first-n", type=int, default=0)
     controller_parser.add_argument("--snapshot-inputs", action="store_true", default=False)
-    controller_parser.add_argument("--rts-policy-mode", choices=("current", "current_probe", "random_valid"), default="current")
+    controller_parser.add_argument("--rts-policy-mode", choices=("current", "current_probe", "random_valid", "rts_rl_explicit"), default="current")
     controller_parser.add_argument("--rts-rollout", action="store_true", default=False)
     controller_parser.add_argument("--rts-zone-ids", default=None)
     controller_parser.add_argument("--rts-reward-reference", default=None)
     controller_parser.add_argument("--rts-random-seed", type=int, default=None)
     controller_parser.add_argument("--rts-max-events", type=int, default=None)
+    controller_parser.add_argument("--rts-policy-checkpoint-dir", default=None)
+    controller_parser.add_argument("--rts-policy-checkpoint-id", default=None)
+    controller_parser.add_argument("--rts-policy-action-mode", choices=("sample", "greedy"), default="sample")
+    controller_parser.add_argument("--rts-policy-device", choices=("cpu", "cuda", "auto"), default="cpu")
 
     args = parser.parse_args(argv)
 
@@ -645,6 +671,10 @@ def main(argv=None):
         rts_reward_reference_path=args.rts_reward_reference,
         rts_random_seed=args.rts_random_seed,
         rts_max_events=args.rts_max_events,
+        rts_policy_checkpoint_dir=args.rts_policy_checkpoint_dir,
+        rts_policy_checkpoint_id=args.rts_policy_checkpoint_id,
+        rts_policy_action_mode=args.rts_policy_action_mode,
+        rts_policy_device=args.rts_policy_device,
     )
     return 0
 

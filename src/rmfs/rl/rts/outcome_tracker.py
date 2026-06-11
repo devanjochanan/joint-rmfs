@@ -27,6 +27,8 @@ class PendingRTSDecision:
     pod_id: str
     return_start_tick: float
     selected_action_branch: str
+    metadata: dict[str, Any]
+    tick_to_second: float | None = None
 
 
 class RTSOutcomeTracker:
@@ -82,6 +84,9 @@ class RTSRolloutRuntime:
         selected = _selected_action(decision, zones)
         features = build_feature_bundle(zones, mask, state.state_json)
         tick = getattr(getattr(context, "warehouse", None), "_tick", None)
+        tick_to_second = getattr(getattr(context, "warehouse", None), "tick_to_second", None)
+        warehouse_time = _warehouse_time(tick, tick_to_second)
+        metadata = dict(getattr(decision, "metadata", {}) or {})
         robot_id = _robot_id(robot)
         job = getattr(robot, "job", None)
         job_id = _text(getattr(job, "my_id", ""))
@@ -109,6 +114,16 @@ class RTSRolloutRuntime:
                 "X_stock": list(features.X_stock.shape),
                 "M_stock": list(features.M_stock.shape),
             },
+            actor_kind=metadata.get("actor_kind"),
+            policy_checkpoint_id=metadata.get("policy_checkpoint_id"),
+            policy_mode=metadata.get("policy_mode") or self.config.policy_mode,
+            old_log_prob=metadata.get("old_log_prob"),
+            old_value=metadata.get("old_value"),
+            policy_entropy=metadata.get("policy_entropy"),
+            feature_schema_id=metadata.get("feature_schema_id"),
+            netlogo_step=int(float(tick or 0)),
+            warehouse_time=warehouse_time,
+            tick_to_second=tick_to_second,
         )
         self.writer.write_decision(row)
         self.tracker.record_decision(
@@ -119,6 +134,8 @@ class RTSRolloutRuntime:
                 pod_id=pod_id,
                 return_start_tick=float(tick or 0.0),
                 selected_action_branch=selected["branch"] or STORE,
+                metadata=metadata,
+                tick_to_second=float(tick_to_second) if tick_to_second is not None else None,
             )
         )
         self._write_summary()
@@ -137,6 +154,8 @@ class RTSRolloutRuntime:
             return
         tick = float(getattr(getattr(robot, "universe", None), "_tick", getattr(getattr(robot, "warehouse", None), "_tick", 0.0)))
         realized = max(0.0, tick - pending.return_start_tick)
+        warehouse_time = _warehouse_time(tick, pending.tick_to_second)
+        start_warehouse_time = _warehouse_time(pending.return_start_tick, pending.tick_to_second)
         reward_json = self._reward_json(pending.selected_action_branch, realized)
         destination = getattr(robot, "destination", None)
         row = build_outcome_event(
@@ -152,6 +171,15 @@ class RTSRolloutRuntime:
             destination_x=getattr(destination, "x", None),
             destination_y=getattr(destination, "y", None),
             reward_json=reward_json,
+            netlogo_step=int(tick),
+            warehouse_time=warehouse_time,
+            tick_to_second=pending.tick_to_second,
+            netlogo_steps_elapsed_since_decision=realized,
+            warehouse_time_elapsed_since_decision=(
+                warehouse_time - start_warehouse_time
+                if warehouse_time is not None and start_warehouse_time is not None
+                else None
+            ),
         )
         self.writer.write_outcome(row)
         self._write_summary()
@@ -223,3 +251,11 @@ def _robot_id(robot: Any) -> str:
 def _text(value: Any) -> str:
     return "" if value is None else str(value)
 
+
+def _warehouse_time(step: Any, tick_to_second: Any) -> float | None:
+    if step is None or tick_to_second is None:
+        return None
+    try:
+        return float(step) * float(tick_to_second)
+    except Exception:
+        return None
