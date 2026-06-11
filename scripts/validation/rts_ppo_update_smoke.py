@@ -16,12 +16,12 @@ from src.rmfs.rl.rts.model import RTSMaskedActorCritic
 from src.rmfs.rl.rts.rollout_schema import build_decision_event, build_outcome_event
 from src.rmfs.rl.rts.training.config import RTSTrainingConfig
 from src.rmfs.rl.rts.training.ppo import (
-    build_offline_ppo_batch,
+    build_synthetic_ppo_smoke_batch,
     compute_log_probs_values,
     masked_categorical_from_logits,
     run_ppo_update,
 )
-from src.rmfs.rl.rts.training.rollout_dataset import build_feature_tensors_from_steps, build_training_steps
+from src.rmfs.rl.rts.training.rollout_dataset import build_feature_tensors_from_steps, build_smoke_training_steps
 
 
 def synthetic_state(offset: float = 0.0) -> dict:
@@ -162,8 +162,30 @@ def assert_raises(fn, expected):
 
 def main():
     torch.manual_seed(42)
+
+    # Verify strict on-policy training guards
+    from src.rmfs.rl.rts.training.rollout_dataset import validate_on_policy_training_decision
+    assert_raises(lambda: validate_on_policy_training_decision({"actor_kind": "current_probe"}), ValueError)
+    assert_raises(lambda: validate_on_policy_training_decision({"actor_kind": "random_valid"}), ValueError)
+    assert_raises(lambda: validate_on_policy_training_decision({"actor_kind": "heuristic"}), ValueError)
+    assert_raises(lambda: validate_on_policy_training_decision({"actor_kind": "synthetic"}), ValueError)
+    assert_raises(lambda: validate_on_policy_training_decision({"actor_kind": "current"}), ValueError)
+    assert_raises(lambda: validate_on_policy_training_decision({"actor_kind": "rts_rl_explicit"}), ValueError)  # missing fields
+
+    valid_on_policy = {
+        "actor_kind": "rts_rl_explicit",
+        "old_log_prob": -0.85,
+        "old_value": 1.5,
+        "policy_checkpoint_id": "ckpt_001",
+        "selected_action_index": 0,
+        "action_mask": [1, 1],
+        "state_json": {},
+        "zone_ids": ["A", "B"],
+    }
+    validate_on_policy_training_decision(valid_on_policy)  # Should not raise
+
     base_events = synthetic_events()
-    dataset = build_training_steps(base_events)
+    dataset = build_smoke_training_steps(base_events)
     assert dataset.summary["eligible_step_count"] == 2
 
     # Verify duplicate event ID detection and exclusion
@@ -188,7 +210,7 @@ def main():
             feature_shapes={},
         )
     )
-    dup_dataset = build_training_steps(duplicate_events)
+    dup_dataset = build_smoke_training_steps(duplicate_events)
     assert dup_dataset.summary["duplicate_decision_id_count"] == 1
     assert dup_dataset.summary["skipped_duplicate_event_id"] == 2
     assert dup_dataset.summary["eligible_step_count"] == 1
@@ -209,7 +231,7 @@ def main():
         tensorboard_enabled=False,
     )
     before = [param.detach().clone() for param in model.parameters()]
-    batch = build_offline_ppo_batch(model, padded, "cpu", config.gamma, config.gae_lambda)
+    batch = build_synthetic_ppo_smoke_batch(model, padded, "cpu", config.gamma, config.gae_lambda)
     result = run_ppo_update(model, optimizer, batch, config, "cpu")
     assert result.optimizer_steps > 0
     for value in (

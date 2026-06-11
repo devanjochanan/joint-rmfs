@@ -1,4 +1,4 @@
-"""Synthetic/offline RTS-RL PPO training infrastructure."""
+"""Synthetic RTS-RL PPO training infrastructure."""
 
 from .config import RTSTrainingConfig
 from .rollout_dataset import RTSRolloutDataset, RTSTrainingStep, RTSPaddedTrainingBatch

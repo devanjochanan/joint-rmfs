@@ -1,4 +1,4 @@
-"""Synthetic/offline PPO update helpers for RTS-RL."""
+"""Synthetic PPO update helpers for RTS-RL."""
 
 from __future__ import annotations
 
@@ -93,13 +93,14 @@ def compute_gae(
     return advantages.astype(np.float32), returns.astype(np.float32)
 
 
-def build_offline_ppo_batch(
+def build_synthetic_ppo_smoke_batch(
     model,
     padded_batch: RTSPaddedTrainingBatch,
     device: str | torch.device,
     gamma: float,
     gae_lambda: float,
 ) -> RTSPPORolloutBatch:
+    """This helper exists only for synthetic PPO math validation. It is not a training data path. Do not use it to train from current_probe, random_valid, heuristic, or offline rollout rows."""
     model.eval()
     with torch.no_grad():
         old_log_probs, old_values, _entropy = compute_log_probs_values(model, padded_batch, device)

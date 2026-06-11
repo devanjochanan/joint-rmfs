@@ -1,6 +1,6 @@
-# RTS-RL Training Validation
+# RTS-RL PPO Math & Checkpoint Validation
 
-Phase 8.1/8.2 validation is synthetic only. It does not run the simulator, local executor, BehaviorSpace, benchmarks, or real training.
+Phase 8 validation is synthetic validation only. It does not run the simulator, local executor, BehaviorSpace, benchmarks, or training.
 
 Run:
 
@@ -8,7 +8,7 @@ Run:
 /home/dewan/torch-gpu/bin/python scripts/validation/rts_ppo_update_smoke.py
 ```
 
-This smoke builds synthetic Phase 7-style decision/outcome rows, reconstructs features, builds an offline PPO batch, runs a short PPO update, checks finite losses, verifies model parameters change, and validates all-invalid/invalid-selected action errors.
+This smoke builds synthetic validation decision/outcome rows, reconstructs features, builds a synthetic PPO smoke batch, runs a short PPO update, checks finite losses, verifies model parameters change, validates all-invalid/invalid-selected action errors, and asserts that strict on-policy eligibility guards reject invalid/heuristic rows.
 
 Run:
 
@@ -18,5 +18,5 @@ Run:
 
 This smoke writes a synthetic cycle reference under the smoke output directory, runs one synthetic PPO update, saves a checkpoint, writes `latest.json`, appends `checkpoint_history.jsonl`, writes `batch_summary.json`, loads the checkpoint back, and verifies a loaded-model forward path.
 
-This is not true on-policy PPO yet because Phase 7 rollout rows lack `old_log_prob`, `old_value`, and `policy_checkpoint_id`. No PPO training run was performed beyond the synthetic smoke.
+Offline/off-policy PPO training is not supported. `current_probe` and `random_valid` rollout rows are diagnostics/evaluation only and are not PPO-trainable. True PPO training requires `rts_rl_explicit` on-policy rows and is deferred to Phase 9. No PPO training run was performed beyond synthetic validation smokes.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Short synthetic RTS training/checkpoint smoke."""
+"""Synthetic RTS PPO/checkpoint smoke. This is not a training run."""
 
 from __future__ import annotations
 
@@ -17,9 +17,9 @@ from src.rmfs.rl.rts.model import RTSMaskedActorCritic
 from src.rmfs.rl.rts.training.checkpoint import load_training_checkpoint, save_training_checkpoint, write_batch_summary
 from src.rmfs.rl.rts.training.config import RTSTrainingConfig, validate_training_config
 from src.rmfs.rl.rts.training.lineage import build_batch_summary, build_lineage_metadata, write_lineage_json
-from src.rmfs.rl.rts.training.ppo import build_offline_ppo_batch, compute_log_probs_values, run_ppo_update
+from src.rmfs.rl.rts.training.ppo import build_synthetic_ppo_smoke_batch, compute_log_probs_values, run_ppo_update
 from src.rmfs.rl.rts.training.references import write_synthetic_cycle_reference
-from src.rmfs.rl.rts.training.rollout_dataset import build_feature_tensors_from_steps, build_training_steps
+from src.rmfs.rl.rts.training.rollout_dataset import build_feature_tensors_from_steps, build_smoke_training_steps
 
 
 def main(argv=None):
@@ -52,7 +52,7 @@ def main(argv=None):
     run_root.mkdir(parents=True, exist_ok=True)
     reference_path = run_root / "cycle_reference.json"
     reference = write_synthetic_cycle_reference(reference_path)
-    dataset = build_training_steps(synthetic_events())
+    dataset = build_smoke_training_steps(synthetic_events())
     padded = build_feature_tensors_from_steps(dataset.steps)
     model = RTSMaskedActorCritic(
         action_feature_dim=padded.X_actions.shape[-1],
@@ -62,7 +62,7 @@ def main(argv=None):
         stock_embedding_dim=config.stock_embedding_dim,
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
-    ppo_batch = build_offline_ppo_batch(model, padded, "cpu", config.gamma, config.gae_lambda)
+    ppo_batch = build_synthetic_ppo_smoke_batch(model, padded, "cpu", config.gamma, config.gae_lambda)
     result = run_ppo_update(model, optimizer, ppo_batch, config, "cpu")
     feature_schema = {
         "action_feature_names": list(padded.action_feature_names),

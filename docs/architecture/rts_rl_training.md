@@ -1,16 +1,16 @@
-# RTS-RL Training Infrastructure
+# RTS-RL PPO Math & Checkpoint Validation
 
-Phase 8.1/8.2 adds the first RTS-RL training infrastructure layer under `src/rmfs/rl/rts/training/`.
+Phase 8 adds RTS-RL PPO math/checkpoint validation layers under `src/rmfs/rl/rts/training/`.
 
-This is synthetic/offline PPO infrastructure only. It is not true on-policy PPO yet because Phase 7 rollout rows do not contain `old_log_prob`, `old_value`, or `policy_checkpoint_id`. The helper `build_offline_ppo_batch` computes old log-probs and values from the current model for synthetic smokes.
+Offline/off-policy PPO training is not supported. `current_probe` and `random_valid` rollout rows are diagnostics/evaluation only and are not PPO-trainable. True PPO training requires `rts_rl_explicit` on-policy rows and is deferred to Phase 9. The helper `build_synthetic_ppo_smoke_batch` computes old log-probs and values from the current model for synthetic validation smokes.
 
-## Added Pieces
+## Added Validation Pieces
 
-- training config validation
-- rollout JSONL pairing and eligibility filtering
+- validation config checks
+- rollout JSONL pairing and duplicate filtering
 - feature reconstruction from `state_json`, `zone_ids`, and `action_mask`
 - padded action/stock tensor batches
-- masked categorical PPO update helpers
+- masked categorical PPO update validation helpers
 - GAE/return calculation
 - checkpoint, lineage, latest pointer, and checkpoint history helpers
 - synthetic cycle-reference helpers

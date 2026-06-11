@@ -65,6 +65,50 @@ class RTSPaddedTrainingBatch:
     decision_event_ids: tuple[str, ...]
 
 
+def validate_on_policy_training_decision(decision: Mapping[str, Any]) -> None:
+    actor_kind = decision.get("actor_kind")
+    if actor_kind in {"current_probe", "random_valid", "current", "heuristic", "synthetic"}:
+        raise ValueError(
+            f"{actor_kind} rollout rows are not PPO-trainable; use rts_rl_explicit on-policy rows"
+        )
+    if actor_kind != "rts_rl_explicit":
+        raise ValueError(
+            "rollout rows are not PPO-trainable; use rts_rl_explicit on-policy rows"
+        )
+    old_log_prob = decision.get("old_log_prob")
+    old_value = decision.get("old_value")
+    policy_checkpoint_id = decision.get("policy_checkpoint_id")
+    selected_action_index = decision.get("selected_action_index")
+    action_mask = decision.get("action_mask")
+    state_json = decision.get("state_json")
+    zone_ids = decision.get("zone_ids")
+    if (
+        old_log_prob is None
+        or old_value is None
+        or policy_checkpoint_id is None
+        or selected_action_index is None
+        or action_mask is None
+        or state_json is None
+        or zone_ids is None
+    ):
+        raise ValueError("Missing required fields for on-policy PPO training")
+    try:
+        if not np.isfinite(float(old_log_prob)) or not np.isfinite(float(old_value)):
+            raise ValueError("old_log_prob and old_value must be finite")
+    except Exception:
+        raise ValueError("old_log_prob and old_value must be finite")
+    if not isinstance(policy_checkpoint_id, str) or not policy_checkpoint_id.strip():
+        raise ValueError("policy_checkpoint_id must be nonblank")
+
+
+def is_on_policy_trainable_decision(decision: Mapping[str, Any]) -> bool:
+    try:
+        validate_on_policy_training_decision(decision)
+        return True
+    except Exception:
+        return False
+
+
 def load_rollout_jsonl(path: Path) -> list[dict[str, Any]]:
     with Path(path).open() as fh:
         return [json.loads(line) for line in fh if line.strip()]
@@ -110,7 +154,8 @@ def pair_decision_outcome_events(events: Sequence[Mapping[str, Any]]) -> tuple[l
     }
 
 
-def build_training_steps(events: Sequence[Mapping[str, Any]]) -> RTSRolloutDataset:
+def build_smoke_training_steps(events: Sequence[Mapping[str, Any]]) -> RTSRolloutDataset:
+    """Builds synthetic/smoke validation steps only. This is not a PPO training data eligibility function for real rollout data."""
     pairs, pair_summary = pair_decision_outcome_events(events)
     dec_counts: dict[str, int] = {}
     out_counts: dict[str, int] = {}

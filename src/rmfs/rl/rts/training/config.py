@@ -1,4 +1,4 @@
-"""Configuration for synthetic/offline RTS PPO training infrastructure."""
+"""Configuration for synthetic RTS PPO training infrastructure."""
 
 from __future__ import annotations
 
