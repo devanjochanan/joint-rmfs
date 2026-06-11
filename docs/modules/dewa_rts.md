@@ -72,6 +72,16 @@ Workers collect rollouts only. The controller owns model state, optimizer state,
 
 Default simulator behavior remains unchanged, and no checkpoint auto-loading is added outside explicit mode. DuckDB ledgers, full evaluation, long runs, best-checkpoint ranking, and other Phase 10 items remain deferred.
 
+## 10. Phase 10 SQLite Experiment Infrastructure
+
+Phase 10 adds a SQLite-backed experiment ledger at `data/output/rmfs_experiments.sqlite`. DuckDB is not used. The experiment ledger is separate from simulator `warehouse.db`.
+
+Workers never write the experiment ledger; controller-side or post-processing scripts initialize, ingest, and export ledger data. Phase 9 training outputs can be ingested into SQLite, and CSV summaries can be exported from the ledger.
+
+Phase 10 also adds deterministic experiment/scenario IDs, strict feature flags, evaluation seed packs, dry-run evaluation specs, best-checkpoint metadata pointers, and proposal-only cycle-reference update files. `latest.json` remains a latest-checkpoint pointer only; best-checkpoint selection does not copy or mutate checkpoints.
+
+Long runs, real evaluation, DoE, benchmarks, and cycle-reference apply mode remain deferred.
+
 ---
 
 ## 9. Phase 9 Cleanup Patch
