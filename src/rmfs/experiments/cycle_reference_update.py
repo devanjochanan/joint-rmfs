@@ -10,6 +10,33 @@ from typing import Any, Mapping
 from src.rmfs.experiments.identity import short_hash
 
 
+def validate_eval_summary_for_cycle_proposal(summary: Mapping[str, Any], *, max_failed_replications: int = 0) -> None:
+    """Validate that the evaluation summary is complete and successful."""
+    valid = summary.get("valid")
+    status = summary.get("status")
+
+    if valid is not True and not status:
+        raise ValueError("evaluation summary is missing both 'valid' flag and 'status'")
+
+    if valid is True:
+        # Accept if explicitly valid=True, check failed replications if present
+        failed_reps = summary.get("failed_replications")
+        if failed_reps is not None and failed_reps > max_failed_replications:
+            raise ValueError(f"failed replications ({failed_reps}) exceeds maximum allowed ({max_failed_replications})")
+        return
+
+    # Check status
+    if status in {"dry_run", "failed", "partial", "skipped"}:
+        raise ValueError(f"evaluation status is '{status}' which is rejected for cycle proposals")
+
+    if status not in {"success", "completed"}:
+        raise ValueError(f"invalid evaluation status '{status}', must be 'success' or 'completed'")
+
+    failed_reps = summary.get("failed_replications")
+    if failed_reps is not None and failed_reps > max_failed_replications:
+        raise ValueError(f"failed replications ({failed_reps}) exceeds maximum allowed ({max_failed_replications})")
+
+
 def build_cycle_reference_update_proposal(
     *,
     source_eval_run_id: str,
@@ -39,4 +66,3 @@ def write_cycle_reference_update_proposal(path: Path, proposal: Mapping[str, Any
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with Path(path).open("w") as fh:
         json.dump(dict(proposal), fh, indent=2)
-

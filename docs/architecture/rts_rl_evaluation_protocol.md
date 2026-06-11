@@ -26,3 +26,11 @@ best_checkpoint.json
 
 It does not copy checkpoint directories and does not mutate `latest.json`, checkpoints, model weights, optimizer state, metadata, or feature schemas.
 
+---
+
+## Evaluation Hardening Updates
+- **Best-Checkpoint Selection**: Selection rules use later checkpoint indices (e.g. higher batch numbers) only as the final tie-breaker.
+- **Cycle-Reference Proposal Validation**: Proposals can optionally validate evaluation summaries to ensure completeness (only accepting `success`/`completed` or explicitly `valid=true` statuses, and checking that failed replications are within bounds) before generating proposals.
+- **True Long-Format Export**: `eval_metrics_long.csv` exports metrics in a true long-format layout (columns: `eval_run_id`, `metric_name`, `metric_value`).
+
+

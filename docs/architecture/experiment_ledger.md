@@ -30,3 +30,11 @@ Primary tables:
 
 All JSON payloads are stored as SQLite `TEXT` with deterministic `json.dumps` where practical.
 
+---
+
+## Phase 10 Ingestion & ID Updates
+- **Evaluation Ingestion**: Evaluation summaries can be ingested into the `evaluations` table using `ingest_rts_eval_summary.py`.
+- **Path-Independent Experiment ID**: `experiment_id` derivation does not depend on the filesystem `run_root`, ensuring stable IDs when directories are moved.
+- **Worker Rollout Field Ingestion**: Ingestion prefers `netlogo_steps_completed` over legacy `ticks_completed`, and captures `warehouse_time_*` and `tick_to_second` fields.
+
+

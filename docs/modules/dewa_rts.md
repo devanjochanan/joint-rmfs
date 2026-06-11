@@ -99,3 +99,17 @@ The Phase 9 cleanup patch resolves critical device, metadata, timebase, CLI, and
   - `warehouse_time` is `Inventory._tick`.
   - `netlogo_step` is derived dynamically as `round(warehouse_time / tick_to_second)`.
   - Hardcoded scaling constants (e.g. 0.15, 0.25) are strictly forbidden.
+
+---
+
+## 11. Phase 10 Cleanup Patch
+
+The Phase 10 cleanup patch refines and strengthens the SQLite-backed experiment infrastructure:
+- **Evaluation Ingestion**: Added `ingest_rts_eval_summary.py` to ingest `eval_summary.json` files directly into the evaluations table in SQLite.
+- **Best-Checkpoint Tie-Breaker**: Updated `select_best_checkpoint` to use the later checkpoint (`checkpoint_sort_index`) only as a final tie-breaker.
+- **Metric Alias Normalization**: Standardized metric names to support both simple (e.g., `avg_order_cycle_time`) and mean-style (e.g., `avg_order_cycle_time_mean`) names. Stored missing energy metrics as infinity.
+- **Cycle-Reference Proposal Validation**: Strengthened `propose_cycle_reference_update.py` to optionally validate evaluation completeness (success/completed) and failed replications limit before proposing a reference update.
+- **Path-Independent Experiment ID**: Removed filesystem `run_root` from the `experiment_id` derivation hash to ensure it remains stable if a run is moved.
+- **Worker Rollout Field Ingestion**: Prefer `netlogo_steps_completed` over legacy `ticks_completed`, and correctly ingest `warehouse_time_*` and `tick_to_second` fields.
+- **True Long-Format Metrics Export**: Updated `eval_metrics_long.csv` to export a true long-format layout (columns: `eval_run_id`, `metric_name`, `metric_value`).
+

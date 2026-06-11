@@ -33,8 +33,18 @@ def ingest_phase9_run(run_root: Path, db_path: Path) -> dict[str, Any]:
         raise FileNotFoundError(run_root / "training_config.json")
     feature_flags = config.get("feature_flags") or default_rika_rts_rl_feature_flags()
     scenario_id = config.get("scenario_id") or make_scenario_id({"config": config, "feature_flags": feature_flags})
-    experiment_id = config.get("experiment_id") or make_experiment_run_id({"run_root": str(run_root), "config": config})
+
+    # Derive experiment_id using config parameters but without path-dependent run_root
     artifact_label = config.get("artifact_label") or run_root.name
+    experiment_id = config.get("experiment_id") or make_experiment_run_id({
+        "artifact_label": artifact_label,
+        "seed": config.get("seed"),
+        "scenario_id": scenario_id,
+        "repo_commit": config.get("commit"),
+        "netlogo_steps_per_run": config.get("netlogo_steps_per_run"),
+        "workers": config.get("workers"),
+    })
+
     upsert_experiment(
         db_path,
         {
@@ -115,12 +125,12 @@ def ingest_phase9_run(run_root: Path, db_path: Path) -> dict[str, Any]:
                     "batch_id": batch_id,
                     "worker_run_id": worker_dir.name,
                     "derived_seed": None,
-                    "netlogo_steps_requested": config.get("netlogo_steps_per_run"),
-                    "netlogo_steps_completed": worker_summary.get("ticks_completed"),
-                    "warehouse_time_start": None,
-                    "warehouse_time_end": None,
-                    "warehouse_time_elapsed": None,
-                    "tick_to_second": None,
+                    "netlogo_steps_requested": worker_summary.get("netlogo_steps_requested", config.get("netlogo_steps_per_run")),
+                    "netlogo_steps_completed": worker_summary.get("netlogo_steps_completed", worker_summary.get("ticks_completed")),
+                    "warehouse_time_start": worker_summary.get("warehouse_time_start"),
+                    "warehouse_time_end": worker_summary.get("warehouse_time_end"),
+                    "warehouse_time_elapsed": worker_summary.get("warehouse_time_elapsed"),
+                    "tick_to_second": worker_summary.get("tick_to_second"),
                     "status": worker_summary.get("status"),
                     "worker_summary_path": str(worker_dir / "worker_summary.json"),
                     "rollout_path": str(worker_dir / "rts_rollout.jsonl"),
@@ -128,4 +138,3 @@ def ingest_phase9_run(run_root: Path, db_path: Path) -> dict[str, Any]:
                 },
             )
     return {"experiment_id": experiment_id, "scenario_id": scenario_id, "run_root": str(run_root)}
-
