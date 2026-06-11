@@ -143,7 +143,7 @@ class MetricsRecorder:
     HEADER = [
         "episode", "timestamp",
         "training_seed", "env_base_seed", "episode_seed",
-        "throughput", "cumulative_path_cost",
+        "throughput", "cumulative_path_cost", "total_energy",
         "total_flow_time_cost", "completed_orders_time_sum",
         "unfinished_orders_age_sum", "reward_flow_time_cost_delta",
         "pile_on_rate", "pile_on_items", "picked_quantity", "pile_on_visits",
@@ -168,6 +168,7 @@ class MetricsRecorder:
             info.get("episode_seed", ""),
             info.get("throughput", 0),
             info.get("cumulative_path_cost", 0.0),
+            info.get("total_energy", info.get("cumulative_path_cost", 0.0)),
             info.get("total_flow_time_cost", 0.0),
             info.get("completed_orders_time_sum", 0.0),
             info.get("unfinished_orders_age_sum", 0.0),
@@ -197,7 +198,7 @@ class PPSMetricsCallback(BaseCallback):
 
     TensorBoard sections:
       pps_reward/   : total_reward, total_flow_time_cost, completed_orders_time_sum
-      pps_metrics/  : throughput, cumulative_path_cost, episode_steps, pile_on_rate
+      pps_metrics/  : throughput, total_energy, cumulative_path_cost, episode_steps, pile_on_rate
     """
 
     def __init__(
@@ -249,6 +250,7 @@ class PPSMetricsCallback(BaseCallback):
                 total_flow_time_cost = info.get("total_flow_time_cost", 0.0)
                 completed_orders_time_sum = info.get("completed_orders_time_sum", 0.0)
                 cpc = info.get("cumulative_path_cost", 0.0)
+                total_energy = info.get("total_energy", cpc)
                 if self._training_seed is not None:
                     info["training_seed"] = self._training_seed
 
@@ -259,6 +261,7 @@ class PPSMetricsCallback(BaseCallback):
                     self._tb_writer.add_scalar("pps_reward/completed_orders_time_sum", completed_orders_time_sum, ep)
                     self._tb_writer.add_scalar("pps_metrics/throughput", throughput, ep)
                     self._tb_writer.add_scalar("pps_metrics/pile_on_rate", pile_on, ep)
+                    self._tb_writer.add_scalar("pps_metrics/total_energy", total_energy, ep)
                     self._tb_writer.add_scalar("pps_metrics/cumulative_path_cost", cpc, ep)
                     self._tb_writer.add_scalar("pps_metrics/episode_steps", ep_steps, ep)
                     self._tb_writer.flush()
@@ -745,7 +748,8 @@ def evaluate(
             f"throughput={info.get('throughput', 0)}, "
             f"pile_on={info.get('pile_on_rate', 0):.2f}, "
             f"avg_oct={info.get('avg_order_completion_time', 0):.1f}, "
-            f"path_cost={info.get('cumulative_path_cost', 0):.1f}"
+            f"path_cost={info.get('cumulative_path_cost', 0):.1f}, "
+            f"total_energy={info.get('total_energy', info.get('cumulative_path_cost', 0)):.1f}"
         )
 
     # Summary
@@ -755,10 +759,12 @@ def evaluate(
     avg_po = np.mean([r.get("pile_on_rate", 0) for r in results])
     avg_oct = np.mean([r.get("avg_order_completion_time", 0) for r in results])
     avg_cpc = np.mean([r.get("cumulative_path_cost", 0) for r in results])
+    avg_energy = np.mean([r.get("total_energy", r.get("cumulative_path_cost", 0)) for r in results])
     print(f"  Avg throughput          : {avg_tp:.1f}")
     print(f"  Avg pile-on rate        : {avg_po:.2f}")
     print(f"  Avg order completion    : {avg_oct:.1f} ticks")
     print(f"  Avg cumulative path cost: {avg_cpc:.1f}")
+    print(f"  Avg total energy        : {avg_energy:.1f}")
     print(f"{'='*50}")
     env.close()
 

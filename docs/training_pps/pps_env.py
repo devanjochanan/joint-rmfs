@@ -891,6 +891,7 @@ class PPSEnv(gym.Env):
             "reward_visit_penalty": self.reward_visit_penalty,
             "reward_alpha": self.reward_alpha,
             "cumulative_path_cost": self._episode_cumulative_path_cost,
+            "total_energy": self._warehouse.total_energy if self._warehouse else 0.0,
             "throughput": self._episode_orders_completed,
             "tick": self._warehouse._tick if self._warehouse else 0,
             "step": self._step_count,
