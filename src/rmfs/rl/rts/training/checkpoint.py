@@ -63,7 +63,9 @@ def save_training_checkpoint(
     stock_feature_names: tuple[str, ...],
     cycle_reference_path: Path | None = None,
     lineage_metadata: Mapping[str, Any] | None = None,
+    checkpoint_id_before: str | None = None,
 ) -> Path:
+    import datetime
     root = checkpoint_root(config.output_root, config.artifact_label)
     checkpoint_dir = batch_checkpoint_dir(config.output_root, config.artifact_label, batch_id)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -90,12 +92,24 @@ def save_training_checkpoint(
     )
     atomic_write_json(checkpoint_dir / "metadata.json", metadata)
     write_latest_pointer(root, batch_id=batch_id, checkpoint_dir=checkpoint_dir)
+    
+    checkpoint_id_after = checkpoint_dir.parent.name if checkpoint_dir.parent.name.startswith("batch_") else checkpoint_dir.name
+    
     append_checkpoint_history(
         root,
         {
             "batch_id": int(batch_id),
+            "checkpoint_id_before": checkpoint_id_before,
+            "checkpoint_id_after": checkpoint_id_after,
             "checkpoint_dir": str(checkpoint_dir),
-            "ppo_update_result": ppo_update_result,
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "dataset_summary": dict(dataset_summary),
+            "ppo_update_result": ppo_update_result.to_json_dict() if hasattr(ppo_update_result, "to_json_dict") else ppo_update_result,
+            "trainable_step_count": int(dataset_summary.get("trainable_step_count", 0)),
+            "avg_reward": float(dataset_summary.get("avg_reward", 0.0)),
+            "cycle_reference_path": str(copied_reference) if copied_reference else None,
+            "feature_schema_path": str(checkpoint_dir / "feature_schema.json"),
+            "latest_updated": True,
         },
     )
     return checkpoint_dir

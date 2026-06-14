@@ -78,6 +78,63 @@ def main():
     batch = build_on_policy_ppo_batch(dataset, gamma=0.99, gae_lambda=0.95)
     assert batch.old_log_probs.shape[0] == 1
     assert batch.old_values.shape[0] == 1
+
+    # Multi-step same-worker trajectory test
+    multi_events = []
+    # Worker 1: 3 steps
+    for step_num in range(1, 4):
+        multi_events.append(
+            decision(
+                f"w1_s{step_num}",
+                "rts_rl_explicit",
+                worker_run_id="run_001",
+                netlogo_step=step_num,
+                warehouse_time=float(step_num) * 0.5
+            )
+        )
+        multi_events.append(outcome(f"w1_s{step_num}"))
+
+    # Worker 2: 2 steps
+    for step_num in range(1, 3):
+        multi_events.append(
+            decision(
+                f"w2_s{step_num}",
+                "rts_rl_explicit",
+                worker_run_id="run_002",
+                netlogo_step=step_num,
+                warehouse_time=float(step_num) * 0.5
+            )
+        )
+        multi_events.append(outcome(f"w2_s{step_num}"))
+
+    dataset_multi = build_on_policy_training_steps(multi_events, required_policy_checkpoint_id="batch_000001")
+    assert dataset_multi.summary["trainable_step_count"] == 5
+
+    # Check intermediate steps are non-terminal, last step in each worker run is truncated
+    steps = dataset_multi.steps
+    w1_steps = [s for s in steps if s.worker_run_id == "run_001"]
+    w2_steps = [s for s in steps if s.worker_run_id == "run_002"]
+
+    assert len(w1_steps) == 3
+    assert len(w2_steps) == 2
+
+    # Check w1 ordering
+    assert [s.netlogo_step for s in w1_steps] == [1, 2, 3]
+    # Check w1 flags
+    assert w1_steps[0].terminated is False and w1_steps[0].truncated is False
+    assert w1_steps[1].terminated is False and w1_steps[1].truncated is False
+    assert w1_steps[2].terminated is False and w1_steps[2].truncated is True
+
+    # Check w2 ordering
+    assert [s.netlogo_step for s in w2_steps] == [1, 2]
+    # Check w2 flags
+    assert w2_steps[0].terminated is False and w2_steps[0].truncated is False
+    assert w2_steps[1].terminated is False and w2_steps[1].truncated is True
+
+    # Compute GAE and verify returns differ from all-terminal one-step returns
+    batch_multi = build_on_policy_ppo_batch(dataset_multi, gamma=0.99, gae_lambda=0.95)
+    assert batch_multi.returns[0] > 1.5, f"GAE multi-step returns failed: {batch_multi.returns[0]}"
+
     print("rts on policy dataset smoke ok")
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -68,7 +68,7 @@ def build_on_policy_training_steps(
         "rejected_missing_state_count": 0,
         "rejected_feature_error_count": 0,
     }
-    steps: list[RTSOnPolicyTrainingStep] = []
+    raw_steps: list[RTSOnPolicyTrainingStep] = []
     for event_id, decs in decisions.items():
         if len(decs) != 1:
             rejected["rejected_duplicate_decision_count"] += len(decs)
@@ -84,16 +84,46 @@ def build_on_policy_training_steps(
         if step is None:
             rejected[reason] += 1
         else:
-            steps.append(step)
-    rewards = [step.reward for step in steps]
+            raw_steps.append(step)
+
+    # Group steps by worker_run_id and sort same-worker trajectories
+    by_worker: dict[str, list[RTSOnPolicyTrainingStep]] = {}
+    for step in raw_steps:
+        run_id = step.worker_run_id or "synthetic_run"
+        by_worker.setdefault(run_id, []).append(step)
+
+    processed_steps: list[RTSOnPolicyTrainingStep] = []
+    for run_id in sorted(by_worker.keys()):
+        group = by_worker[run_id]
+        # Sort group by netlogo_step, then warehouse_time, then decision_event_id
+        group.sort(key=lambda s: (
+            s.netlogo_step if s.netlogo_step is not None else 0,
+            s.warehouse_time if s.warehouse_time is not None else 0.0,
+            s.decision_event_id
+        ))
+        n = len(group)
+        for idx in range(n):
+            is_last = (idx == n - 1)
+            step_mod = replace(
+                group[idx],
+                terminated=False,
+                truncated=is_last,
+            )
+            processed_steps.append(step_mod)
+
+    rewards = [step.reward for step in processed_steps]
     summary = {
         "decision_count": sum(len(v) for v in decisions.values()),
         "outcome_count": sum(len(v) for v in outcomes.values()),
-        "trainable_step_count": len(steps),
+        "trainable_step_count": len(processed_steps),
         "avg_reward": mean_or_none(rewards),
+        "reward_mean": mean_or_none(rewards),
+        "reward_std": float(np.std(rewards)) if rewards else 0.0,
+        "reward_min": float(np.min(rewards)) if rewards else 0.0,
+        "reward_max": float(np.max(rewards)) if rewards else 0.0,
         **rejected,
     }
-    return RTSOnPolicyRolloutDataset(steps=tuple(steps), summary=summary)
+    return RTSOnPolicyRolloutDataset(steps=tuple(processed_steps), summary=summary)
 
 
 def build_on_policy_ppo_batch(

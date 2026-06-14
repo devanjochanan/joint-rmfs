@@ -23,6 +23,7 @@ from src.rmfs.rl.rts.rollout_schema import build_decision_event, build_outcome_e
 from src.rmfs.rl.rts.rollout_writer import RTSRolloutWriter
 from src.rmfs.rl.rts.runtime_config import RTSRuntimeConfig
 from src.rmfs.rl.rts.runtime_registry import configure_rts_runtime, get_rts_runtime_config, reset_rts_runtime
+from src.rmfs.rl.rts.state import build_state
 from src.rmfs.rl.rts.storage_resolver import find_free_storage_in_zone
 
 
@@ -123,12 +124,17 @@ def main():
         assert summary["orphan_count"] == 0
 
     tracker = RTSOutcomeTracker()
-    pending = PendingRTSDecision("d2", "r1", "j2", "p2", 5.0, STORE)
+    pending = PendingRTSDecision("d2", "r1", "j2", "p2", 5.0, STORE, {})
     tracker.record_decision(pending)
     assert tracker.complete_return(robot_id="r1", job_id="j2", pod_id="p2") == pending
     assert tracker.orphan_pending() == []
 
     context, storages = build_context()
+    state_bundle = build_state(context, ("A", "B"))
+    assert state_bundle.state_json["feature_fidelity"]["destination_robot_pressure"] == "approx_repo_grounded"
+    zone_rows = {row["zone_id"]: row for row in state_bundle.state_json["zone_rows"]}
+    assert zone_rows["A"]["zone_destination_robot_count"] == 1.0
+    assert zone_rows["B"]["neighbor_zone_destination_robot_count"] == 1.0
     before = [(storage.pos_x, storage.pos_y, storage.is_empty, storage.assigned_pod) for storage in storages]
     resolved = find_free_storage_in_zone(context, "A", STORE)
     after = [(storage.pos_x, storage.pos_y, storage.is_empty, storage.assigned_pod) for storage in storages]
@@ -235,4 +241,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

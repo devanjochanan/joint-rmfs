@@ -12,7 +12,9 @@ Training-facing duration uses `netlogo_steps_per_run`, `netlogo_steps_completed`
 
 Offline/off-policy training is not supported. `current`, `current_probe`, `random_valid`, `heuristic`, and `synthetic` rows are rejected as PPO-trainable.
 
-DuckDB ledgers, full evaluation seed packs, best-checkpoint ranking, long runs, DoE, benchmarks, ablations, automatic cycle-reference updates, PPS-RL, charging learning, and advanced order-generation/pod-SKU learning are deferred to Phase 10 or later.
+SQLite is used for the experiment ledger (at `data/output/rmfs_experiments.sqlite`); DuckDB is not used. Best-checkpoint implementation is deferred in this recovery work: the controller preserves every batch checkpoint plus `latest.json` and `checkpoint_history.jsonl`, without copied best-checkpoint folders or automatic evaluation-based best scoring.
+
+PPS-RL, charging learning, advanced order-generation/pod-SKU learning, full DoE, long training campaigns, and paper-ready performance evaluations remain deferred.
 
 ## Execution Safety & Device Rules (Phase 9 Cleanup)
 

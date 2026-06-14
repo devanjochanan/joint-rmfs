@@ -22,12 +22,22 @@ class RunSpec:
     rts_rollout_enabled: bool = False
     rts_zone_ids: list[str] | None = None
     rts_reward_reference_path: str | None = None
+    rts_seed_base: int | None = None
     rts_random_seed: int | None = None
     rts_max_events: int | None = None
     rts_policy_checkpoint_dir: str | None = None
     rts_policy_checkpoint_id: str | None = None
     rts_policy_action_mode: str = "sample"
     rts_policy_device: str = "cpu"
+    experiment_id: str | None = None
+    scenario_id: str | None = None
+    artifact_label: str | None = None
+    batch_id: int | None = None
+    worker_id: int | None = None
+
+    @property
+    def netlogo_steps_requested(self) -> int:
+        return self.ticks
 
     def to_json_dict(self):
         data = asdict(self)

@@ -118,13 +118,19 @@ def ingest_phase9_run(run_root: Path, db_path: Path) -> dict[str, Any]:
         for worker_dir in sorted((batch_dir / "workers").glob("run_*")):
             worker_summary = read_json(worker_dir / "worker_summary.json", {}) or {}
             rollout_summary = read_json(worker_dir / "rts_rollout_summary.json", {}) or {}
+            combined_summary = dict(rollout_summary)
+            combined_summary.update({
+                "worker_elapsed": worker_summary.get("worker_wall_time_elapsed"),
+                "worker_status": worker_summary.get("status"),
+                "final_metrics": worker_summary.get("final_metrics"),
+            })
             upsert_worker_rollout(
                 db_path,
                 {
                     "experiment_id": experiment_id,
                     "batch_id": batch_id,
                     "worker_run_id": worker_dir.name,
-                    "derived_seed": None,
+                    "derived_seed": worker_summary.get("derived_seed"),
                     "netlogo_steps_requested": worker_summary.get("netlogo_steps_requested", config.get("netlogo_steps_per_run")),
                     "netlogo_steps_completed": worker_summary.get("netlogo_steps_completed", worker_summary.get("ticks_completed")),
                     "warehouse_time_start": worker_summary.get("warehouse_time_start"),
@@ -134,7 +140,7 @@ def ingest_phase9_run(run_root: Path, db_path: Path) -> dict[str, Any]:
                     "status": worker_summary.get("status"),
                     "worker_summary_path": str(worker_dir / "worker_summary.json"),
                     "rollout_path": str(worker_dir / "rts_rollout.jsonl"),
-                    "summary_json": json_text(rollout_summary),
+                    "summary_json": json_text(combined_summary),
                 },
             )
     return {"experiment_id": experiment_id, "scenario_id": scenario_id, "run_root": str(run_root)}

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import traceback
 
 from src.rmfs.orchestration.input_snapshot import create_input_snapshot
@@ -122,8 +123,15 @@ def write_json(path: Path, payload):
 
 
 def run_worker(spec: RunSpec):
+    worker_start = time.perf_counter()
     original_cwd = Path.cwd()
     netlogo_module = None
+    status_path = spec.runtime_root / "worker_status.json"
+    write_json(status_path, {
+        "current_progress_steps": 0,
+        "progress_target_steps": spec.ticks,
+        "status": "running"
+    })
     summary = {
         "run_id": spec.run_id,
         "status": "failure",
@@ -178,6 +186,12 @@ def run_worker(spec: RunSpec):
         summary["setup_digest"] = stable_digest(setup_result)
         summary["setup_signature"] = return_signature(setup_result)
 
+        universe = getattr(netlogo, "universe", None)
+        warehouse = getattr(universe, "warehouse", None)
+        tick_to_second = getattr(warehouse, "tick_to_second", 1.0)
+        summary["warehouse_time_start"] = 0.0
+        summary["tick_to_second"] = tick_to_second
+
         first_result = None
         final_result = None
         ticks_done = 0
@@ -190,6 +204,13 @@ def run_worker(spec: RunSpec):
             ticks_done += 1
             digest = stable_digest(tick_result)
             sig = return_signature(tick_result)
+            
+            # Write progress update
+            write_json(status_path, {
+                "current_progress_steps": ticks_done,
+                "progress_target_steps": spec.ticks,
+                "status": "running"
+            })
             
             if index == 0:
                 first_result = (digest, sig)
@@ -237,6 +258,16 @@ def run_worker(spec: RunSpec):
                     "total_turning": tick_res[4],
                 }
 
+        # Get final warehouse time and wall clock elapsed
+        final_tick = 0.0
+        if warehouse is not None:
+            final_tick = getattr(warehouse, "_tick", 0.0)
+            tick_to_second = getattr(warehouse, "tick_to_second", tick_to_second)
+            
+        summary["warehouse_time_end"] = float(final_tick) * float(tick_to_second)
+        summary["warehouse_time_elapsed"] = summary["warehouse_time_end"] - summary["warehouse_time_start"]
+        summary["worker_wall_time_elapsed"] = time.perf_counter() - worker_start
+
         summary["status"] = "success"
 
         if spec.debug_trace and debug_rows:
@@ -280,7 +311,25 @@ def run_worker(spec: RunSpec):
         rts_summary_path = spec.runtime_root / "rts_rollout_summary.json"
         if rts_summary_path.exists():
             summary["rts_rollout_summary_path"] = str(rts_summary_path)
+        summary.update({
+            "seed_base": spec.rts_seed_base,
+            "derived_seed": spec.rts_random_seed,
+            "repo_branch": spec.branch,
+            "repo_commit": spec.commit,
+            "python_executable": spec.python_executable,
+            "experiment_id": spec.experiment_id,
+            "scenario_id": spec.scenario_id,
+            "artifact_label": spec.artifact_label,
+            "batch_id": spec.batch_id,
+            "worker_id": spec.worker_id,
+        })
         write_json(spec.runtime_root / "worker_summary.json", summary)
+        # Write final status to status_path
+        write_json(status_path, {
+            "current_progress_steps": ticks_done,
+            "progress_target_steps": spec.ticks,
+            "status": "success" if summary["status"] == "success" else "failure"
+        })
         os.chdir(original_cwd)
 
 

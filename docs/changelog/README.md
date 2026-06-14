@@ -160,3 +160,90 @@ For all future refactoring stages, developers must append entries in the followi
 * **Residual Risks**:
   * Full GUI simulation, BehaviorSpace, and paper fidelity runs remain to be verified.
 
+### 2026-06-13 Phase 10 - TQDM Progress Polish
+* **Files Changed/Created/Deleted**:
+  * `[MODIFY] src/rmfs/orchestration/local_executor.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/progress.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/controller.py`
+* **Behavior Changes**: No (only progress display improvements and fixing runtime NameError bug in worker wall-time calculation).
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python -m py_compile src/rmfs/rl/rts/training/progress.py src/rmfs/rl/rts/training/controller.py scripts/validation/*.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_training_controller_dry_run.py`
+* **Residual Risks**: None.
+
+### 2026-06-13 Phase 11 - Precise RTS State-Feature Gap Map
+* **Files Changed/Created/Deleted**:
+  * `[NEW] docs/architecture/rts_state_feature_gap_map.md`
+* **Behavior Changes**: No (documentation-only stage).
+* **Validation Run**:
+  * `git diff --stat`
+* **Residual Risks**: None.
+
+### 2026-06-13 Phase 12 - RTS State-Feature Implementation
+* **Files Changed/Created/Deleted**:
+  * `[MODIFY] src/rmfs/rl/rts/state.py`
+  * `[MODIFY] src/rmfs/rl/rts/zone_features.py`
+  * `[MODIFY] scripts/validation/rts_rl_rollout_smoke.py`
+* **Behavior Changes**: Yes (implemented dynamic SKU turnover rank/value, replenishment station context, neighborhood counts, robot congestion metrics, and zone distance calculations fully grounded in current simulation objects).
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python -m py_compile src/rmfs/rl/rts/*.py src/rmfs/rl/rts/training/*.py scripts/validation/*.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_on_policy_actor_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_ppo_update_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_rl_rollout_smoke.py`
+* **Residual Risks**: None.
+
+### 2026-06-13 Phase 13 - Reward and Alpha Preservation Guard
+* **Files Changed/Created/Deleted**: None (audit and verification only).
+* **Behavior Changes**: No (confirmed cycle reference and alpha gating follow specifications exactly; no alpha rederivation or reward redesign was performed).
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python -m py_compile src/rmfs/rl/rts/reward.py src/rmfs/rl/rts/cycle_reference.py src/rmfs/experiments/cycle_reference_update.py src/rmfs/rl/rts/training/checkpoint.py scripts/validation/*.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/cycle_reference_update_proposal_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_ppo_update_smoke.py`
+* **Residual Risks**: None.
+
+### 2026-06-13 Phase 14 - Timebase Naming Cleanup
+* **Files Changed/Created/Deleted**:
+  * `[MODIFY] src/rmfs/orchestration/run_spec.py`
+* **Behavior Changes**: No (added `netlogo_steps_requested` alias/property to `RunSpec` for clean human-facing naming semantics without altering timing or step logic).
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python -m py_compile src/rmfs/orchestration/*.py src/rmfs/rl/rts/training/controller.py src/rmfs/experiments/ledger/ingest_phase9.py scripts/validation/*.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_training_controller_dry_run.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/phase9_ingest_smoke.py`
+* **Residual Risks**: None.
+
+### 2026-06-13 Phase 15 - Regret-k Targeted Audit Only
+* **Files Changed/Created/Deleted**:
+  * `[NEW] docs/architecture/regret_k_audit.md`
+* **Behavior Changes**: No (audit-only, regret-k task allocation is classified as deferred).
+* **Validation Run**:
+  * `git diff --stat`
+* **Residual Risks**: None.
+
+### 2026-06-13 Phase 16 - Docs and Current-State Cleanup
+* **Files Changed/Created/Deleted**:
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/modules/dewa_rts.md`
+  * `[MODIFY] docs/architecture/rts_rl_on_policy_training.md`
+  * `[MODIFY] docs/architecture/experiment_ledger.md`
+* **Behavior Changes**: No (documentation-only cleanup).
+* **Validation Run**:
+  * Run compileall checks on `src/` and `scripts/` (completed successfully).
+  * Executed all 17 validation smoke tests under `scripts/validation/` (all passed successfully).
+  * Verified removal of stale planning/scaffold placeholders in docs using git grep.
+* **Residual Risks**: None.
+
+
+### 2026-06-13 Codex Verification Patch - +0.0.1
+* **Files Changed/Created/Deleted**:
+  * `[MODIFY] src/rmfs/rl/rts/state.py`
+  * `[MODIFY] scripts/validation/rts_rl_rollout_smoke.py`
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/modules/dewa_rts.md`
+  * `[MODIFY] docs/architecture/rts_rl_on_policy_training.md`
+  * `[MODIFY] docs/architecture/rts_state_feature_gap_map.md`
+* **Behavior Changes**: No simulator behavior change. Corrected RTS state-feature fidelity metadata for destination robot pressure and tightened smoke coverage for the Phase 12 destination-pressure feature.
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python` recursive `py_compile` sweep over RTS, experiments, orchestration, training, experiment, and validation scripts.
+  * Listed safe validation smokes from the Codex verification task.
+* **Residual Risks**:
+  * Full real multi-worker NetLogo execution remains unvalidated.
