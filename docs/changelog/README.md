@@ -247,3 +247,28 @@ For all future refactoring stages, developers must append entries in the followi
   * Listed safe validation smokes from the Codex verification task.
 * **Residual Risks**:
   * Full real multi-worker NetLogo execution remains unvalidated.
+
+### 2026-06-14 Targeted Regret-k Active Queue Scheduler - +0.0.1
+* **Files Changed/Created/Deleted**:
+  * `[NEW] src/rmfs/decisions/task_allocation/__init__.py`
+  * `[NEW] src/rmfs/decisions/task_allocation/regret_k.py`
+  * `[NEW] scripts/validation/regret_k_allocator_smoke.py`
+  * `[NEW] scripts/validation/regret_k_training_config_smoke.py`
+  * `[MODIFY] model/inventory.py`
+  * `[MODIFY] scripts/training/rts_train_controller.py`
+  * `[MODIFY] src/rmfs/orchestration/local_executor.py`
+  * `[MODIFY] src/rmfs/orchestration/run_spec.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/controller.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/on_policy_config.py`
+  * `[MODIFY] docs/architecture/regret_k_audit.md`
+  * `[MODIFY] docs/architecture/rts_rl_on_policy_training.md`
+  * `[MODIFY] docs/architecture/rts_state_feature_gap_map.md`
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/modules/dewa_rts.md`
+  * `[MODIFY] docs/changelog/README.md`
+* **Behavior Changes**: Yes. Active job assignment now defaults to active job-queue `regret_k` with `regret_k=2`; the previous first-queue-job nearest-idle-robot behavior remains selectable as `legacy_nearest`. Committed-next reservations and future lookahead remain deferred.
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python -m py_compile model/inventory.py src/rmfs/decisions/task_allocation/*.py src/rmfs/orchestration/run_spec.py src/rmfs/orchestration/local_executor.py src/rmfs/rl/rts/training/on_policy_config.py src/rmfs/rl/rts/training/controller.py scripts/training/rts_train_controller.py scripts/validation/regret_k_allocator_smoke.py scripts/validation/regret_k_training_config_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/regret_k_allocator_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/regret_k_training_config_smoke.py`
+* **Residual Risks**: Full mature scheduler equivalence, committed-next reservations, future pressure feedback, and performance effects were not validated. No long simulation or training campaign was run.

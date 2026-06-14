@@ -31,8 +31,8 @@ Each feature family is classified under one of the following statuses:
 ### 2. Committed Next Task
 * **Features**:
   * `estimated_queue_time`
-* **Status**: `approx_repo_grounded`
-* **Details**: Phase 12 estimates logical load from robots currently associated with, or headed near, the selected replenishment station.
+* **Status**: `hardcoded_zero`
+* **Details**: Active job-queue regret-k task allocation is now implemented, but mature committed-next reservation/lookahead state is still not present in the Rika-host model. `estimated_queue_time` therefore remains unavailable to RTS-RL and defaults to zero.
 
 ### 3. Source Station Context
 * **Features**:
@@ -124,4 +124,4 @@ Each feature family is classified under one of the following statuses:
 
 Phase 12 resolved the selected replenishment station context, zone traffic/destination pressure, SKU similarity, and replenishment-distance gaps with current-repo-grounded approximations.
 
-Remaining deferred/defaulted feature families are next retrieval context, committed next task/queue time, cycle-time estimates, and mature-only stock metadata that is not present in the current Rika-host data model.
+The targeted regret-k scheduler patch resolves active job-queue task allocation only. Remaining deferred/defaulted feature families are next retrieval context, committed next task/queue time, cycle-time estimates, and mature-only stock metadata that is not present in the current Rika-host data model.

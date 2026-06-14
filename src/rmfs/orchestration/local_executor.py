@@ -188,6 +188,11 @@ def run_worker(spec: RunSpec):
 
         universe = getattr(netlogo, "universe", None)
         warehouse = getattr(universe, "warehouse", None)
+        if warehouse is not None:
+            warehouse.robot_task_allocator = spec.robot_task_allocator
+            warehouse.regret_k = spec.regret_k
+            warehouse.task_allocator_scope = spec.task_allocator_scope
+            warehouse.committed_next_reservations_enabled = spec.committed_next_reservations_enabled
         tick_to_second = getattr(warehouse, "tick_to_second", 1.0)
         summary["warehouse_time_start"] = 0.0
         summary["tick_to_second"] = tick_to_second
@@ -322,6 +327,10 @@ def run_worker(spec: RunSpec):
             "artifact_label": spec.artifact_label,
             "batch_id": spec.batch_id,
             "worker_id": spec.worker_id,
+            "robot_task_allocator": spec.robot_task_allocator,
+            "regret_k": spec.regret_k,
+            "task_allocator_scope": spec.task_allocator_scope,
+            "committed_next_reservations_enabled": spec.committed_next_reservations_enabled,
         })
         write_json(spec.runtime_root / "worker_summary.json", summary)
         # Write final status to status_path

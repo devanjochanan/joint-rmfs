@@ -28,6 +28,7 @@ from .seeding import derive_worker_seed
 from .tensorboard import RTSTensorBoardLogger
 from src.rmfs.experiments.identity import make_experiment_run_id, make_scenario_id
 from src.rmfs.experiments.feature_flags import default_rika_rts_rl_feature_flags
+from src.rmfs.decisions.task_allocation import scheduler_metadata
 
 
 def run_on_policy_training_controller(
@@ -52,6 +53,11 @@ def run_on_policy_training_controller(
     commit = git_value(repo_root, "rev-parse", "HEAD")
 
     config_dict = config.to_json_dict()
+    scheduler = scheduler_metadata(
+        robot_task_allocator=config.robot_task_allocator,
+        regret_k=config.regret_k,
+    )
+    config_dict.update(scheduler)
     feature_flags = config_dict.get("feature_flags") or default_rika_rts_rl_feature_flags()
     base_config_for_hash = {k: v for k, v in config_dict.items() if k not in ("scenario_id", "experiment_id")}
     scenario_id = make_scenario_id({"config": base_config_for_hash, "feature_flags": feature_flags})
@@ -80,6 +86,7 @@ def run_on_policy_training_controller(
         "branch": branch,
         "commit": commit,
         "run_root": str(run_root),
+        **scheduler,
         "batches": [],
     }
     atomic_write_json(run_root / "controller_summary.json", initial_summary)
@@ -168,6 +175,7 @@ def run_on_policy_training_controller(
                     artifact_label=config.artifact_label,
                     batch_id=batch_id,
                     worker_id=worker_index + 1,
+                    **scheduler,
                 )
                 worker_root.mkdir(parents=True, exist_ok=True)
                 atomic_write_json(worker_root / "run_spec.json", spec.to_json_dict())
@@ -191,6 +199,7 @@ def run_on_policy_training_controller(
                     "ppo_update": None,
                     "latest_updated": False,
                     "zone_ids": list(active_zone_ids or ()),
+                    **scheduler,
                 }
                 atomic_write_json(batch_dir / "batch_summary.json", summary)
                 append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_dry_run", **summary})
@@ -376,6 +385,7 @@ def run_on_policy_training_controller(
                     "dataset_summary": dataset.summary,
                     "latest_updated": False,
                     "zone_ids": list(active_zone_ids or ()),
+                    **scheduler,
                 }
                 atomic_write_json(batch_dir / "batch_summary.json", summary)
                 append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_skipped", **summary})
@@ -410,6 +420,7 @@ def run_on_policy_training_controller(
                     "repo_branch": branch,
                     "repo_commit": commit,
                     "python_executable": sys.executable,
+                    **scheduler,
                 },
                 checkpoint_id_before=active_checkpoint_id,
             )
@@ -434,6 +445,7 @@ def run_on_policy_training_controller(
                 "checkpoint_dir": str(checkpoint_dir),
                 "latest_updated": True,
                 "zone_ids": list(active_zone_ids or ()),
+                **scheduler,
             }
             atomic_write_json(batch_dir / "batch_summary.json", summary)
             append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_updated", **summary})
@@ -496,6 +508,7 @@ def run_on_policy_training_controller(
             "branch": branch,
             "commit": commit,
             "run_root": str(run_root),
+            **scheduler,
             "batches": batch_summaries,
         }
         atomic_write_json(run_root / "controller_summary.json", result)
@@ -512,6 +525,7 @@ def run_on_policy_training_controller(
             "branch": branch,
             "commit": commit,
             "run_root": str(run_root),
+            **scheduler,
             "batches": batch_summaries,
         }
         atomic_write_json(run_root / "controller_summary.json", failure_summary)

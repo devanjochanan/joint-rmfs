@@ -31,6 +31,12 @@ from .tools.job_task import upsert_job_task, update_job_task
 from .tools.pre_assign import initialize_pre_assign_table, clear_pre_assign_table, insert_pre_assign
 # from .live_advanced_table import start_gui
 # RTS decision seam (Phase 5B)
+from src.rmfs.decisions.task_allocation import (
+    DEFAULT_REGRET_K,
+    DEFAULT_ROBOT_TASK_ALLOCATOR,
+    TASK_ALLOCATOR_SCOPE,
+    select_active_job_queue_assignment,
+)
 from src.rmfs.decisions.rts import CurrentRTSPolicy
 from src.rmfs.rl.rts.outcome_tracker import NoopRTSRolloutRuntime
 from src.rmfs.rl.rts.runtime_install import install_rts_runtime
@@ -93,6 +99,10 @@ class Inventory(Universe):
         self.pps_demand = False    
 
         self.priority_order = False
+        self.robot_task_allocator = DEFAULT_ROBOT_TASK_ALLOCATOR
+        self.regret_k = DEFAULT_REGRET_K
+        self.task_allocator_scope = TASK_ALLOCATOR_SCOPE
+        self.committed_next_reservations_enabled = False
 
 
         if self.poa_second:
@@ -156,32 +166,43 @@ class Inventory(Universe):
         print(f"Current job queue length: {len(self.job_queue)}")
 
         if len(self.job_queue) > 0:
-            job = self.job_queue[0]
+            idle_robots = [
+                o for o in self.get_movable_objects()
+                if o.object_type == "robot" and (o.job is None or o.job.is_finished) and o.current_state == 'idle'
+            ]
+            allocation = select_active_job_queue_assignment(
+                jobs=list(self.job_queue),
+                robots=idle_robots,
+                cost_fn=lambda job, robot: calculateDistance(
+                    robot.pos_x,
+                    robot.pos_y,
+                    job.pod_coordinate.x,
+                    job.pod_coordinate.y,
+                ),
+                robot_task_allocator=self.robot_task_allocator,
+                regret_k=self.regret_k,
+                job_id_fn=lambda job: f"{getattr(job.pod, 'pod_id', job.pod)}:{job.station_id}",
+                robot_id_fn=lambda robot: getattr(robot, "_id", None),
+            )
 
-            if job is not None:
-                current_distance = float("inf")
-                nearest_robot: Optional[Robot] = None
-
-                for o in self.get_movable_objects():
-                    if o.object_type == "robot" and (o.job is None or o.job.is_finished) and o.current_state == 'idle':
-                        dist = calculateDistance(o.pos_x, o.pos_y, job.pod_coordinate.x, job.pod_coordinate.y)
-                        if dist < current_distance:
-                            nearest_robot = o
-                            current_distance = dist
-
-                if nearest_robot is not None:
-                    self.job_queue.remove(job)  # Remove the selected job from the queue
-                    print(f"Assigning job {job.pod}-{job.station_id} to robot {nearest_robot._id}")
-                    nearest_robot.assign_job_and_set_move_to_take_pod(job)
-                    for triplet in job.orders:
-                        upsert_job_task(
-                            pod_id=str(job.pod.pod_id),
-                            order_id=str(triplet[0]),
-                            sku=str(triplet[1]),
-                            qty=str(triplet[2]),
-                            status="otw",
-                            db_path=self.sqlite_db_path,
-                        )
+            if allocation is not None:
+                job = allocation.job
+                assigned_robot = allocation.robot
+                del self.job_queue[allocation.queue_index]
+                print(
+                    f"Assigning job {job.pod}-{job.station_id} to robot {assigned_robot._id} "
+                    f"using {allocation.allocator}"
+                )
+                assigned_robot.assign_job_and_set_move_to_take_pod(job)
+                for triplet in job.orders:
+                    upsert_job_task(
+                        pod_id=str(job.pod.pod_id),
+                        order_id=str(triplet[0]),
+                        sku=str(triplet[1]),
+                        qty=str(triplet[2]),
+                        status="otw",
+                        db_path=self.sqlite_db_path,
+                    )
             
 
         # Update object positions and collect metrics

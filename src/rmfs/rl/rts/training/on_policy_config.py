@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.rmfs.decisions.task_allocation import DEFAULT_REGRET_K, DEFAULT_ROBOT_TASK_ALLOCATOR, TASK_ALLOCATOR_SCOPE
+
 
 @dataclass(frozen=True)
 class RTSOnPolicyTrainingConfig:
@@ -31,6 +33,10 @@ class RTSOnPolicyTrainingConfig:
     branch: str | None = None
     commit: str | None = None
     python_executable: str | None = None
+    robot_task_allocator: str = DEFAULT_ROBOT_TASK_ALLOCATOR
+    regret_k: int | None = DEFAULT_REGRET_K
+    task_allocator_scope: str = TASK_ALLOCATOR_SCOPE
+    committed_next_reservations_enabled: bool = False
 
     def to_json_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -94,4 +100,14 @@ def validate_on_policy_training_config(
     if config.feature_flags is not None:
         from src.rmfs.experiments.feature_flags import validate_feature_flags
         validate_feature_flags(config.feature_flags)
-
+    if config.robot_task_allocator not in {"regret_k", "legacy_nearest"}:
+        raise ValueError("robot_task_allocator must be regret_k or legacy_nearest")
+    if config.robot_task_allocator == "regret_k":
+        if config.regret_k is None or int(config.regret_k) < 1:
+            raise ValueError("regret_k must be >= 1 when robot_task_allocator=regret_k")
+    if config.robot_task_allocator == "legacy_nearest" and config.regret_k is not None:
+        raise ValueError("regret_k must be None when robot_task_allocator=legacy_nearest")
+    if config.task_allocator_scope != TASK_ALLOCATOR_SCOPE:
+        raise ValueError(f"task_allocator_scope must be {TASK_ALLOCATOR_SCOPE}")
+    if bool(config.committed_next_reservations_enabled):
+        raise ValueError("committed_next_reservations_enabled must remain false in this recovery patch")

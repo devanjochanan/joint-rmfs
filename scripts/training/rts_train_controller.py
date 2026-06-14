@@ -29,6 +29,8 @@ def main(argv=None):
     parser.add_argument("--worker-device", choices=("cpu", "cuda", "auto"), default="cpu")
     parser.add_argument("--policy-action-mode", choices=("sample", "greedy"), default="sample")
     parser.add_argument("--zone-ids", default=None, help="Comma-separated list of explicit zone IDs.")
+    parser.add_argument("--robot-task-allocator", choices=("regret_k", "legacy_nearest"), default="regret_k")
+    parser.add_argument("--regret-k", type=int, default=2)
     progress = parser.add_mutually_exclusive_group()
     progress.add_argument("--progress", action="store_true", dest="progress")
     progress.add_argument("--no-progress", action="store_false", dest="progress")
@@ -66,6 +68,8 @@ def main(argv=None):
         progress=args.progress,
         tensorboard_enabled=args.tensorboard_enabled,
         zone_ids=zone_ids,
+        robot_task_allocator=args.robot_task_allocator,
+        regret_k=args.regret_k if args.robot_task_allocator == "regret_k" else None,
     )
     result = run_on_policy_training_controller(
         config=config,
@@ -80,4 +84,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

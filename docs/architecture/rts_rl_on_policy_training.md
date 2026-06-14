@@ -16,6 +16,10 @@ SQLite is used for the experiment ledger (at `data/output/rmfs_experiments.sqlit
 
 PPS-RL, charging learning, advanced order-generation/pod-SKU learning, full DoE, long training campaigns, and paper-ready performance evaluations remain deferred.
 
+Task-allocation scheduler metadata is preserved in training artifacts. The controller writes `robot_task_allocator`, `regret_k`, `task_allocator_scope`, and `committed_next_reservations_enabled` into `training_config.json`, `controller_summary.json`, batch summaries, worker specs, and worker run specs. Workers apply those fields to the warehouse after setup, and Phase 9 SQLite ingestion preserves them in `experiments.config_json`.
+
+The default task allocator is active job-queue `regret_k` with `regret_k=2`. The legacy nearest-first behavior remains selectable as `legacy_nearest`. This metadata documents the scheduler in use; it is not a claim of mature committed-next reservation behavior or performance improvement.
+
 ## Execution Safety & Device Rules (Phase 9 Cleanup)
 
 - **Execution Safety**: The default command line behavior of the training controller is a safe dry run. The `--execute` flag is strictly required to run real worker subprocesses or optimize checkpoint parameters.

@@ -34,6 +34,10 @@ class RunSpec:
     artifact_label: str | None = None
     batch_id: int | None = None
     worker_id: int | None = None
+    robot_task_allocator: str = "regret_k"
+    regret_k: int | None = 2
+    task_allocator_scope: str = "active_job_queue"
+    committed_next_reservations_enabled: bool = False
 
     @property
     def netlogo_steps_requested(self) -> int:

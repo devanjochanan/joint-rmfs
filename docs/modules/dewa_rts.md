@@ -13,7 +13,7 @@ This profile documents the ownership details, current code mappings, and impleme
 
 ## 2. Refactoring Phase Status
 
-* **Status**: Recovered RTS-RL training infrastructure is implemented locally for the completed recovery phases (Phases 1-15), with validation limited to dry runs and smoke tests.
+* **Status**: Recovered RTS-RL training infrastructure is implemented locally for the completed recovery phases (Phases 1-15), with an additional targeted active job-queue regret-k scheduler patch. Validation is limited to dry runs and smoke tests.
 * **Default behavior**:
   * `CurrentRTSPolicy` remains the simulator default.
   * RTS-RL rollout/evaluation remains disabled unless an integration explicitly selects `rts_rl_explicit` or `random_valid` via feature flags.
@@ -67,4 +67,5 @@ Refactoring RTS logic affects:
 * **Phase 11 & 12**: Mapped all 13 RTS state-feature families and implemented selected dynamic features grounded in current simulation objects (replenishment station context, SKU turnover rank/value, robot congestion, neighborhood counts, zone distances). Next retrieval context, committed next task, and cycle-time estimates remain deferred/defaulted.
 * **Phase 13**: Reward/Alpha Preservation Guard enforces that alpha reference updates are gated and only occur from completed, valid runs. No alpha is rederived.
 * **Phase 14**: Added `netlogo_steps_requested` alias/property to `RunSpec`.
-* **Phase 15**: Audited regret-k task allocation scheduling and classified it as deferred.
+* **Phase 15**: Audited regret-k task allocation scheduling and classified full mature scheduling as deferred.
+* **Targeted Regret-k Patch**: Added active job-queue `regret_k` task allocation with default `k=2`, plus a `legacy_nearest` fallback. This patch selects among currently visible queue jobs and idle robots only; committed-next reservations, future lookahead, and mature scheduling-pressure features remain deferred.
