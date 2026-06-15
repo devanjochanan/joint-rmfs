@@ -18,6 +18,7 @@ from .runtime_config import RTSRuntimeConfig
 from .state import build_state
 from .zone_features import infer_zone_id
 from .training.timebase import warehouse_time_to_netlogo_steps
+from .training.reward_normalizer import pending_cold_start_reward_json
 
 
 @dataclass
@@ -197,13 +198,13 @@ class RTSRolloutRuntime:
         self.writer.close()
 
     def _reward_json(self, branch: str, realized_cycle_time: float) -> dict[str, Any]:
-        reward = compute_reward(
-            build_reward_components_from_realized_cycle(
-                selected_action_branch=branch,
-                realized_cycle_time=max(1e-9, realized_cycle_time),
-            ),
-            self.reward_reference,
+        components = build_reward_components_from_realized_cycle(
+            selected_action_branch=branch,
+            realized_cycle_time=max(1e-9, realized_cycle_time),
         )
+        if self.reward_reference is None:
+            return pending_cold_start_reward_json(realized_cycle_time=components.cycle_time)
+        reward = compute_reward(components, self.reward_reference)
         return reward.to_json_dict()
 
     def _write_summary(self) -> None:

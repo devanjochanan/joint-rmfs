@@ -16,6 +16,8 @@ SQLite is used for the experiment ledger (at `data/output/rmfs_experiments.sqlit
 
 PPS-RL, charging learning, advanced order-generation/pod-SKU learning, full DoE, long training campaigns, and paper-ready performance evaluations remain deferred.
 
+The active RTS-RL v1 training path does not require a manual reference run or mandatory `cycle_reference.json`. `cycle_reference.json` remains optional legacy compatibility through `--cycle-reference`, but bootstrap checkpoints do not create it by default. Batch 1 can use cold-start realized-cycle-time reward normalization by deriving `reward_time_scale` from valid completed cycles in the collected batch. Batch 2+ uses `reward_time_scale` stored in latest checkpoint metadata, while each valid batch records the next normalizer metadata in its checkpoint. Alpha/reference update remains deferred, and no continuous reference update occurs during simulation.
+
 Task-allocation scheduler metadata is preserved in training artifacts. The controller writes `robot_task_allocator`, `regret_k`, `task_allocator_scope`, and `committed_next_reservations_enabled` into `training_config.json`, `controller_summary.json`, batch summaries, worker specs, and worker run specs. Workers apply those fields to the warehouse after setup, and Phase 9 SQLite ingestion preserves them in `experiments.config_json`.
 
 The default task allocator is active job-queue `regret_k` with `regret_k=2`. The legacy nearest-first behavior remains selectable as `legacy_nearest`. This metadata documents the scheduler in use; it is not a claim of mature committed-next reservation behavior or performance improvement.

@@ -62,6 +62,7 @@ def save_training_checkpoint(
     action_feature_names: tuple[str, ...],
     stock_feature_names: tuple[str, ...],
     cycle_reference_path: Path | None = None,
+    reward_normalizer_metadata: Mapping[str, Any] | None = None,
     lineage_metadata: Mapping[str, Any] | None = None,
     checkpoint_id_before: str | None = None,
 ) -> Path:
@@ -87,6 +88,7 @@ def save_training_checkpoint(
             "ppo_update_result": ppo_update_result,
             "feature_schema": feature_schema,
             "cycle_reference_path": str(copied_reference) if copied_reference else None,
+            "reward_normalizer": reward_normalizer_metadata,
             "lineage": lineage_metadata,
         }
     )
@@ -108,6 +110,7 @@ def save_training_checkpoint(
             "trainable_step_count": int(dataset_summary.get("trainable_step_count", 0)),
             "avg_reward": float(dataset_summary.get("avg_reward", 0.0)),
             "cycle_reference_path": str(copied_reference) if copied_reference else None,
+            "reward_normalizer": dict(reward_normalizer_metadata or {}),
             "feature_schema_path": str(checkpoint_dir / "feature_schema.json"),
             "latest_updated": True,
         },
@@ -131,4 +134,3 @@ def load_training_checkpoint(checkpoint_dir: Path, *, model, optimizer=None, dev
 
 def write_batch_summary(path: Path, payload: Mapping[str, Any]) -> None:
     write_json(path, payload)
-

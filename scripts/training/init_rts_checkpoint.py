@@ -15,9 +15,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.rmfs.rl.rts.model import RTSMaskedActorCritic
 from src.rmfs.rl.rts.features import build_action_feature_names, build_stock_feature_names
-from src.rmfs.rl.rts.cycle_reference import write_cycle_reference
-from src.rmfs.rl.rts.training.references import create_synthetic_cycle_reference
 from src.rmfs.rl.rts.training.checkpoint import atomic_torch_save, write_feature_schema
+from src.rmfs.rl.rts.training.reward_normalizer import default_reward_normalizer_metadata
 
 
 def main(argv=None):
@@ -28,6 +27,7 @@ def main(argv=None):
     parser.add_argument("--hidden-sizes", default="64,64", help="Hidden sizes of the MLP row encoder.")
     parser.add_argument("--stock-hidden-sizes", default="32,32", help="Stock encoder hidden sizes.")
     parser.add_argument("--stock-embedding-dim", type=int, default=16, help="Stock embedding dimension.")
+    parser.add_argument("--write-legacy-cycle-reference", action="store_true", help="Write optional synthetic cycle_reference.json for legacy compatibility.")
     args = parser.parse_args(argv)
 
     checkpoint_dir = Path(args.checkpoint_dir)
@@ -62,8 +62,12 @@ def main(argv=None):
         stock_feature_names=stock_feature_names,
     )
 
-    cycle_ref = create_synthetic_cycle_reference()
-    write_cycle_reference(checkpoint_dir / "cycle_reference.json", cycle_ref)
+    if args.write_legacy_cycle_reference:
+        from src.rmfs.rl.rts.cycle_reference import write_cycle_reference
+        from src.rmfs.rl.rts.training.references import create_synthetic_cycle_reference
+
+        cycle_ref = create_synthetic_cycle_reference()
+        write_cycle_reference(checkpoint_dir / "cycle_reference.json", cycle_ref)
 
     # Save zone_ids as a json file
     with (checkpoint_dir / "zone_ids").open("w") as f:
@@ -85,6 +89,7 @@ def main(argv=None):
             "zone_ids": list(zone_ids),
         },
         "feature_schema": feature_schema,
+        "reward_normalizer": default_reward_normalizer_metadata(),
     }
     with (checkpoint_dir / "metadata.json").open("w") as f:
         json.dump(metadata, f, indent=2)

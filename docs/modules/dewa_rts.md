@@ -47,7 +47,7 @@ Refactoring RTS logic affects:
 ### Phase 7 - Rollout/Evaluation Integration
 * Added a process-local RTS runtime registry, worker-local JSONL rollout writer, outcome tracker, storage resolver, random-valid evaluation policy, rollout summary, and local-executor RTS config propagation.
 * `current_probe` logs decisions and outcomes while preserving `CurrentRTSPolicy` selection behavior. `random_valid` is explicit opt-in and samples only valid Phase 6 action-mask entries before resolving the selected zone to free storage.
-* Reward is computed only with a valid cycle reference. Missing references produce `reward_computed=false`; no reward is fabricated.
+* RTS-RL reward logging can operate without a mandatory cycle reference. Raw no-reference outcomes retain realized cycle time, and the controller/dataset path can normalize them using cold-start realized-cycle-time reward metadata.
 
 ### Phase 8 - PPO and Checkpoint Validation
 * Provided synthetic PPO math/checkpoint validation under `src/rmfs/rl/rts/training/`. It provides dataset loading, feature reconstruction, PPO update math validation, checkpoint layout helpers, latest/history tracking, and synthetic cycle-reference helpers.
@@ -57,6 +57,7 @@ Refactoring RTS logic affects:
 * Added a training-facing timebase, explicit policy checkpoint loader, `rts_rl_explicit` actor wrapper, trainable rollout metadata, active-checkpoint dataset filtering, optional TQDM/TensorBoard wrappers, and a controller dry-run spine.
 * PPO-trainable rows must be `actor_kind=rts_rl_explicit` and match the active `policy_checkpoint_id`. Rows from `current`, `current_probe`, `random_valid`, `heuristic`, and `synthetic` policies are rejected for PPO training.
 * Workers collect rollouts only. The controller owns model state, optimizer state, PPO updates, checkpoints, `latest.json`, and training logs. Training-facing duration uses `netlogo_steps_*` names, with warehouse time converted using runtime `tick_to_second`.
+* Active v1 training no longer requires a manual reference run or mandatory `cycle_reference.json`. Batch 1 derives `reward_time_scale` from valid completed cycles, Batch 2+ reads it from latest checkpoint metadata, and optional `cycle_reference.json` remains legacy compatibility only. Alpha/reference update remains deferred.
 
 ### Phase 10 - SQLite Experiment Infrastructure
 * Added a SQLite-backed experiment ledger at `data/output/rmfs_experiments.sqlite`. DuckDB is not used. The experiment ledger is separate from simulator `warehouse.db`.

@@ -11,7 +11,7 @@ Phase 9 target: complete the RTS-RL on-policy training spine.
 5. **Worker-Level Isolation**: Workers are responsible for collecting rollouts only; workers do not perform training or backpropagation updates.
 6. **Unified Resume Pointer**: `latest.json` is the only resume pointer for training runs.
 7. **Numbered Batch Checkpoints**: Every batch checkpoint must keep its batch number in its directory structure.
-8. **Cycle Reference Copying**: `cycle_reference.json` must be copied directly into each batch checkpoint.
+8. **Reward Normalizer Metadata**: Active v1 training stores cold-start reward normalizer metadata in checkpoints; `cycle_reference.json` is optional legacy compatibility only.
 9. **Explicit & Optional Logging**: TensorBoard and TQDM logging must be explicit and optional.
 10. **Simulator Default Preservation**: No simulator default behavior is changed.
 11. **Opt-In Checkpoint Loading**: No checkpoint auto-loading is performed outside explicit training/evaluation mode.
@@ -44,4 +44,3 @@ The Phase 9 cleanup patch implements the following additional requirements:
    - Hardcoded scaling constants (e.g. 0.15, 0.25) are forbidden.
 5. **RTS-RL Explicit Behavior**:
    - Under `rts_rl_explicit`, no fallback to nearest or random heuristic is allowed.
-

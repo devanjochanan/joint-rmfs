@@ -272,3 +272,31 @@ For all future refactoring stages, developers must append entries in the followi
   * `/home/dewan/torch-gpu/bin/python scripts/validation/regret_k_allocator_smoke.py`
   * `/home/dewan/torch-gpu/bin/python scripts/validation/regret_k_training_config_smoke.py`
 * **Residual Risks**: Full mature scheduler equivalence, committed-next reservations, future pressure feedback, and performance effects were not validated. No long simulation or training campaign was run.
+
+### 2026-06-15 Reward Cold-Start Cleanup - +0.0.1
+* **Files Changed/Created/Deleted**:
+  * `[NEW] src/rmfs/rl/rts/training/reward_normalizer.py`
+  * `[NEW] scripts/validation/rts_reward_cold_start_smoke.py`
+  * `[MODIFY] scripts/training/init_rts_checkpoint.py`
+  * `[MODIFY] scripts/training/rts_train_controller.py`
+  * `[MODIFY] src/rmfs/rl/rts/reward.py`
+  * `[MODIFY] src/rmfs/rl/rts/outcome_tracker.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/on_policy_config.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/controller.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/checkpoint.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/on_policy_dataset.py`
+  * `[MODIFY] src/rmfs/experiments/ledger/ingest_phase9.py`
+  * `[MODIFY] scripts/validation/init_rts_checkpoint_smoke.py`
+  * `[MODIFY] scripts/validation/rts_training_controller_dry_run.py`
+  * `[MODIFY] docs/architecture/rts_rl_on_policy_training.md`
+  * `[MODIFY] docs/architecture/rts_rl_phase9_requirements.md`
+  * `[MODIFY] docs/architecture/rts_rl_training.md`
+  * `[MODIFY] docs/modules/dewa_rts.md`
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/changelog/README.md`
+* **Behavior Changes**: Yes. Active RTS-RL v1 training no longer requires a manual reference run or mandatory `cycle_reference.json`; cold-start reward normalization derives `reward_time_scale` from valid realized cycle times and stores normalizer metadata in checkpoint/training artifacts.
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python` recursive `py_compile` sweep over `src/rmfs/rl/rts`, `src/rmfs/experiments`, `scripts/training`, and `scripts/validation`.
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_reward_cold_start_smoke.py`
+  * Safe existing validation smokes listed in the task.
+* **Residual Risks**: No real simulation, `--execute` training, alpha/reference audit, paper reward validation, or performance validation was run.

@@ -7,6 +7,7 @@ import math
 from typing import Any
 
 from .action_space import REPLENISH_STORE, STORE
+from .training.reward_normalizer import cold_start_reward_json
 
 REWARD_CONTRACT_VERSION = "rts_rl_reward.v1"
 
@@ -149,6 +150,21 @@ def compute_reward(
         is_estimate=components.cycle_time_source == "estimated",
         components=components,
         reference=reference,
+    )
+
+
+def compute_cold_start_reward(
+    components: RTSRewardComponents,
+    *,
+    reward_time_scale: float,
+    reward_time_scale_source: str | None = None,
+    reward_valid_cycle_count: int = 0,
+) -> dict[str, Any]:
+    return cold_start_reward_json(
+        realized_cycle_time=components.cycle_time,
+        reward_time_scale=reward_time_scale,
+        reward_time_scale_source=reward_time_scale_source,
+        reward_valid_cycle_count=reward_valid_cycle_count,
     )
 
 

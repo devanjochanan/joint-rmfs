@@ -12,6 +12,11 @@ from src.rmfs.rl.rts.features import build_feature_bundle
 from src.rmfs.rl.rts.rollout_schema import DECISION_EVENT, OUTCOME_EVENT
 from src.rmfs.rl.rts.training.metrics import finite_float, mean_or_none
 from src.rmfs.rl.rts.training.ppo import RTSPPORolloutBatch, compute_gae
+from src.rmfs.rl.rts.training.reward_normalizer import (
+    apply_cold_start_rewards,
+    choose_reward_metadata_for_batch,
+    derive_reward_normalizer_from_events,
+)
 from src.rmfs.rl.rts.training.rollout_dataset import RTSPaddedTrainingBatch, build_feature_tensors_from_steps
 
 
@@ -44,7 +49,14 @@ def build_on_policy_training_steps(
     events: Sequence[Mapping[str, Any]],
     *,
     required_policy_checkpoint_id: str,
+    reward_normalizer_metadata: Mapping[str, Any] | None = None,
 ) -> RTSOnPolicyRolloutDataset:
+    derived_reward_metadata = derive_reward_normalizer_from_events(events)
+    reward_metadata = choose_reward_metadata_for_batch(
+        previous_metadata=reward_normalizer_metadata,
+        derived_metadata=derived_reward_metadata,
+    )
+    events = apply_cold_start_rewards(events, reward_metadata=reward_metadata)
     decisions: dict[str, list[dict]] = {}
     outcomes: dict[str, list[dict]] = {}
     for row in events:
@@ -121,6 +133,7 @@ def build_on_policy_training_steps(
         "reward_std": float(np.std(rewards)) if rewards else 0.0,
         "reward_min": float(np.min(rewards)) if rewards else 0.0,
         "reward_max": float(np.max(rewards)) if rewards else 0.0,
+        **reward_metadata,
         **rejected,
     }
     return RTSOnPolicyRolloutDataset(steps=tuple(processed_steps), summary=summary)
@@ -234,4 +247,3 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
-

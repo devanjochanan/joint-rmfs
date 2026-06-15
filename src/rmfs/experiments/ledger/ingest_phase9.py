@@ -99,6 +99,7 @@ def ingest_phase9_run(run_root: Path, db_path: Path) -> dict[str, Any]:
         checkpoint_dir = batch_dir / "checkpoint"
         if checkpoint_dir.exists():
             checkpoint_id = batch_dir.name
+            checkpoint_metadata = read_json(checkpoint_dir / "metadata.json", {}) or {}
             upsert_checkpoint(
                 db_path,
                 {
@@ -108,11 +109,11 @@ def ingest_phase9_run(run_root: Path, db_path: Path) -> dict[str, Any]:
                     "checkpoint_dir": str(checkpoint_dir),
                     "metadata_path": str(checkpoint_dir / "metadata.json"),
                     "feature_schema_path": str(checkpoint_dir / "feature_schema.json"),
-                    "cycle_reference_path": str(checkpoint_dir / "cycle_reference.json"),
+                    "cycle_reference_path": checkpoint_metadata.get("cycle_reference_path"),
                     "is_latest": 1 if latest_dir and Path(latest_dir) == checkpoint_dir else 0,
                     "is_best": 0,
                     "created_at": None,
-                    "checkpoint_json": json_text(read_json(checkpoint_dir / "metadata.json", {}) or {}),
+                    "checkpoint_json": json_text(checkpoint_metadata),
                 },
             )
         for worker_dir in sorted((batch_dir / "workers").glob("run_*")):

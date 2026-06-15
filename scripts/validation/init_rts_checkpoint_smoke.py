@@ -42,17 +42,22 @@ def main():
             "optimizer.pt",
             "metadata.json",
             "feature_schema.json",
-            "cycle_reference.json",
             "zone_ids",
             "policy_checkpoint_id",
         ):
             path = tmp_dir / filename
             assert path.exists(), f"Missing expected checkpoint file: {filename}"
+        assert not (tmp_dir / "cycle_reference.json").exists()
 
         # Load policy
         loaded = load_policy_from_checkpoint(tmp_dir, device="cpu")
         assert loaded.policy_checkpoint_id == "bootstrap_smoke"
         assert loaded.model.training is False
+        reward_metadata = loaded.metadata.get("reward_normalizer") or {}
+        assert reward_metadata.get("reward_mode") == "cold_start_realized_cycle_time"
+        assert reward_metadata.get("reward_reference_required") is False
+        assert reward_metadata.get("cycle_reference_enabled") is False
+        assert reward_metadata.get("alpha_enabled") is False
 
         # Run dummy forward pass
         action_dim = loaded.feature_schema["action_feature_dim"]
@@ -66,6 +71,26 @@ def main():
         logits, values = loaded.model(X_actions, M_actions, X_stock, M_stock)
         assert logits.shape == (1, 4)
         assert values.shape == (1,)
+
+        legacy_dir = tmp_dir.parent / "phase_bootstrap_legacy_smoke"
+        if legacy_dir.exists():
+            shutil.rmtree(legacy_dir)
+        subprocess.check_call(
+            [
+                sys.executable,
+                "scripts/training/init_rts_checkpoint.py",
+                "--checkpoint-dir",
+                str(legacy_dir),
+                "--zone-ids",
+                "A,B",
+                "--policy-checkpoint-id",
+                "bootstrap_legacy_smoke",
+                "--write-legacy-cycle-reference",
+            ],
+            cwd=REPO_ROOT,
+        )
+        assert (legacy_dir / "cycle_reference.json").exists()
+        shutil.rmtree(legacy_dir)
 
         print("init_rts_checkpoint smoke test passed successfully")
     finally:

@@ -17,7 +17,7 @@ class RTSOnPolicyTrainingConfig:
     workers: int
     netlogo_steps_per_run: int
     seed: int
-    cycle_reference_path: Path
+    cycle_reference_path: Path | None = None
     device: str = "auto"
     worker_device: str = "cpu"
     policy_action_mode: str = "sample"
@@ -41,7 +41,7 @@ class RTSOnPolicyTrainingConfig:
     def to_json_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["output_root"] = str(self.output_root)
-        data["cycle_reference_path"] = str(self.cycle_reference_path)
+        data["cycle_reference_path"] = str(self.cycle_reference_path) if self.cycle_reference_path is not None else None
         data["zone_ids"] = list(self.zone_ids)
         data["seed_base"] = self.seed
         return data
@@ -51,7 +51,10 @@ class RTSOnPolicyTrainingConfig:
         import inspect
         payload = dict(data)
         payload["output_root"] = Path(payload["output_root"])
-        payload["cycle_reference_path"] = Path(payload["cycle_reference_path"])
+        if payload.get("cycle_reference_path"):
+            payload["cycle_reference_path"] = Path(payload["cycle_reference_path"])
+        else:
+            payload["cycle_reference_path"] = None
         if "zone_ids" in payload:
             payload["zone_ids"] = tuple(payload["zone_ids"])
         
@@ -83,7 +86,7 @@ def validate_on_policy_training_config(
         raise ValueError("workers must be >= 1")
     if int(config.netlogo_steps_per_run) < 1:
         raise ValueError("netlogo_steps_per_run must be >= 1")
-    if require_cycle_reference_exists and not Path(config.cycle_reference_path).exists():
+    if require_cycle_reference_exists and config.cycle_reference_path is not None and not Path(config.cycle_reference_path).exists():
         raise ValueError("cycle_reference_path must exist")
     if config.policy_action_mode not in {"sample", "greedy"}:
         raise ValueError("policy_action_mode must be sample or greedy")

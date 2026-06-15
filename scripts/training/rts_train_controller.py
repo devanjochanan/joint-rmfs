@@ -22,7 +22,7 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, required=True)
     parser.add_argument("--netlogo-steps-per-run", type=int, required=True)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--cycle-reference", required=True)
+    parser.add_argument("--cycle-reference", default=None, help="Optional legacy cycle_reference.json path.")
     parser.add_argument("--initial-checkpoint-dir", default=None)
     parser.add_argument("--resume-latest", action="store_true", default=False)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -61,7 +61,7 @@ def main(argv=None):
         workers=args.workers,
         netlogo_steps_per_run=args.netlogo_steps_per_run,
         seed=args.seed,
-        cycle_reference_path=Path(args.cycle_reference).resolve(),
+        cycle_reference_path=Path(args.cycle_reference).resolve() if args.cycle_reference else None,
         device=args.device,
         worker_device=args.worker_device,
         policy_action_mode=args.policy_action_mode,

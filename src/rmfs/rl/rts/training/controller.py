@@ -26,6 +26,13 @@ from .on_policy_config import RTSOnPolicyTrainingConfig, validate_on_policy_trai
 from .progress import progress_bar, resolve_progress_enabled, RTSTrainingProgressBar
 from .seeding import derive_worker_seed
 from .tensorboard import RTSTensorBoardLogger
+from .reward_normalizer import (
+    apply_cold_start_rewards,
+    choose_reward_metadata_for_batch,
+    default_reward_normalizer_metadata,
+    derive_reward_normalizer_from_events,
+    load_reward_normalizer_metadata,
+)
 from src.rmfs.experiments.identity import make_experiment_run_id, make_scenario_id
 from src.rmfs.experiments.feature_flags import default_rika_rts_rl_feature_flags
 from src.rmfs.decisions.task_allocation import scheduler_metadata
@@ -58,6 +65,10 @@ def run_on_policy_training_controller(
         regret_k=config.regret_k,
     )
     config_dict.update(scheduler)
+    reward_metadata = default_reward_normalizer_metadata()
+    config_dict.update(reward_metadata)
+    if config.cycle_reference_path is not None:
+        config_dict["cycle_reference_enabled"] = True
     feature_flags = config_dict.get("feature_flags") or default_rika_rts_rl_feature_flags()
     base_config_for_hash = {k: v for k, v in config_dict.items() if k not in ("scenario_id", "experiment_id")}
     scenario_id = make_scenario_id({"config": base_config_for_hash, "feature_flags": feature_flags})
@@ -87,6 +98,7 @@ def run_on_policy_training_controller(
         "commit": commit,
         "run_root": str(run_root),
         **scheduler,
+        **reward_metadata,
         "batches": [],
     }
     atomic_write_json(run_root / "controller_summary.json", initial_summary)
@@ -109,10 +121,15 @@ def run_on_policy_training_controller(
             workers_dir = batch_dir / "workers"
             rollout_input.mkdir(parents=True, exist_ok=True)
             workers_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(config.cycle_reference_path, rollout_input / "cycle_reference.json")
+            reward_reference_path = None
+            if config.cycle_reference_path is not None:
+                reward_reference_path = rollout_input / "cycle_reference.json"
+                shutil.copyfile(config.cycle_reference_path, reward_reference_path)
+            previous_reward_metadata = load_reward_normalizer_metadata(active_checkpoint_dir)
             active_ref = {
                 "policy_checkpoint_dir": str(active_checkpoint_dir) if active_checkpoint_dir else None,
                 "policy_checkpoint_id": active_checkpoint_id,
+                "reward_normalizer": previous_reward_metadata,
             }
             atomic_write_json(rollout_input / "active_checkpoint_ref.json", active_ref)
             worker_specs = []
@@ -162,7 +179,7 @@ def run_on_policy_training_controller(
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     rts_policy_mode="rts_rl_explicit",
                     rts_rollout_enabled=True,
-                    rts_reward_reference_path=str(rollout_input / "cycle_reference.json"),
+                    rts_reward_reference_path=str(reward_reference_path) if reward_reference_path is not None else None,
                     rts_seed_base=config.seed,
                     rts_random_seed=derive_worker_seed(config.seed, batch_id, worker_index),
                     rts_zone_ids=list(active_zone_ids or ()),
@@ -200,6 +217,7 @@ def run_on_policy_training_controller(
                     "latest_updated": False,
                     "zone_ids": list(active_zone_ids or ()),
                     **scheduler,
+                    **previous_reward_metadata,
                 }
                 atomic_write_json(batch_dir / "batch_summary.json", summary)
                 append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_dry_run", **summary})
@@ -372,7 +390,17 @@ def run_on_policy_training_controller(
                 cuda_memory_allocated = float(torch.cuda.memory_allocated())
 
             events = _load_rollout_shards(workers_dir)
-            dataset = build_on_policy_training_steps(events, required_policy_checkpoint_id=active_checkpoint_id)
+            derived_reward_metadata = derive_reward_normalizer_from_events(events, batch_id=batch_id)
+            batch_reward_metadata = choose_reward_metadata_for_batch(
+                previous_metadata=previous_reward_metadata,
+                derived_metadata=derived_reward_metadata,
+            )
+            normalized_events = apply_cold_start_rewards(events, reward_metadata=batch_reward_metadata)
+            dataset = build_on_policy_training_steps(
+                normalized_events,
+                required_policy_checkpoint_id=active_checkpoint_id,
+                reward_normalizer_metadata=batch_reward_metadata,
+            )
             if dataset.summary["trainable_step_count"] < config.min_trainable_steps:
                 summary = {
                     "experiment_id": experiment_id,
@@ -385,7 +413,9 @@ def run_on_policy_training_controller(
                     "dataset_summary": dataset.summary,
                     "latest_updated": False,
                     "zone_ids": list(active_zone_ids or ()),
+                    "derived_reward_normalizer": derived_reward_metadata,
                     **scheduler,
+                    **batch_reward_metadata,
                 }
                 atomic_write_json(batch_dir / "batch_summary.json", summary)
                 append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_skipped", **summary})
@@ -411,7 +441,8 @@ def run_on_policy_training_controller(
                 ppo_update_result=update_result,
                 action_feature_names=ppo_batch.action_feature_names,
                 stock_feature_names=ppo_batch.stock_feature_names,
-                cycle_reference_path=rollout_input / "cycle_reference.json",
+                cycle_reference_path=reward_reference_path,
+                reward_normalizer_metadata=derived_reward_metadata,
                 lineage_metadata={
                     "experiment_id": experiment_id,
                     "scenario_id": scenario_id,
@@ -421,6 +452,7 @@ def run_on_policy_training_controller(
                     "repo_commit": commit,
                     "python_executable": sys.executable,
                     **scheduler,
+                    **batch_reward_metadata,
                 },
                 checkpoint_id_before=active_checkpoint_id,
             )
@@ -445,7 +477,9 @@ def run_on_policy_training_controller(
                 "checkpoint_dir": str(checkpoint_dir),
                 "latest_updated": True,
                 "zone_ids": list(active_zone_ids or ()),
+                "derived_reward_normalizer": derived_reward_metadata,
                 **scheduler,
+                **batch_reward_metadata,
             }
             atomic_write_json(batch_dir / "batch_summary.json", summary)
             append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_updated", **summary})
@@ -509,6 +543,7 @@ def run_on_policy_training_controller(
             "commit": commit,
             "run_root": str(run_root),
             **scheduler,
+            **reward_metadata,
             "batches": batch_summaries,
         }
         atomic_write_json(run_root / "controller_summary.json", result)
@@ -526,6 +561,7 @@ def run_on_policy_training_controller(
             "commit": commit,
             "run_root": str(run_root),
             **scheduler,
+            **reward_metadata,
             "batches": batch_summaries,
         }
         atomic_write_json(run_root / "controller_summary.json", failure_summary)

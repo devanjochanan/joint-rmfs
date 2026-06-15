@@ -29,11 +29,11 @@ Synthetic smoke checkpoints use:
       optimizer.pt
       metadata.json
       feature_schema.json
-      cycle_reference.json
+      reward_normalizer metadata in metadata.json
+      cycle_reference.json (optional legacy compatibility)
     batch_summary.json
 ```
 
 `latest.json` points to the latest checkpoint directory. `checkpoint_history.jsonl` records batch history. Checkpoints live under ignored `data/runtime/**` paths.
 
 No simulator behavior is changed. No checkpoint auto-loading is added to the default simulator path, and `CurrentRTSPolicy` remains the default RTS behavior.
-
