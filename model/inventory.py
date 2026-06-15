@@ -68,7 +68,7 @@ class Inventory(Universe):
         self.sqlite_db_path = sqlite_db_path
         # self.ignored_types = ["pod", "station", "way-direction"]
         self.ignored_types = ["station", "way-direction"]
-        self.tick_to_second = 0.25
+        self.tick_to_second = 0.15
         self.job_queue: list[RobotJob] = []
         self.landscape = Landscape(self.dimension)
         self.pod_manager = PodManager()

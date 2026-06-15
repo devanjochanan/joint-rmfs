@@ -16,9 +16,9 @@ This document compiles the known simulation time steps, tick parameters, and sch
 Based on code inspection of `netlogo.py` and `model/inventory.py`, the following timing parameters are observed in the codebase:
 
 1. **Simulation Time Step (`tick_to_second`)**:
-   * Initialized as `0.25` in `model/inventory.py` (`self.tick_to_second = 0.25`).
-   * Current code appears to override `tick_to_second` to `0.15` in `netlogo.py` during `setup()` (`universe.tick_to_second = 0.15`).
-   * Under this override, each simulation tick step is interpreted as representing **0.15 seconds** of simulated time.
+   * Initialized as `0.15` in `model/inventory.py` (`self.tick_to_second = 0.15`).
+   * Current setup code also assigns `tick_to_second` to `0.15` during setup.
+   * Each simulation tick step is interpreted as representing **0.15 seconds** of simulated time.
 2. **Simulation Horizon**:
    * Evaluated inside `netlogo.py` (`tick()` method).
    * The stop condition uses `universe._tick > 28800` where the loop stops (returns `IndexError`).
