@@ -183,6 +183,8 @@ class Robot(Object):
             )
         elif self.current_state == "delivering_pod":
             self.current_state = "station_processing"
+            station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+            self.warehouse.rts_rollout_runtime.on_station_arrival(robot=self, station=station)
             upsert_pod_travel(
                 self.job.my_id,
                 self.robotID(self.robotName()),
@@ -701,8 +703,8 @@ class Robot(Object):
                 self.job.record_delivery(self.universe._tick)
                 if storage:
                     storage.removeStoragePod()
-                    storage.is_empty = True
                     del storage_manager.pods_to_storage[pod]
+                    storage_manager.setStorageAvailable(NetLogoCoordinate(storage.pos_x, storage.pos_y))
 
                 self.set_move_to_station_gate()
                 upsert_pod_travel(
@@ -936,9 +938,7 @@ class Robot(Object):
             )
 
             self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
-            nearest_storage.setStoragePod(self.job.pod)
-            self.warehouse.storage_manager.pods_to_storage[self.job.pod] = nearest_storage
-            nearest_storage.is_empty = False
+            self.warehouse.storage_manager.addPodToStorage(self.job.pod, nearest_storage)
 
         elif decision.mode in ("nearest_fallback", "none"):
             # --- Fallback: no empty storage, or neither flag set ---

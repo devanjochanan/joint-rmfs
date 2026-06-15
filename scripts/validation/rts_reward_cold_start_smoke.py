@@ -82,9 +82,9 @@ def main():
             outcome("cold_start_2"),
         ]
         events[1]["reward_json"] = {"reward_computed": False, "reward_value": None}
-        events[1]["realized_cycle_time"] = 10.0
+        events[1]["paper_cycle_duration"] = 10.0
         events[3]["reward_json"] = None
-        events[3]["realized_cycle_time"] = 20.0
+        events[3]["paper_cycle_duration"] = 20.0
         metadata = derive_reward_normalizer_from_events(events, batch_id=1)
         assert metadata["reward_time_scale"] == 15.0
         assert metadata["reward_valid_cycle_count"] == 2

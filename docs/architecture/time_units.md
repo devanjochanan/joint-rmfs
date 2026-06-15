@@ -49,3 +49,16 @@ Future reviewers and developers should verify the following files to ensure timi
 * **Order Process Intervals**: Verify `model/inventory.py` lines 123, 216, 217, and 349–355 to verify order arrivals check only on integer second boundaries.
 * **Kinematics & Acceleration**: Check `model/robot.py` lines 113–128 (`calculateEnergy`) and lines 791–798 (`update_motion_parameters` using deceleration distance math) to ensure physical velocity-to-time ratios are correct.
 * **Wait Time Metric Aggregations**: Verify how `total_idle` is scaled in `model/inventory.py` line 170 (`total_idle += (o.total_idle * 0.15)`) to match actual idle time tracking.
+
+---
+
+## 4. RTS-RL Paper-Cycle Time Semantics
+
+The RTS-RL semantic recovery patch does not change simulation time semantics. It records additional RTS rollout timestamps using the same warehouse time source (`Inventory._tick`) and stores `tick_to_second` for derived NetLogo-step metadata.
+
+* **Paper-cycle start**: RTS decision tick (`paper_cycle_start_tick` / `return_start_tick`).
+* **Return arrival**: storage-return completion tick (`paper_cycle_storage_arrival_tick`), logged as a pending diagnostic outcome with `return_duration`.
+* **Paper-cycle completion**: same robot's next picking-station arrival tick (`paper_cycle_next_station_arrival_tick`).
+* **Training target**: `paper_cycle_duration = paper_cycle_next_station_arrival_tick - paper_cycle_start_tick`.
+
+Return duration is auxiliary telemetry and is not used as the PPO reward horizon. `netlogo_step` and `netlogo_steps_elapsed_since_decision` are derived from warehouse time and `tick_to_second`; no fixed conversion constant is introduced in RTS-RL logging or training.

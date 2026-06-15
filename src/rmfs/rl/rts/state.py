@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from .stock_features import stock_rows_from_pod
-from .zone_features import build_zone_rows
+from .zone_features import build_zone_registry_metadata, build_zone_rows
 
 STATE_CONTRACT_VERSION = "rts_rl_state.v1"
 FIDELITY_EXACT = "exact"
@@ -26,14 +26,17 @@ def build_default_feature_fidelity() -> dict[str, str]:
         "robot_context": FIDELITY_EXACT,
         "pod_context": FIDELITY_EXACT,
         "station_context": FIDELITY_EXACT,
-        "zone_occupancy": FIDELITY_APPROX,
+        "zone_registry": FIDELITY_EXACT,
+        "zone_geometry": FIDELITY_EXACT,
+        "zone_occupancy": FIDELITY_EXACT,
         "destination_robot_pressure": FIDELITY_APPROX,
         "present_robot_pressure": FIDELITY_APPROX,
-        "cycle_time_estimates": FIDELITY_DEFAULT,
+        "graph_distance": FIDELITY_APPROX,
+        "cycle_time_estimates": FIDELITY_APPROX,
         "next_retrieval_context": FIDELITY_DEFAULT,
         "replenishment_station_context": FIDELITY_APPROX,
         "stock_risk": FIDELITY_APPROX,
-        "action_validity": FIDELITY_APPROX,
+        "action_validity": FIDELITY_EXACT,
     }
 
 
@@ -56,6 +59,9 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         replenishment_signal_active=repl_signal_active,
         replenishment_station_available=repl_station_available,
     )
+    zone_metadata = build_zone_registry_metadata(context, zones)
+    rows = [float(row.get("zone_row_index", 0.0)) for row in zone_rows]
+    cols = [float(row.get("zone_col_index", 0.0)) for row in zone_rows]
     station_type = str(getattr(station, "station_type", ""))
     station_id = str(getattr(station, "station_id", ""))
     next_retrieval_zone_one_hot = {zone_id: 0 for zone_id in zones}
@@ -133,13 +139,37 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         "total_robot_count": float(sum(1 for obj in getattr(warehouse, "_objects", []) if getattr(obj, "object_type", "") == "robot")),
         "active_pod_total": float(len(getattr(getattr(warehouse, "pod_manager", None), "pods", []) or [])),
         "arrival_rate_order_cycle_time": 0.0,
-        "zone_row_min": 0.0,
-        "zone_row_max": float(max(1, len(zones) - 1)),
-        "zone_col_min": 0.0,
-        "zone_col_max": float(max(1, len(zones) - 1)),
+        "zone_row_min": min(rows) if rows else 0.0,
+        "zone_row_max": max(rows) if rows else 1.0,
+        "zone_col_min": min(cols) if cols else 0.0,
+        "zone_col_max": max(cols) if cols else 1.0,
+    }
+    feature_status = {
+        "next_retrieval_context": {
+            "available": False,
+            "reason": "current Rika host has no committed next retrieval zone at RTS decision time",
+        },
+        "estimated_queue_time": {
+            "available": False,
+            "reason": "mature committed-next queue estimator is not present in this host",
+        },
+        "arrival_rate_order_cycle_time": {
+            "available": False,
+            "reason": "order-cycle arrival-rate context is not exposed to RTS-RL in this host",
+        },
+        "distance_features": {
+            "available": True,
+            "semantics": zone_metadata.get("distance_semantics_version"),
+            "fallback_count": zone_metadata.get("distance_fallback_count", 0),
+        },
+        "zone_geometry": {
+            "available": True,
+            "zone_geometry_hash": zone_metadata.get("zone_geometry_hash"),
+        },
     }
     state_json = {
         "state_contract_version": STATE_CONTRACT_VERSION,
+        "zone_registry": zone_metadata,
         "robot_id": str(getattr(robot, "_id", getattr(robot, "id", ""))),
         "pod_id": str(getattr(pod, "pod_id", "")),
         "source_station_id": station_id,
@@ -156,6 +186,7 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         "stock_rows": stock_rows,
         "spatial_context": spatial_context,
         "feature_fidelity": build_default_feature_fidelity(),
+        "feature_status": feature_status,
         "warnings": warnings,
     }
     return RTSStateBundle(state_json=state_json, zone_ids=zones, warnings=tuple(warnings))

@@ -54,7 +54,8 @@ def main():
         assert loaded.policy_checkpoint_id == "bootstrap_smoke"
         assert loaded.model.training is False
         reward_metadata = loaded.metadata.get("reward_normalizer") or {}
-        assert reward_metadata.get("reward_mode") == "cold_start_realized_cycle_time"
+        assert reward_metadata.get("reward_mode") == "cold_start_paper_cycle_duration"
+        assert reward_metadata.get("reward_horizon") == "paper_cycle_duration"
         assert reward_metadata.get("reward_reference_required") is False
         assert reward_metadata.get("cycle_reference_enabled") is False
         assert reward_metadata.get("alpha_enabled") is False

@@ -98,6 +98,15 @@ def build_outcome_event(
     tick_to_second: Any = None,
     netlogo_steps_elapsed_since_decision: Any = None,
     warehouse_time_elapsed_since_decision: Any = None,
+    return_duration: Any = None,
+    paper_cycle_status: Any = None,
+    paper_cycle_complete: Any = None,
+    paper_cycle_start_tick: Any = None,
+    paper_cycle_storage_arrival_tick: Any = None,
+    paper_cycle_next_station_arrival_tick: Any = None,
+    paper_cycle_duration: Any = None,
+    paper_cycle_censor_reason: Any = None,
+    paper_cycle_completion_rule: Any = None,
 ) -> dict[str, Any]:
     return _json_safe(
         {
@@ -120,6 +129,15 @@ def build_outcome_event(
             "tick_to_second": _number_or_text(tick_to_second),
             "netlogo_steps_elapsed_since_decision": _number_or_text(netlogo_steps_elapsed_since_decision),
             "warehouse_time_elapsed_since_decision": _number_or_text(warehouse_time_elapsed_since_decision),
+            "return_duration": _number_or_text(return_duration),
+            "paper_cycle_status": _text(paper_cycle_status),
+            "paper_cycle_complete": _number_or_text(paper_cycle_complete),
+            "paper_cycle_start_tick": _number_or_text(paper_cycle_start_tick),
+            "paper_cycle_storage_arrival_tick": _number_or_text(paper_cycle_storage_arrival_tick),
+            "paper_cycle_next_station_arrival_tick": _number_or_text(paper_cycle_next_station_arrival_tick),
+            "paper_cycle_duration": _number_or_text(paper_cycle_duration),
+            "paper_cycle_censor_reason": _text(paper_cycle_censor_reason),
+            "paper_cycle_completion_rule": _text(paper_cycle_completion_rule),
         }
     )
 

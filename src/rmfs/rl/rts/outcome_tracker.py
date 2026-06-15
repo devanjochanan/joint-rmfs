@@ -11,7 +11,7 @@ from .cycle_reference import read_cycle_reference
 from .evaluation_policy import infer_zone_ids_from_context
 from .evaluation_summary import summarize_rollout_events, write_rollout_summary
 from .features import build_feature_bundle
-from .reward import RTSRewardReference, build_reward_components_from_realized_cycle, compute_reward
+from .reward import RTSRewardReference, build_reward_components_from_paper_cycle, compute_reward
 from .rollout_schema import build_decision_event, build_outcome_event, make_decision_event_id
 from .rollout_writer import RTSRolloutWriter
 from .runtime_config import RTSRuntimeConfig
@@ -19,6 +19,11 @@ from .state import build_state
 from .zone_features import infer_zone_id
 from .training.timebase import warehouse_time_to_netlogo_steps
 from .training.reward_normalizer import pending_cold_start_reward_json
+
+PAPER_CYCLE_STATUS_PENDING = "pending"
+PAPER_CYCLE_STATUS_COMPLETE = "complete"
+PAPER_CYCLE_STATUS_CENSORED_NEXT_TASK_REPLENISHMENT = "censored_next_task_replenishment"
+PAPER_CYCLE_COMPLETION_RULE_NEXT_ORDER_RETRIEVAL_ARRIVAL = "next_order_retrieval_arrival"
 
 
 @dataclass
@@ -31,20 +36,67 @@ class PendingRTSDecision:
     selected_action_branch: str
     metadata: dict[str, Any]
     tick_to_second: float | None = None
+    return_finish_tick: float | None = None
+    return_duration: float | None = None
+    paper_cycle_status: str = PAPER_CYCLE_STATUS_PENDING
 
 
 class RTSOutcomeTracker:
     def __init__(self):
         self.pending: dict[tuple[str, str, str], PendingRTSDecision] = {}
+        self.pending_by_robot_id: dict[str, PendingRTSDecision] = {}
+        self.completed_count = 0
+        self.censored_count = 0
 
     def record_decision(self, pending: PendingRTSDecision) -> None:
         self.pending[(pending.robot_id, pending.job_id, pending.pod_id)] = pending
+        self.pending_by_robot_id[pending.robot_id] = pending
 
     def complete_return(self, *, robot_id: str, job_id: str, pod_id: str) -> PendingRTSDecision | None:
-        return self.pending.pop((robot_id, job_id, pod_id), None)
+        pending = self.pending.pop((robot_id, job_id, pod_id), None)
+        if pending is not None and self.pending_by_robot_id.get(robot_id) is pending:
+            self.pending_by_robot_id.pop(robot_id, None)
+        return pending
+
+    def mark_return_completed(
+        self,
+        *,
+        robot_id: str,
+        job_id: str,
+        pod_id: str,
+        return_finish_tick: float,
+    ) -> PendingRTSDecision | None:
+        pending = self.pending.pop((robot_id, job_id, pod_id), None)
+        if pending is None:
+            return None
+        pending.return_finish_tick = float(return_finish_tick)
+        pending.return_duration = max(0.0, float(return_finish_tick) - pending.return_start_tick)
+        self.pending_by_robot_id[robot_id] = pending
+        return pending
+
+    def complete_paper_cycle_for_robot(self, *, robot_id: str) -> PendingRTSDecision | None:
+        pending = self.pending_by_robot_id.pop(robot_id, None)
+        if pending is not None:
+            pending.paper_cycle_status = PAPER_CYCLE_STATUS_COMPLETE
+            self.completed_count += 1
+        return pending
+
+    def censor_paper_cycle_for_robot(self, *, robot_id: str, status: str) -> PendingRTSDecision | None:
+        pending = self.pending_by_robot_id.pop(robot_id, None)
+        if pending is not None:
+            pending.paper_cycle_status = status
+            self.censored_count += 1
+        return pending
 
     def orphan_pending(self) -> list[PendingRTSDecision]:
-        return list(self.pending.values())
+        seen: set[int] = set()
+        pending: list[PendingRTSDecision] = []
+        for item in list(self.pending.values()) + list(self.pending_by_robot_id.values()):
+            identity = id(item)
+            if identity not in seen:
+                pending.append(item)
+                seen.add(identity)
+        return pending
 
 
 class NoopRTSRolloutRuntime:
@@ -52,6 +104,9 @@ class NoopRTSRolloutRuntime:
         return None
 
     def on_return_completed(self, *args, **kwargs) -> None:
+        return None
+
+    def on_station_arrival(self, *args, **kwargs) -> None:
         return None
 
     def close(self) -> None:
@@ -153,10 +208,15 @@ class RTSRolloutRuntime:
         robot_id = _robot_id(robot)
         job_id = _text(getattr(job, "my_id", ""))
         pod_id = _text(getattr(getattr(job, "pod", None), "pod_id", ""))
-        pending = self.tracker.complete_return(robot_id=robot_id, job_id=job_id, pod_id=pod_id)
+        tick = float(getattr(getattr(robot, "universe", None), "_tick", getattr(getattr(robot, "warehouse", None), "_tick", 0.0)))
+        pending = self.tracker.mark_return_completed(
+            robot_id=robot_id,
+            job_id=job_id,
+            pod_id=pod_id,
+            return_finish_tick=tick,
+        )
         if pending is None:
             return
-        tick = float(getattr(getattr(robot, "universe", None), "_tick", getattr(getattr(robot, "warehouse", None), "_tick", 0.0)))
         return_finish_warehouse_time = tick
         return_start_warehouse_time = pending.return_start_tick
         realized_warehouse_time = return_finish_warehouse_time - return_start_warehouse_time
@@ -168,7 +228,10 @@ class RTSRolloutRuntime:
             netlogo_steps_elapsed_since_decision = 0
             
         warehouse_time_elapsed_since_decision = realized_warehouse_time
-        reward_json = self._reward_json(pending.selected_action_branch, realized_warehouse_time)
+        reward_json = pending_cold_start_reward_json(
+            realized_cycle_time=realized_warehouse_time,
+            paper_cycle_status=PAPER_CYCLE_STATUS_PENDING,
+        )
         destination = getattr(robot, "destination", None)
         netlogo_step = _netlogo_step_or_none(tick, tick_to_second)
         row = build_outcome_event(
@@ -177,10 +240,10 @@ class RTSRolloutRuntime:
             robot_id=robot_id,
             job_id=job_id,
             pod_id=pod_id,
-            outcome_status="completed",
+            outcome_status="return_completed",
             return_start_tick=pending.return_start_tick,
             return_finish_tick=tick,
-            realized_cycle_time=realized_warehouse_time,
+            realized_cycle_time=None,
             destination_x=getattr(destination, "x", None),
             destination_y=getattr(destination, "y", None),
             reward_json=reward_json,
@@ -189,21 +252,133 @@ class RTSRolloutRuntime:
             tick_to_second=tick_to_second,
             netlogo_steps_elapsed_since_decision=netlogo_steps_elapsed_since_decision,
             warehouse_time_elapsed_since_decision=warehouse_time_elapsed_since_decision,
+            return_duration=realized_warehouse_time,
+            paper_cycle_status=PAPER_CYCLE_STATUS_PENDING,
+            paper_cycle_complete=0,
+            paper_cycle_start_tick=pending.return_start_tick,
+            paper_cycle_storage_arrival_tick=tick,
+            paper_cycle_duration=None,
+            paper_cycle_censor_reason="",
+            paper_cycle_completion_rule="",
         )
         self.writer.write_outcome(row)
         self._write_summary()
+
+    def on_station_arrival(self, *, robot: Any, station: Any) -> None:
+        if not self.config.rollout_enabled:
+            return
+        robot_id = _robot_id(robot)
+        pending = self.tracker.pending_by_robot_id.get(robot_id)
+        if pending is None:
+            return
+        if pending.return_finish_tick is None:
+            return
+        station_type = str(getattr(station, "station_type", "")).strip().lower()
+        if station_type in {"picker", "picking"}:
+            self._complete_paper_cycle(robot=robot, station=station, pending=pending)
+        elif station_type == "replenishment":
+            self._censor_paper_cycle(
+                robot=robot,
+                station=station,
+                pending=pending,
+                status=PAPER_CYCLE_STATUS_CENSORED_NEXT_TASK_REPLENISHMENT,
+                reason="next_task_replenishment",
+            )
 
     def close(self) -> None:
         self._write_summary()
         self.writer.close()
 
-    def _reward_json(self, branch: str, realized_cycle_time: float) -> dict[str, Any]:
-        components = build_reward_components_from_realized_cycle(
+    def _complete_paper_cycle(self, *, robot: Any, station: Any, pending: PendingRTSDecision) -> None:
+        tick = float(getattr(getattr(robot, "universe", None), "_tick", getattr(getattr(robot, "warehouse", None), "_tick", 0.0)))
+        completed = self.tracker.complete_paper_cycle_for_robot(robot_id=pending.robot_id)
+        if completed is None:
+            return
+        duration = max(0.0, tick - completed.return_start_tick)
+        tick_to_second = completed.tick_to_second
+        netlogo_step = _netlogo_step_or_none(tick, tick_to_second)
+        reward_json = self._reward_json(completed.selected_action_branch, duration)
+        job = getattr(robot, "job", None)
+        row = build_outcome_event(
+            decision_event_id=completed.decision_event_id,
+            tick=tick,
+            robot_id=pending.robot_id,
+            job_id=_text(getattr(job, "my_id", "")),
+            pod_id=_text(getattr(getattr(job, "pod", None), "pod_id", completed.pod_id)),
+            outcome_status="paper_cycle_completed",
+            return_start_tick=completed.return_start_tick,
+            return_finish_tick=completed.return_finish_tick,
+            realized_cycle_time=duration,
+            destination_x=getattr(getattr(robot, "destination", None), "x", None),
+            destination_y=getattr(getattr(robot, "destination", None), "y", None),
+            reward_json=reward_json,
+            netlogo_step=netlogo_step,
+            warehouse_time=tick,
+            tick_to_second=tick_to_second,
+            netlogo_steps_elapsed_since_decision=_netlogo_step_or_none(duration, tick_to_second),
+            warehouse_time_elapsed_since_decision=duration,
+            return_duration=completed.return_duration,
+            paper_cycle_status=PAPER_CYCLE_STATUS_COMPLETE,
+            paper_cycle_complete=1,
+            paper_cycle_start_tick=completed.return_start_tick,
+            paper_cycle_storage_arrival_tick=completed.return_finish_tick,
+            paper_cycle_next_station_arrival_tick=tick,
+            paper_cycle_duration=duration,
+            paper_cycle_censor_reason="",
+            paper_cycle_completion_rule=PAPER_CYCLE_COMPLETION_RULE_NEXT_ORDER_RETRIEVAL_ARRIVAL,
+        )
+        self.writer.write_outcome(row)
+        self._write_summary()
+
+    def _censor_paper_cycle(
+        self,
+        *,
+        robot: Any,
+        station: Any,
+        pending: PendingRTSDecision,
+        status: str,
+        reason: str,
+    ) -> None:
+        tick = float(getattr(getattr(robot, "universe", None), "_tick", getattr(getattr(robot, "warehouse", None), "_tick", 0.0)))
+        censored = self.tracker.censor_paper_cycle_for_robot(robot_id=pending.robot_id, status=status)
+        if censored is None:
+            return
+        row = build_outcome_event(
+            decision_event_id=censored.decision_event_id,
+            tick=tick,
+            robot_id=pending.robot_id,
+            job_id=_text(getattr(getattr(robot, "job", None), "my_id", "")),
+            pod_id=censored.pod_id,
+            outcome_status="paper_cycle_censored",
+            return_start_tick=censored.return_start_tick,
+            return_finish_tick=censored.return_finish_tick,
+            realized_cycle_time=None,
+            destination_x=getattr(getattr(robot, "destination", None), "x", None),
+            destination_y=getattr(getattr(robot, "destination", None), "y", None),
+            reward_json=pending_cold_start_reward_json(paper_cycle_status=status),
+            netlogo_step=_netlogo_step_or_none(tick, censored.tick_to_second),
+            warehouse_time=tick,
+            tick_to_second=censored.tick_to_second,
+            return_duration=censored.return_duration,
+            paper_cycle_status=status,
+            paper_cycle_complete=0,
+            paper_cycle_start_tick=censored.return_start_tick,
+            paper_cycle_storage_arrival_tick=censored.return_finish_tick,
+            paper_cycle_next_station_arrival_tick=tick,
+            paper_cycle_duration=None,
+            paper_cycle_censor_reason=reason,
+            paper_cycle_completion_rule=status,
+        )
+        self.writer.write_outcome(row)
+        self._write_summary()
+
+    def _reward_json(self, branch: str, paper_cycle_duration: float) -> dict[str, Any]:
+        components = build_reward_components_from_paper_cycle(
             selected_action_branch=branch,
-            realized_cycle_time=max(1e-9, realized_cycle_time),
+            paper_cycle_duration=max(1e-9, paper_cycle_duration),
         )
         if self.reward_reference is None:
-            return pending_cold_start_reward_json(realized_cycle_time=components.cycle_time)
+            return pending_cold_start_reward_json(paper_cycle_status=PAPER_CYCLE_STATUS_COMPLETE)
         reward = compute_reward(components, self.reward_reference)
         return reward.to_json_dict()
 
@@ -247,7 +422,7 @@ def _load_reward_reference(path: str | None) -> RTSRewardReference | None:
         alpha=cycle_ref.alpha,
         source=cycle_ref.source,
         source_run_id=cycle_ref.source_run_id,
-        semantics=cycle_ref.semantics,
+        semantics="paper_cycle_duration",
     )
 
 

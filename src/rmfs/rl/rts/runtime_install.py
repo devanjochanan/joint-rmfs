@@ -49,6 +49,12 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
             raise RuntimeError(
                 f"policy checkpoint id mismatch: loaded {loaded.policy_checkpoint_id!r}, expected {config.policy_checkpoint_id!r}"
             )
+        checkpoint_zone_order = tuple(str(zone) for zone in loaded.feature_schema.get("zone_order", []) or ())
+        if checkpoint_zone_order and checkpoint_zone_order != tuple(config.zone_ids):
+            raise RuntimeError(
+                "RTS checkpoint zone_order does not match configured zone_ids: "
+                f"checkpoint={checkpoint_zone_order!r}, configured={tuple(config.zone_ids)!r}"
+            )
         inventory.rts_policy = RTSOnPolicyActor(
             model=loaded.model,
             zone_ids=config.zone_ids,

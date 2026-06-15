@@ -36,6 +36,7 @@ from .reward_normalizer import (
 from src.rmfs.experiments.identity import make_experiment_run_id, make_scenario_id
 from src.rmfs.experiments.feature_flags import default_rika_rts_rl_feature_flags
 from src.rmfs.decisions.task_allocation import scheduler_metadata
+from src.rmfs.rl.rts.zone_registry import validate_no_col_zone_ids
 
 
 def run_on_policy_training_controller(
@@ -183,6 +184,7 @@ def run_on_policy_training_controller(
                     raise RuntimeError("non-dry training execution requires zone_ids to be explicitly determined")
                 if any(not str(z).strip() for z in active_zone_ids) or len(set(active_zone_ids)) != len(active_zone_ids):
                     raise ValueError("zone_ids must be nonblank and unique for non-dry training")
+                validate_no_col_zone_ids(active_zone_ids, context="RTS on-policy controller")
 
             # Initialize metrics for TB
             worker_successes = 0
@@ -482,8 +484,8 @@ def run_on_policy_training_controller(
             import numpy as np
             worker_elapsed_avg = float(np.mean([s.get("worker_wall_time_elapsed", 0.0) for s in worker_summaries])) if worker_summaries else 0.0
             energy_avg = float(np.mean([s.get("final_metrics", {}).get("total_energy", 0.0) for s in worker_summaries if s.get("final_metrics")])) if worker_summaries else 0.0
-            orders_completed_total = sum(s.get("outcome_count", 0) for s in rollout_summaries)
-            cycle_times = [s.get("avg_realized_cycle_time") for s in rollout_summaries if s.get("avg_realized_cycle_time") is not None]
+            orders_completed_total = sum(s.get("completed_paper_cycle_count", 0) for s in rollout_summaries)
+            cycle_times = [s.get("avg_paper_cycle_duration") for s in rollout_summaries if s.get("avg_paper_cycle_duration") is not None]
             avg_order_cycle_time = float(np.mean(cycle_times)) if cycle_times else 0.0
 
             cuda_memory_allocated = 0.0

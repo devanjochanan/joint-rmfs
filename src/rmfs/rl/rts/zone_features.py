@@ -4,54 +4,44 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from .graph_distance import (
+    DISTANCE_STATUS_FALLBACK,
+    distance_cache_metadata,
+    graph_cycle_distance_or_fallback,
+    graph_distance_or_fallback,
+)
+from .zone_registry import RTSZoneRegistry, build_zone_registry
 
-def _is_number(value: Any) -> bool:
-    try:
-        float(value)
-        return True
-    except Exception:
-        return False
+
+class _Coord:
+    def __init__(self, x: Any, y: Any):
+        self.x = x
+        self.y = y
 
 
 def infer_zone_id(obj: Any) -> str:
-    for attr in ("zone_id", "zone", "storage_zone"):
+    for attr in ("rts_zone_id", "zone_id", "zone", "storage_zone"):
         value = getattr(obj, attr, None)
         if value is not None:
             return str(value)
-    x = getattr(obj, "pos_x", getattr(obj, "x", 0))
-    return f"col_{int(x) // 10 if _is_number(x) else 0}"
+    return ""
 
 
-def infer_coordinate_zone_id(coord: Any, zone_ids: Sequence[str]) -> str:
-    # Match based on zone_id attribute if present
-    for attr in ("zone_id", "zone", "storage_zone"):
+def infer_coordinate_zone_id(
+    coord: Any,
+    zone_ids: Sequence[str],
+    *,
+    registry: RTSZoneRegistry | None = None,
+) -> str:
+    for attr in ("rts_zone_id", "zone_id", "zone", "storage_zone"):
         val = getattr(coord, attr, None)
-        if val is not None:
+        if val is not None and str(val) in set(str(zone_id) for zone_id in zone_ids):
             return str(val)
-    x = getattr(coord, "x", getattr(coord, "pos_x", None))
-    if x is None:
-        return str(zone_ids[0]) if zone_ids else ""
-        
-    col_str = f"col_{int(x) // 10}"
-    if col_str in zone_ids:
-        return col_str
-        
-    for zone in zone_ids:
-        if str(zone) == col_str:
-            return str(zone)
-            
-    # Fallback mapping for validation/smoke tests (e.g. A and B)
-    if "A" in zone_ids or "B" in zone_ids:
-        try:
-            val_x = float(x)
-            if val_x < 24.0:
-                return "A" if "A" in zone_ids else "B"
-            else:
-                return "B" if "B" in zone_ids else "A"
-        except Exception:
-            pass
-            
-    return str(zone_ids[0]) if zone_ids else ""
+    if registry is not None:
+        zone_id = registry.zone_id_for_coordinate(coord)
+        if zone_id in set(str(zone_id) for zone_id in zone_ids):
+            return zone_id
+    return ""
 
 
 def build_zone_rows(
@@ -70,7 +60,8 @@ def build_zone_rows(
     robots = list(getattr(warehouse, "_objects", []) or [])
     warnings: list[str] = []
     rows = []
-    zone_ids = tuple(str(zone_id) for zone_id in zone_ids)
+    registry = build_zone_registry(context, zone_ids)
+    zone_ids = registry.zone_ids
     
     if not storages:
         warnings.append("storage_manager.storages unavailable; zone occupancy defaults to zero")
@@ -78,44 +69,53 @@ def build_zone_rows(
     station_manager = getattr(warehouse, "station_manager", None)
     stations = getattr(station_manager, "stations", []) or []
     repl_stations = [s for s in stations if getattr(s, "station_type", "") == "replenishment"]
+    station_coord = _coord_for(station)
+    selected_repl_station = _selected_replenishment_station(station, repl_stations)
+    selected_repl_coord = _coord_for(selected_repl_station)
+    fallback_distance_seen = False
     
-    for index, zone_id in enumerate(zone_ids):
-        zone_storages = [storage for storage in storages if infer_zone_id(storage) == zone_id]
+    for zone_id in zone_ids:
+        zone_info = registry.zones_by_id[zone_id]
+        zone_storages = [storage for storage in storages if registry.zone_id_for_storage(storage) == zone_id]
         free = [storage for storage in zone_storages if bool(getattr(storage, "is_empty", False)) and getattr(storage, "assigned_pod", None) is None]
         total = len(zone_storages)
         
-        # Present robot count in current zone
-        present_robot_count = sum(1 for robot in robots if infer_coordinate_zone_id(robot, zone_ids) == zone_id)
-        
-        # Destination robot count in current zone
+        present_robot_count = sum(
+            1 for robot in robots
+            if infer_coordinate_zone_id(robot, zone_ids, registry=registry) == zone_id
+        )
         destination_robot_count = sum(
             1 for robot in robots
             if getattr(robot, "destination", None) is not None
-            and infer_coordinate_zone_id(robot.destination, zone_ids) == zone_id
+            and infer_coordinate_zone_id(robot.destination, zone_ids, registry=registry) == zone_id
         )
         
-        # Neighbor zones (adjacent in zone_ids list)
-        neighbors = []
-        if index > 0:
-            neighbors.append(zone_ids[index - 1])
-        if index < len(zone_ids) - 1:
-            neighbors.append(zone_ids[index + 1])
-            
+        neighbors = zone_info.neighbor_zone_ids
         neighbor_present_count = sum(
             1 for robot in robots
-            if infer_coordinate_zone_id(robot, zone_ids) in neighbors
+            if infer_coordinate_zone_id(robot, zone_ids, registry=registry) in neighbors
         )
         neighbor_dest_count = sum(
             1 for robot in robots
             if getattr(robot, "destination", None) is not None
-            and infer_coordinate_zone_id(robot.destination, zone_ids) in neighbors
+            and infer_coordinate_zone_id(robot.destination, zone_ids, registry=registry) in neighbors
         )
         
-        # Superzone count = current zone + neighbor zones
-        superzone_present_count = present_robot_count + neighbor_present_count
-        superzone_dest_count = destination_robot_count + neighbor_dest_count
+        superzone_members = [
+            other_zone_id
+            for other_zone_id in zone_ids
+            if registry.zones_by_id[other_zone_id].superzone_id == zone_info.superzone_id
+        ]
+        superzone_present_count = sum(
+            1 for robot in robots
+            if infer_coordinate_zone_id(robot, zone_ids, registry=registry) in superzone_members
+        )
+        superzone_dest_count = sum(
+            1 for robot in robots
+            if getattr(robot, "destination", None) is not None
+            and infer_coordinate_zone_id(robot.destination, zone_ids, registry=registry) in superzone_members
+        )
         
-        # SKU similarity calculation
         zone_skus = set()
         for storage in zone_storages:
             p = getattr(storage, "assigned_pod", None)
@@ -127,47 +127,46 @@ def build_zone_rows(
             sku_similarity = len(pod_skus.intersection(zone_skus)) / len(pod_skus)
         else:
             sku_similarity = 0.0
-            
-        # Distances to replenishment stations
-        if zone_storages:
-            zone_x = sum(getattr(s, "pos_x", 0.0) for s in zone_storages) / len(zone_storages)
-            zone_y = sum(getattr(s, "pos_y", 0.0) for s in zone_storages) / len(zone_storages)
-        else:
-            # Fallback based on zone index
-            zone_x = float(index) * 10.0
-            zone_y = 15.0
-            
-        # Selected replenishment station
-        station_type = str(getattr(station, "station_type", ""))
-        selected_repl_station = None
-        if station_type == "replenishment":
-            selected_repl_station = station
-        elif repl_stations:
-            selected_repl_station = min(
-                repl_stations,
-                key=lambda s: ((zone_x - getattr(s, "pos_x", 0.0)) ** 2 + (zone_y - getattr(s, "pos_y", 0.0)) ** 2)
+
+        representative = _representative_storage(zone_storages)
+        representative_coord = _coord_for(representative)
+        storage_cycle = graph_cycle_distance_or_fallback(warehouse, station_coord, representative_coord)
+        if storage_cycle.status == DISTANCE_STATUS_FALLBACK:
+            fallback_distance_seen = True
+
+        if selected_repl_coord is not None and representative_coord is not None:
+            selected_repl_distance = graph_distance_or_fallback(
+                warehouse,
+                selected_repl_coord,
+                representative_coord,
             )
-            
-        if selected_repl_station is not None:
-            dist_to_selected = ((zone_x - getattr(selected_repl_station, "pos_x", 0.0)) ** 2 +
-                               (zone_y - getattr(selected_repl_station, "pos_y", 0.0)) ** 2) ** 0.5
         else:
-            dist_to_selected = 0.0
-            
-        nearest_dist = 9999.0
-        for s in repl_stations:
-            dist = ((zone_x - getattr(s, "pos_x", 0.0)) ** 2 + (zone_y - getattr(s, "pos_y", 0.0)) ** 2) ** 0.5
-            if dist < nearest_dist:
-                nearest_dist = dist
-        dist_to_nearest = nearest_dist if repl_stations else 0.0
+            selected_repl_distance = graph_distance_or_fallback(
+                warehouse,
+                station_coord,
+                representative_coord,
+            )
+        if selected_repl_distance.status == DISTANCE_STATUS_FALLBACK:
+            fallback_distance_seen = True
+
+        nearest_repl_distance = _nearest_replenishment_distance(
+            warehouse,
+            repl_stations,
+            representative_coord,
+        )
+        if nearest_repl_distance.status == DISTANCE_STATUS_FALLBACK:
+            fallback_distance_seen = True
+
+        replenish_cycle = selected_repl_distance
         
         replenish_valid = bool(free) and replenishment_signal_active and replenishment_station_available
         
         rows.append(
             {
                 "zone_id": zone_id,
-                "zone_row_index": float(index),
-                "zone_col_index": float(index),
+                "zone_row_index": float(zone_info.row_index),
+                "zone_col_index": float(zone_info.col_index),
+                "selected_superzone_id": zone_info.superzone_id,
                 "occupation_level": 1.0 - (float(len(free)) / float(total)) if total else 0.0,
                 "free_slot_count": float(len(free)),
                 "zone_destination_robot_count": float(destination_robot_count),
@@ -176,13 +175,86 @@ def build_zone_rows(
                 "zone_present_robot_count": float(present_robot_count),
                 "neighbor_zone_present_robot_count": float(neighbor_present_count),
                 "superzone_present_robot_count": float(superzone_present_count),
-                "storage_cycle_time_estimate": 0.0,
-                "replenish_cycle_time_estimate": 0.0,
+                "storage_cycle_time_estimate": float(storage_cycle.value_or_zero),
+                "replenish_cycle_time_estimate": float(replenish_cycle.value_or_zero),
                 "sku_similarity": float(sku_similarity),
-                "candidate_zone_to_selected_replenishment_station_distance": float(dist_to_selected),
-                "candidate_zone_to_nearest_replenishment_station_distance": float(dist_to_nearest),
+                "candidate_zone_to_selected_replenishment_station_distance": float(selected_repl_distance.value_or_zero),
+                "candidate_zone_to_nearest_replenishment_station_distance": float(nearest_repl_distance.value_or_zero),
+                "distance_status": storage_cycle.status,
                 "store_action_valid": 1.0 if free else 0.0,
                 "replenish_store_action_valid": 1.0 if replenish_valid else 0.0,
             }
         )
+    if fallback_distance_seen:
+        warnings.append("directed graph distance unavailable for at least one RTS feature; explicit metric fallback used")
     return rows, warnings
+
+
+def build_zone_registry_metadata(context: Any, zone_ids: Sequence[str]) -> dict[str, Any]:
+    registry = build_zone_registry(context, zone_ids)
+    metadata = registry.metadata()
+    warehouse = getattr(context, "warehouse", None)
+    metadata.update(distance_cache_metadata(warehouse))
+    return metadata
+
+
+def _selected_replenishment_station(station: Any, repl_stations: Sequence[Any]) -> Any | None:
+    if str(getattr(station, "station_type", "")) == "replenishment":
+        return station
+    if not repl_stations:
+        return None
+    station_coord = _coord_for(station)
+    return min(
+        repl_stations,
+        key=lambda candidate: _metric_distance(_coord_for(candidate), station_coord),
+    )
+
+
+def _nearest_replenishment_distance(warehouse: Any, repl_stations: Sequence[Any], target_coord: Any) -> Any:
+    if not repl_stations or target_coord is None:
+        return graph_distance_or_fallback(warehouse, None, target_coord, allow_metric_fallback=False)
+    return min(
+        (
+            graph_distance_or_fallback(warehouse, _coord_for(station), target_coord)
+            for station in repl_stations
+        ),
+        key=lambda result: (
+            result.distance is None,
+            float(result.distance if result.distance is not None else 0.0),
+            result.source,
+        ),
+    )
+
+
+def _representative_storage(storages: Sequence[Any]) -> Any | None:
+    if not storages:
+        return None
+    return sorted(
+        storages,
+        key=lambda storage: (
+            float(getattr(storage, "pos_x", 0.0)),
+            float(getattr(storage, "pos_y", 0.0)),
+            int(getattr(storage, "storage_number", getattr(storage, "id", 0)) or 0),
+        ),
+    )[0]
+
+
+def _coord_for(obj: Any) -> _Coord | None:
+    if obj is None:
+        return None
+    coordinate = getattr(obj, "coordinate", None)
+    if coordinate is not None and getattr(coordinate, "x", None) is not None and getattr(coordinate, "y", None) is not None:
+        return _Coord(coordinate.x, coordinate.y)
+    x = getattr(obj, "pos_x", getattr(obj, "x", None))
+    y = getattr(obj, "pos_y", getattr(obj, "y", None))
+    if x is None or y is None:
+        return None
+    return _Coord(x, y)
+
+
+def _metric_distance(a: Any, b: Any) -> float:
+    if a is None or b is None:
+        return float("inf")
+    return abs(float(getattr(a, "x", 0.0)) - float(getattr(b, "x", 0.0))) + abs(
+        float(getattr(a, "y", 0.0)) - float(getattr(b, "y", 0.0))
+    )

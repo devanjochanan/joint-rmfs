@@ -20,6 +20,21 @@ def summarize_rollout_events(events: Iterable[Mapping[str, Any]], policy_mode: s
     outcome_ids = {row.get("decision_event_id") for row in outcomes}
     realized = [_float(row.get("realized_cycle_time")) for row in outcomes]
     realized = [value for value in realized if value is not None]
+    paper_cycles = [_float(row.get("paper_cycle_duration")) for row in outcomes]
+    paper_cycles = [value for value in paper_cycles if value is not None]
+    paper_status_counts: dict[str, int] = {}
+    completed_paper_cycles = 0
+    pending_paper_cycles = 0
+    censored_paper_cycles = 0
+    for row in outcomes:
+        status = str(row.get("paper_cycle_status") or "").strip() or "unknown"
+        paper_status_counts[status] = paper_status_counts.get(status, 0) + 1
+        if status == "complete":
+            completed_paper_cycles += 1
+        elif status == "pending":
+            pending_paper_cycles += 1
+        elif status.startswith("censored"):
+            censored_paper_cycles += 1
     counts: dict[str, int] = {}
     invalid = 0
     for row in decisions:
@@ -51,6 +66,11 @@ def summarize_rollout_events(events: Iterable[Mapping[str, Any]], policy_mode: s
         "orphan_count": sum(1 for row in decisions if row.get("decision_event_id") not in outcome_ids),
         "reward_computed_count": reward_count,
         "avg_realized_cycle_time": (sum(realized) / len(realized)) if realized else None,
+        "avg_paper_cycle_duration": (sum(paper_cycles) / len(paper_cycles)) if paper_cycles else None,
+        "completed_paper_cycle_count": completed_paper_cycles,
+        "pending_paper_cycle_count": pending_paper_cycles,
+        "censored_paper_cycle_count": censored_paper_cycles,
+        "paper_cycle_status_counts": paper_status_counts,
         "selected_action_counts": counts,
         "invalid_action_selected_count": invalid,
     }
@@ -72,4 +92,3 @@ def _float(value: Any) -> float | None:
         return float(value)
     except Exception:
         return None
-

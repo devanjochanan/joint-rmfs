@@ -71,6 +71,7 @@ def build_on_policy_training_steps(
         "rejected_duplicate_decision_count": 0,
         "rejected_duplicate_outcome_count": 0,
         "rejected_missing_outcome_count": 0,
+        "rejected_missing_completed_paper_cycle_count": 0,
         "rejected_reward_uncomputed_count": 0,
         "rejected_non_on_policy_count": 0,
         "rejected_checkpoint_mismatch_count": 0,
@@ -86,13 +87,14 @@ def build_on_policy_training_steps(
             rejected["rejected_duplicate_decision_count"] += len(decs)
             continue
         outs = outcomes.get(event_id, [])
-        if len(outs) > 1:
-            rejected["rejected_duplicate_outcome_count"] += len(outs)
-            continue
         if not outs:
             rejected["rejected_missing_outcome_count"] += 1
             continue
-        step, reason = _build_step(decs[0], outs[0], required_policy_checkpoint_id)
+        trainable_outcome = _select_trainable_paper_cycle_outcome(outs)
+        if trainable_outcome is None:
+            rejected["rejected_missing_completed_paper_cycle_count"] += 1
+            continue
+        step, reason = _build_step(decs[0], trainable_outcome, required_policy_checkpoint_id)
         if step is None:
             rejected[reason] += 1
         else:
@@ -127,6 +129,24 @@ def build_on_policy_training_steps(
     summary = {
         "decision_count": sum(len(v) for v in decisions.values()),
         "outcome_count": sum(len(v) for v in outcomes.values()),
+        "completed_paper_cycle_count": sum(
+            1
+            for group in outcomes.values()
+            for outcome in group
+            if _is_completed_paper_cycle_outcome(outcome)
+        ),
+        "pending_paper_cycle_count": sum(
+            1
+            for group in outcomes.values()
+            for outcome in group
+            if str(outcome.get("paper_cycle_status") or "").strip() == "pending"
+        ),
+        "censored_paper_cycle_count": sum(
+            1
+            for group in outcomes.values()
+            for outcome in group
+            if str(outcome.get("paper_cycle_status") or "").strip().startswith("censored")
+        ),
         "trainable_step_count": len(processed_steps),
         "avg_reward": mean_or_none(rewards),
         "reward_mean": mean_or_none(rewards),
@@ -225,6 +245,33 @@ def _build_step(decision: Mapping[str, Any], outcome: Mapping[str, Any], require
         terminated=True,
         truncated=False,
     ), ""
+
+
+def _select_trainable_paper_cycle_outcome(outcomes: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    completed = [outcome for outcome in outcomes if _is_completed_paper_cycle_outcome(outcome)]
+    if not completed:
+        return None
+    completed.sort(
+        key=lambda outcome: (
+            finite_float(outcome.get("paper_cycle_next_station_arrival_tick")) or 0.0,
+            finite_float(outcome.get("warehouse_time")) or 0.0,
+        )
+    )
+    return completed[0]
+
+
+def _is_completed_paper_cycle_outcome(outcome: Mapping[str, Any]) -> bool:
+    if str(outcome.get("paper_cycle_status") or "").strip() != "complete":
+        return False
+    try:
+        if int(outcome.get("paper_cycle_complete") or 0) != 1:
+            return False
+    except Exception:
+        return False
+    if str(outcome.get("paper_cycle_completion_rule") or "").strip() != "next_order_retrieval_arrival":
+        return False
+    duration = finite_float(outcome.get("paper_cycle_duration"))
+    return duration is not None and duration > 0.0
 
 
 def _padded_from_on_policy_steps(steps: Sequence[RTSOnPolicyTrainingStep]) -> RTSPaddedTrainingBatch:

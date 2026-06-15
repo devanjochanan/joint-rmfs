@@ -61,7 +61,7 @@ Each feature family is classified under one of the following statuses:
   * `occupation_level`
   * `free_slot_count`
 * **Status**: `implemented`
-* **Details**: Calculated from `storage_manager.storages` and empty/assigned pods in `zone_features.py`.
+* **Details**: Calculated from `storage_manager.storages` and empty/assigned pods in `zone_features.py`. Production zone membership is derived from the RTS zone registry (`rts_z_r##_c##`) instead of ad hoc column fallback IDs.
 
 ### 7. Zone Traffic/Robot Density
 * **Features**:
@@ -69,7 +69,7 @@ Each feature family is classified under one of the following statuses:
   * `neighbor_zone_present_robot_count`
   * `superzone_present_robot_count`
 * **Status**: `approx_repo_grounded`
-* **Details**: Phase 12 counts present robots by inferred zone, adjacent zones, and superzone grouping.
+* **Details**: Counts present robots by registry-derived zone, cardinal neighbor zones, and non-overlapping superzone grouping.
 
 ### 8. Destination Robot Counts
 * **Features**:
@@ -77,15 +77,15 @@ Each feature family is classified under one of the following statuses:
   * `neighbor_zone_destination_robot_count`
   * `superzone_destination_robot_count`
 * **Status**: `approx_repo_grounded`
-* **Details**: Phase 12 counts robot destinations by inferred zone, adjacent zones, and superzone grouping.
+* **Details**: Counts robot destinations by registry-derived zone, cardinal neighbor zones, and non-overlapping superzone grouping.
 
 ### 9. Cycle-Time Estimates
 * **Features**:
   * `storage_cycle_time_estimate`
   * `replenish_cycle_time_estimate`
   * `arrival_rate_order_cycle_time`
-* **Status**: `hardcoded_zero`
-* **Details**: Hardcoded to `0.0` in `state.py` and `zone_features.py`.
+* **Status**: Mixed (`approx_repo_grounded` / `default_unavailable`)
+* **Details**: `storage_cycle_time_estimate` and `replenish_cycle_time_estimate` are derived from directed `warehouse.graph_pod` shortest-path distances when graph data is available, with explicit fallback metadata if metric fallback is used. `arrival_rate_order_cycle_time` remains unavailable in the Rika-host object model and defaults to zero.
 
 ### 10. SKU Similarity/Usefulness
 * **Features**:
@@ -100,7 +100,7 @@ Each feature family is classified under one of the following statuses:
   * `candidate_zone_to_selected_replenishment_station_distance`
   * `candidate_zone_to_nearest_replenishment_station_distance`
 * **Status**: `approx_repo_grounded`
-* **Details**: Phase 12 computes selected/nearest replenishment station coordinates and candidate-zone distances from current station and storage objects when available.
+* **Details**: Selected/nearest replenishment station coordinates are still grounded in current station and storage objects. Candidate-zone distance features now use directed graph distances when available, not Euclidean/Manhattan-only estimates.
 
 ### 12. Action Validity Masks
 * **Features**:
@@ -122,6 +122,6 @@ Each feature family is classified under one of the following statuses:
 
 ## 3. Conclusions and Next Steps
 
-Phase 12 resolved the selected replenishment station context, zone traffic/destination pressure, SKU similarity, and replenishment-distance gaps with current-repo-grounded approximations.
+The semantic recovery patch resolves the old placeholder `col_*` zone fallback by introducing registry-backed production zones (`rts_z_r##_c##`) with stable geometry metadata. It also upgrades candidate storage/replenishment distance estimates to directed graph-distance semantics with explicit fallback status.
 
-The targeted regret-k scheduler patch resolves active job-queue task allocation only. Remaining deferred/defaulted feature families are next retrieval context, committed next task/queue time, cycle-time estimates, and mature-only stock metadata that is not present in the current Rika-host data model.
+The targeted regret-k scheduler patch resolves active job-queue task allocation only. Remaining deferred/defaulted feature families are next retrieval context, committed next task/queue time, `arrival_rate_order_cycle_time`, and mature-only stock metadata that is not present in the current Rika-host data model.

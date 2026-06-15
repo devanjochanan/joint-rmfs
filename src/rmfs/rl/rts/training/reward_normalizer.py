@@ -9,7 +9,8 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-REWARD_MODE = "cold_start_realized_cycle_time"
+REWARD_MODE = "cold_start_paper_cycle_duration"
+REWARD_HORIZON = "paper_cycle_duration"
 REWARD_REFERENCE_REQUIRED = False
 CYCLE_REFERENCE_ENABLED = False
 ALPHA_ENABLED = False
@@ -24,6 +25,7 @@ def default_reward_normalizer_metadata(
 ) -> dict[str, Any]:
     return {
         "reward_mode": REWARD_MODE,
+        "reward_horizon": REWARD_HORIZON,
         "reward_reference_required": REWARD_REFERENCE_REQUIRED,
         "cycle_reference_enabled": CYCLE_REFERENCE_ENABLED,
         "alpha_enabled": ALPHA_ENABLED,
@@ -58,7 +60,7 @@ def derive_reward_normalizer_from_events(
     *,
     batch_id: int | None = None,
 ) -> dict[str, Any]:
-    cycles = valid_realized_cycle_times(events)
+    cycles = valid_paper_cycle_durations(events)
     if cycles:
         scale = float(statistics.median(cycles))
         source = f"batch_{int(batch_id):06d}_valid_cycles" if batch_id is not None else "valid_cycles"
@@ -104,12 +106,12 @@ def apply_cold_start_rewards(
     for row in events:
         item = dict(row)
         if item.get("event_type") == "outcome":
-            realized = _finite_positive_or_none(item.get("realized_cycle_time"))
-            if realized is not None:
+            paper_cycle_duration = _paper_cycle_duration_if_complete(item)
+            if paper_cycle_duration is not None:
                 reward_json = dict(item.get("reward_json") or {})
                 if not reward_json.get("reward_computed"):
                     item["reward_json"] = cold_start_reward_json(
-                        realized_cycle_time=realized,
+                        paper_cycle_duration=paper_cycle_duration,
                         reward_time_scale=scale,
                         reward_time_scale_source=reward_metadata.get("reward_time_scale_source"),
                         reward_valid_cycle_count=int(reward_metadata.get("reward_valid_cycle_count") or 0),
@@ -120,13 +122,16 @@ def apply_cold_start_rewards(
 
 def cold_start_reward_json(
     *,
-    realized_cycle_time: float,
+    paper_cycle_duration: float | None = None,
+    realized_cycle_time: float | None = None,
     reward_time_scale: float,
     reward_time_scale_source: str | None,
     reward_valid_cycle_count: int,
 ) -> dict[str, Any]:
     scale = _finite_positive_or_none(reward_time_scale) or DEFAULT_REWARD_TIME_SCALE
-    cycle_time = _finite_positive_or_none(realized_cycle_time)
+    cycle_time = _finite_positive_or_none(paper_cycle_duration)
+    if cycle_time is None:
+        cycle_time = _finite_positive_or_none(realized_cycle_time)
     if cycle_time is None:
         return {
             **default_reward_normalizer_metadata(),
@@ -144,16 +149,21 @@ def cold_start_reward_json(
         "reward_computed": True,
         "reward_value": -normalized_cycle_time,
         "normalized_cycle_time": normalized_cycle_time,
-        "realized_cycle_time": float(cycle_time),
+        "paper_cycle_duration": float(cycle_time),
     }
 
 
-def pending_cold_start_reward_json(*, realized_cycle_time: float | None = None) -> dict[str, Any]:
+def pending_cold_start_reward_json(
+    *,
+    realized_cycle_time: float | None = None,
+    paper_cycle_status: str = "pending",
+) -> dict[str, Any]:
     payload = {
         **default_reward_normalizer_metadata(),
         "reward_computed": False,
         "reward_value": None,
         "normalized_cycle_time": None,
+        "paper_cycle_status": paper_cycle_status,
     }
     if realized_cycle_time is not None:
         payload["realized_cycle_time"] = realized_cycle_time
@@ -161,14 +171,36 @@ def pending_cold_start_reward_json(*, realized_cycle_time: float | None = None) 
 
 
 def valid_realized_cycle_times(events: Sequence[Mapping[str, Any]]) -> list[float]:
+    return valid_paper_cycle_durations(events)
+
+
+def valid_paper_cycle_durations(events: Sequence[Mapping[str, Any]]) -> list[float]:
     cycles: list[float] = []
     for row in events:
         if row.get("event_type") != "outcome":
             continue
-        cycle_time = _finite_positive_or_none(row.get("realized_cycle_time"))
+        cycle_time = _paper_cycle_duration_if_complete(row)
         if cycle_time is not None:
             cycles.append(cycle_time)
     return cycles
+
+
+def _paper_cycle_duration_if_complete(row: Mapping[str, Any]) -> float | None:
+    status = str(row.get("paper_cycle_status") or "").strip()
+    complete = False
+    if status:
+        complete = status == "complete"
+    else:
+        try:
+            complete = int(row.get("paper_cycle_complete") or 0) == 1
+        except Exception:
+            complete = False
+    if not complete:
+        return None
+    rule = str(row.get("paper_cycle_completion_rule") or "").strip()
+    if rule and rule != "next_order_retrieval_arrival":
+        return None
+    return _finite_positive_or_none(row.get("paper_cycle_duration"))
 
 
 def _finite_positive_or_none(value: Any) -> float | None:

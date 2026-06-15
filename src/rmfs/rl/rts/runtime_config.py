@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
+from .zone_registry import validate_no_col_zone_ids
+
 
 SUPPORTED_RTS_POLICY_MODES = (
     "current",
@@ -72,6 +74,8 @@ def validate_rts_runtime_config(config: RTSRuntimeConfig) -> None:
         raise ValueError("rts zone_ids must be nonblank")
     if len(set(config.zone_ids)) != len(config.zone_ids):
         raise ValueError("rts zone_ids must be unique")
+    if config.policy_mode == "rts_rl_explicit":
+        validate_no_col_zone_ids(config.zone_ids, context="rts_rl_explicit")
     if not str(config.rollout_filename).strip():
         raise ValueError("rts rollout_filename must be nonblank")
     if not str(config.summary_filename).strip():

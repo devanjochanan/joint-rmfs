@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.rmfs.decisions.task_allocation import DEFAULT_REGRET_K, DEFAULT_ROBOT_TASK_ALLOCATOR, TASK_ALLOCATOR_SCOPE
+from src.rmfs.rl.rts.zone_registry import validate_no_col_zone_ids
 
 
 @dataclass(frozen=True)
@@ -115,3 +116,4 @@ def validate_on_policy_training_config(
         raise ValueError(f"task_allocator_scope must be {TASK_ALLOCATOR_SCOPE}")
     if bool(config.committed_next_reservations_enabled):
         raise ValueError("committed_next_reservations_enabled must remain false in this recovery patch")
+    validate_no_col_zone_ids(config.zone_ids, context="RTS on-policy training")

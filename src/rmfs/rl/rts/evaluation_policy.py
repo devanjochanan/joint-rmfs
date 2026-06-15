@@ -11,7 +11,7 @@ from src.rmfs.decisions.rts.types import RTSDecision
 from .action_space import build_action_mask, decode_action, validate_action_mask
 from .state import build_state
 from .storage_resolver import find_free_storage_in_zone
-from .zone_features import infer_zone_id
+from .zone_registry import build_zone_registry
 
 
 class RTSRandomValidPolicy:
@@ -59,8 +59,4 @@ class RTSRandomValidStoragePolicy:
 
 
 def infer_zone_ids_from_context(context: Any) -> tuple[str, ...]:
-    storage_manager = getattr(getattr(context, "warehouse", None), "storage_manager", None)
-    storages = list(getattr(storage_manager, "storages", []) or [])
-    zones = sorted({infer_zone_id(storage) for storage in storages})
-    return tuple(zones)
-
+    return build_zone_registry(context).zone_ids

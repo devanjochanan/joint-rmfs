@@ -11,6 +11,8 @@ import torch
 
 from src.rmfs.rl.rts.training.device import resolve_rts_torch_device
 from src.rmfs.rl.rts.model import RTSMaskedActorCritic
+from src.rmfs.rl.rts.graph_distance import DISTANCE_SEMANTICS_VERSION
+from src.rmfs.rl.rts.reward import REWARD_HORIZON
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ def load_policy_from_checkpoint(checkpoint_dir: Path, *, device: str = "cpu") ->
     policy_checkpoint_id = str(metadata.get("policy_checkpoint_id") or _checkpoint_id_from_path(checkpoint))
     if not policy_checkpoint_id.strip():
         raise ValueError("policy_checkpoint_id must be nonblank")
+    _validate_schema_semantics(feature_schema)
     return LoadedRTSPolicy(
         model=model,
         checkpoint_dir=checkpoint,
@@ -64,3 +67,16 @@ def _checkpoint_id_from_path(checkpoint_dir: Path) -> str:
         return parent.name
     return checkpoint_dir.name
 
+
+def _validate_schema_semantics(feature_schema: dict[str, Any]) -> None:
+    reward_horizon = feature_schema.get("reward_horizon")
+    if reward_horizon is not None and reward_horizon != REWARD_HORIZON:
+        raise ValueError(
+            f"unsupported RTS checkpoint reward_horizon: {reward_horizon!r}; expected {REWARD_HORIZON!r}"
+        )
+    distance_semantics = feature_schema.get("distance_semantics_version")
+    if distance_semantics is not None and distance_semantics != DISTANCE_SEMANTICS_VERSION:
+        raise ValueError(
+            "unsupported RTS checkpoint distance_semantics_version: "
+            f"{distance_semantics!r}; expected {DISTANCE_SEMANTICS_VERSION!r}"
+        )

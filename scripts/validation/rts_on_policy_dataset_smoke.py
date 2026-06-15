@@ -52,13 +52,43 @@ def outcome(event_id: str):
         robot_id=1,
         job_id="job",
         pod_id="pod",
-        outcome_status="completed",
+        outcome_status="paper_cycle_completed",
         return_start_tick=1,
-        return_finish_tick=2,
+        return_finish_tick=1.5,
         realized_cycle_time=1,
         destination_x=10,
         destination_y=1,
         reward_json={"reward_computed": True, "reward_value": 1.0},
+        return_duration=0.5,
+        paper_cycle_status="complete",
+        paper_cycle_complete=1,
+        paper_cycle_start_tick=1,
+        paper_cycle_storage_arrival_tick=1.5,
+        paper_cycle_next_station_arrival_tick=2,
+        paper_cycle_duration=1,
+        paper_cycle_completion_rule="next_order_retrieval_arrival",
+    )
+
+
+def pending_return_outcome(event_id: str):
+    return build_outcome_event(
+        decision_event_id=event_id,
+        tick=1.5,
+        robot_id=1,
+        job_id="job",
+        pod_id="pod",
+        outcome_status="return_completed",
+        return_start_tick=1,
+        return_finish_tick=1.5,
+        realized_cycle_time=None,
+        destination_x=10,
+        destination_y=1,
+        reward_json={"reward_computed": False, "reward_value": None},
+        return_duration=0.5,
+        paper_cycle_status="pending",
+        paper_cycle_complete=0,
+        paper_cycle_start_tick=1,
+        paper_cycle_storage_arrival_tick=1.5,
     )
 
 
@@ -78,6 +108,14 @@ def main():
     batch = build_on_policy_ppo_batch(dataset, gamma=0.99, gae_lambda=0.95)
     assert batch.old_log_probs.shape[0] == 1
     assert batch.old_values.shape[0] == 1
+
+    pending_only = [
+        decision("pending_only", "rts_rl_explicit"),
+        pending_return_outcome("pending_only"),
+    ]
+    pending_dataset = build_on_policy_training_steps(pending_only, required_policy_checkpoint_id="batch_000001")
+    assert pending_dataset.summary["trainable_step_count"] == 0
+    assert pending_dataset.summary["rejected_missing_completed_paper_cycle_count"] == 1
 
     # Multi-step same-worker trajectory test
     multi_events = []
@@ -140,4 +178,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

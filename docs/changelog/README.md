@@ -302,7 +302,7 @@ We apply the following versioning convention for updates:
   * `[MODIFY] docs/modules/dewa_rts.md`
   * `[MODIFY] docs/current/current_state.md`
   * `[MODIFY] docs/changelog/README.md`
-* **Behavior Changes**: Yes. Active RTS-RL v1 training no longer requires a manual reference run or mandatory `cycle_reference.json`; cold-start reward normalization derives `reward_time_scale` from valid realized cycle times and stores normalizer metadata in checkpoint/training artifacts.
+* **Behavior Changes**: Yes. Active RTS-RL v1 training no longer requires a manual reference run or mandatory `cycle_reference.json`; cold-start reward normalization derives `reward_time_scale` from valid completed cycle rows and stores normalizer metadata in checkpoint/training artifacts.
 * **Validation Run**:
   * `/home/dewan/torch-gpu/bin/python` recursive `py_compile` sweep over `src/rmfs/rl/rts`, `src/rmfs/experiments`, `scripts/training`, and `scripts/validation`.
   * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_reward_cold_start_smoke.py`
@@ -344,4 +344,37 @@ We apply the following versioning convention for updates:
   * Executed other safe validation smoke tests (`regret_k_training_config_smoke.py`, `rts_training_checkpoint_loader_smoke.py`).
 * **Residual Risks**: None. No real multi-worker training execution or simulation updates were performed.
 
-
+### 2026-06-15 RTS-RL Semantic Recovery Patch - +0.0.1
+* **Files Changed/Created/Deleted**:
+  * `[NEW] src/rmfs/rl/rts/zone_registry.py`
+  * `[NEW] src/rmfs/rl/rts/graph_distance.py`
+  * `[NEW] scripts/validation/rts_semantic_recovery_smoke.py`
+  * `[MODIFY] model/robot.py`
+  * `[MODIFY] src/rmfs/rl/rts/zone_features.py`
+  * `[MODIFY] src/rmfs/rl/rts/state.py`
+  * `[MODIFY] src/rmfs/rl/rts/storage_resolver.py`
+  * `[MODIFY] src/rmfs/rl/rts/outcome_tracker.py`
+  * `[MODIFY] src/rmfs/rl/rts/reward.py`
+  * `[MODIFY] src/rmfs/rl/rts/rollout_schema.py`
+  * `[MODIFY] src/rmfs/rl/rts/evaluation_policy.py`
+  * `[MODIFY] src/rmfs/rl/rts/evaluation_summary.py`
+  * `[MODIFY] src/rmfs/rl/rts/runtime_config.py`
+  * `[MODIFY] src/rmfs/rl/rts/runtime_install.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/*.py`
+  * `[MODIFY] scripts/validation/rts_*_smoke.py`
+  * `[MODIFY] docs/architecture/rts_rl_on_policy_training.md`
+  * `[MODIFY] docs/architecture/rts_state_feature_gap_map.md`
+  * `[MODIFY] docs/architecture/time_units.md`
+  * `[MODIFY] docs/modules/dewa_rts.md`
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/changelog/README.md`
+* **Behavior Changes**: Yes. RTS-RL now uses canonical registry-backed storage zones, directed graph-distance semantics, paper-cycle reward lifecycle, and checkpoint/runtime guards for reward/distance/zone semantics. The active robot RTS path also reserves selected storage slots through `StorageManager` and releases picked slots back to the empty-storage list. Return completion is diagnostic; PPO training accepts only completed paper-cycle outcomes.
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python -m py_compile` over touched RTS-RL, robot, training, and validation files.
+  * `PYTHONPATH=. /home/dewan/torch-gpu/bin/python scripts/validation/rts_semantic_recovery_smoke.py`
+  * `PYTHONPATH=. /home/dewan/torch-gpu/bin/python scripts/validation/rts_rl_port_smoke.py`
+  * `PYTHONPATH=. /home/dewan/torch-gpu/bin/python scripts/validation/rts_rl_rollout_smoke.py`
+  * `PYTHONPATH=. /home/dewan/torch-gpu/bin/python scripts/validation/rts_on_policy_dataset_smoke.py`
+  * `PYTHONPATH=. /home/dewan/torch-gpu/bin/python scripts/validation/rts_reward_cold_start_smoke.py`
+  * `PYTHONPATH=. /home/dewan/torch-gpu/bin/python scripts/validation/init_rts_checkpoint_smoke.py`
+* **Residual Risks**: No full NetLogo simulation, BehaviorSpace experiment, PPO/RL training run, benchmark, or output-equivalence run was performed. The Rika-host path still does not implement mature `replenish_store(z)` pre-return route equivalence; replenishment next-task arrivals are censored for paper-cycle training eligibility.

@@ -25,6 +25,7 @@ SKIP_REASONS = (
     "skipped_feature_error",
     "skipped_nonpositive_cycle_time",
     "skipped_duplicate_event_id",
+    "skipped_missing_completed_paper_cycle",
 )
 
 
@@ -129,17 +130,16 @@ def pair_decision_outcome_events(events: Sequence[Mapping[str, Any]]) -> tuple[l
             outcomes_grouped.setdefault(event_id_str, []).append(dict(row))
     
     duplicate_decision_ids = {k for k, v in decisions_grouped.items() if len(v) > 1}
-    duplicate_outcome_ids = {k for k, v in outcomes_grouped.items() if len(v) > 1}
-    duplicate_ids = duplicate_decision_ids.union(duplicate_outcome_ids)
+    duplicate_ids = duplicate_decision_ids
     
     pairs = []
     for event_id, decs in decisions_grouped.items():
         if event_id in duplicate_ids:
             continue
         if event_id in outcomes_grouped:
-            outs = outcomes_grouped[event_id]
-            if len(outs) == 1:
-                pairs.append((decs[0], outs[0]))
+            outcome = _select_smoke_trainable_outcome(outcomes_grouped[event_id])
+            if outcome is not None:
+                pairs.append((decs[0], outcome))
                 
     total_decisions = sum(len(lst) for lst in decisions_grouped.values())
     total_outcomes = sum(len(lst) for lst in outcomes_grouped.values())
@@ -150,7 +150,7 @@ def pair_decision_outcome_events(events: Sequence[Mapping[str, Any]]) -> tuple[l
         "paired_count": len(pairs),
         "missing_outcome_count": sum(len(v) for k, v in decisions_grouped.items() if k not in outcomes_grouped and k not in duplicate_ids),
         "duplicate_decision_id_count": len(duplicate_decision_ids),
-        "duplicate_outcome_id_count": len(duplicate_outcome_ids),
+        "duplicate_outcome_id_count": 0,
     }
 
 
@@ -159,6 +159,7 @@ def build_smoke_training_steps(events: Sequence[Mapping[str, Any]]) -> RTSRollou
     pairs, pair_summary = pair_decision_outcome_events(events)
     dec_counts: dict[str, int] = {}
     out_counts: dict[str, int] = {}
+    outcomes_by_id: dict[str, list[dict]] = {}
     for row in events:
         event_id = row.get("decision_event_id")
         if event_id is None:
@@ -168,6 +169,7 @@ def build_smoke_training_steps(events: Sequence[Mapping[str, Any]]) -> RTSRollou
             dec_counts[event_id_str] = dec_counts.get(event_id_str, 0) + 1
         elif row.get("event_type") == OUTCOME_EVENT:
             out_counts[event_id_str] = out_counts.get(event_id_str, 0) + 1
+            outcomes_by_id.setdefault(event_id_str, []).append(dict(row))
             
     skipped = {reason: 0 for reason in SKIP_REASONS}
     paired_decision_ids = {decision.get("decision_event_id") for decision, _outcome in pairs}
@@ -177,10 +179,12 @@ def build_smoke_training_steps(events: Sequence[Mapping[str, Any]]) -> RTSRollou
         event_id = str(row.get("decision_event_id", ""))
         if event_id in paired_decision_ids:
             continue
-        if dec_counts.get(event_id, 0) > 1 or out_counts.get(event_id, 0) > 1:
+        if dec_counts.get(event_id, 0) > 1:
             skipped["skipped_duplicate_event_id"] += 1
         elif event_id not in out_counts:
             skipped["skipped_missing_outcome"] += 1
+        elif _select_smoke_trainable_outcome(outcomes_by_id.get(event_id, ())) is None:
+            skipped["skipped_missing_completed_paper_cycle"] += 1
         else:
             skipped["skipped_missing_outcome"] += 1
             
@@ -260,7 +264,9 @@ def _build_step(decision: Mapping[str, Any], outcome: Mapping[str, Any]) -> tupl
     reward_value = finite_float(reward_json.get("reward_value"))
     if not reward_json.get("reward_computed") or reward_value is None:
         return None, "skipped_reward_uncomputed"
-    realized = finite_float(outcome.get("realized_cycle_time"))
+    realized = finite_float(outcome.get("paper_cycle_duration"))
+    if realized is None:
+        realized = finite_float(outcome.get("realized_cycle_time"))
     if realized is None or realized <= 0.0:
         return None, "skipped_nonpositive_cycle_time"
     try:
@@ -282,3 +288,37 @@ def _build_step(decision: Mapping[str, Any], outcome: Mapping[str, Any]) -> tupl
         policy_name=str(decision.get("policy_name", "")),
     ), ""
 
+
+def _select_smoke_trainable_outcome(outcomes: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    completed = [outcome for outcome in outcomes if _is_completed_paper_cycle_outcome(outcome)]
+    if completed:
+        completed.sort(
+            key=lambda outcome: (
+                finite_float(outcome.get("paper_cycle_next_station_arrival_tick")) or 0.0,
+                finite_float(outcome.get("warehouse_time")) or 0.0,
+            )
+        )
+        return completed[0]
+    legacy = [
+        outcome
+        for outcome in outcomes
+        if not str(outcome.get("paper_cycle_status") or "").strip()
+        and finite_float(outcome.get("realized_cycle_time")) is not None
+    ]
+    if len(legacy) == 1:
+        return legacy[0]
+    return None
+
+
+def _is_completed_paper_cycle_outcome(outcome: Mapping[str, Any]) -> bool:
+    if str(outcome.get("paper_cycle_status") or "").strip() != "complete":
+        return False
+    try:
+        if int(outcome.get("paper_cycle_complete") or 0) != 1:
+            return False
+    except Exception:
+        return False
+    if str(outcome.get("paper_cycle_completion_rule") or "").strip() != "next_order_retrieval_arrival":
+        return False
+    duration = finite_float(outcome.get("paper_cycle_duration"))
+    return duration is not None and duration > 0.0

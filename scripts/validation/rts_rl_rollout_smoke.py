@@ -134,7 +134,8 @@ def main():
     assert state_bundle.state_json["feature_fidelity"]["destination_robot_pressure"] == "approx_repo_grounded"
     zone_rows = {row["zone_id"]: row for row in state_bundle.state_json["zone_rows"]}
     assert zone_rows["A"]["zone_destination_robot_count"] == 1.0
-    assert zone_rows["B"]["neighbor_zone_destination_robot_count"] == 1.0
+    assert zone_rows["B"]["neighbor_zone_destination_robot_count"] == 0.0
+    assert zone_rows["B"]["superzone_destination_robot_count"] == 1.0
     before = [(storage.pos_x, storage.pos_y, storage.is_empty, storage.assigned_pod) for storage in storages]
     resolved = find_free_storage_in_zone(context, "A", STORE)
     after = [(storage.pos_x, storage.pos_y, storage.is_empty, storage.assigned_pod) for storage in storages]
@@ -163,12 +164,23 @@ def main():
         runtime.on_decision(robot=context.robot, context=context, decision=decision)
         context.warehouse._tick = 8
         runtime.on_return_completed(robot=context.robot)
+        context.warehouse._tick = 12
+        runtime.on_station_arrival(robot=context.robot, station=context.station)
         runtime.close()
         rows = read_jsonl(tmp_path / "rts_rollout.jsonl")
-        assert len(rows) == 2
+        assert len(rows) == 3
         assert rows[0]["event_type"] == "decision"
         assert rows[1]["event_type"] == "outcome"
+        assert rows[1]["outcome_status"] == "return_completed"
+        assert rows[1]["paper_cycle_status"] == "pending"
         assert rows[1]["reward_json"]["reward_computed"] is False
+        assert rows[2]["outcome_status"] == "paper_cycle_completed"
+        assert rows[2]["paper_cycle_status"] == "complete"
+        assert rows[2]["paper_cycle_completion_rule"] == "next_order_retrieval_arrival"
+        assert rows[2]["reward_json"]["reward_computed"] is False
+        summary = summarize_rollout_events(rows, policy_mode="current_probe")
+        assert summary["completed_paper_cycle_count"] == 1
+        assert summary["pending_paper_cycle_count"] == 1
         assert isinstance(current_policy, CurrentRTSPolicy)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -192,9 +204,13 @@ def main():
         )
         context.warehouse._tick = 9
         runtime.on_return_completed(robot=context.robot)
+        context.warehouse._tick = 15
+        runtime.on_station_arrival(robot=context.robot, station=context.station)
         runtime.close()
         rows = read_jsonl(tmp_path / "rts_rollout.jsonl")
         assert rows[-1]["reward_json"]["reward_computed"] is True
+        assert rows[-1]["reward_json"]["reward_horizon"] == "paper_cycle_duration"
+        assert rows[-1]["paper_cycle_duration"] == 12
     # Check that rollout enabled + zero events still writes rts_rollout_summary.json on close
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)

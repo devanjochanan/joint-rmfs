@@ -10,6 +10,9 @@ import torch
 
 from .metrics import append_jsonl, atomic_write_json, json_safe, write_json
 from .references import copy_cycle_reference_to_checkpoint
+from ..graph_distance import DISTANCE_SEMANTICS_VERSION
+from ..reward import REWARD_HORIZON
+from ..zone_registry import schema_metadata_for_zone_ids, zone_ids_from_action_feature_names
 
 
 def atomic_torch_save(payload: Any, path: Path) -> None:
@@ -26,12 +29,25 @@ def batch_checkpoint_dir(output_root: Path, artifact_label: str, batch_id: int) 
     return checkpoint_root(output_root, artifact_label) / f"batch_{int(batch_id):06d}" / "checkpoint"
 
 
-def write_feature_schema(path: Path, *, action_feature_names: tuple[str, ...], stock_feature_names: tuple[str, ...]) -> dict[str, Any]:
+def write_feature_schema(
+    path: Path,
+    *,
+    action_feature_names: tuple[str, ...],
+    stock_feature_names: tuple[str, ...],
+    schema_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    zone_ids = zone_ids_from_action_feature_names(action_feature_names)
+    metadata = dict(schema_metadata or {})
+    if zone_ids:
+        metadata = {**schema_metadata_for_zone_ids(zone_ids), **metadata}
+    metadata.setdefault("reward_horizon", REWARD_HORIZON)
+    metadata.setdefault("distance_semantics_version", DISTANCE_SEMANTICS_VERSION)
     schema = {
         "action_feature_names": list(action_feature_names),
         "stock_feature_names": list(stock_feature_names),
         "action_feature_dim": len(action_feature_names),
         "stock_feature_dim": len(stock_feature_names),
+        **metadata,
     }
     atomic_write_json(path, schema)
     return schema

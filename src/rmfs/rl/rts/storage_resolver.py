@@ -4,24 +4,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from .zone_features import infer_zone_id
+from .graph_distance import graph_distance_or_fallback
+from .zone_registry import build_zone_registry
 
 
 def find_free_storage_in_zone(context: Any, zone_id: str, branch: str) -> Any | None:
+    del branch
     warehouse = getattr(context, "warehouse", None)
     storage_manager = getattr(warehouse, "storage_manager", None)
     storages = list(getattr(storage_manager, "storages", []) or [])
+    registry = build_zone_registry(context, (str(zone_id),))
     candidates = [
         storage
         for storage in storages
-        if infer_zone_id(storage) == str(zone_id)
+        if registry.zone_id_for_storage(storage) == str(zone_id)
         and bool(getattr(storage, "is_empty", False))
         and getattr(storage, "assigned_pod", None) is None
     ]
     if not candidates:
         return None
     origin = _origin(context)
-    return sorted(candidates, key=lambda storage: (_distance(storage, origin), _coord(storage)))[0]
+    return sorted(candidates, key=lambda storage: (_distance(context, storage, origin), _coord(storage)))[0]
 
 
 def _origin(context: Any) -> tuple[float, float]:
@@ -42,7 +45,16 @@ def _coord(storage: Any) -> tuple[float, float]:
     return (float(getattr(storage, "pos_x", 0.0)), float(getattr(storage, "pos_y", 0.0)))
 
 
-def _distance(storage: Any, origin: tuple[float, float]) -> float:
+def _distance(context: Any, storage: Any, origin: tuple[float, float]) -> float:
+    warehouse = getattr(context, "warehouse", None)
+    result = graph_distance_or_fallback(warehouse, _Coord(*origin), storage)
+    if result.distance is not None:
+        return float(result.distance)
     x, y = _coord(storage)
     return abs(x - origin[0]) + abs(y - origin[1])
 
+
+class _Coord:
+    def __init__(self, x: float, y: float):
+        self.x = x
+        self.y = y

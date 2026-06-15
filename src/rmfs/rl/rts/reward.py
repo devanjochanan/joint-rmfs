@@ -10,6 +10,7 @@ from .action_space import REPLENISH_STORE, STORE
 from .training.reward_normalizer import cold_start_reward_json
 
 REWARD_CONTRACT_VERSION = "rts_rl_reward.v1"
+REWARD_HORIZON = "paper_cycle_duration"
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,7 @@ class RTSRewardReference:
     alpha: float = 0.0
     source: str = "current_repo_ledger_or_reference"
     source_run_id: str | None = None
-    semantics: str = "realized_robot_cycle_time"
+    semantics: str = REWARD_HORIZON
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class RTSRewardComponents:
     queue_time_estimate: float = 0.0
     replenishment_process_time: float = 0.0
     stock_factor: float = 0.0
+    reward_horizon: str = REWARD_HORIZON
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,7 @@ class RTSRewardResult:
     def to_json_dict(self) -> dict[str, Any]:
         return {
             "reward_contract_version": REWARD_CONTRACT_VERSION,
+            "reward_horizon": REWARD_HORIZON,
             "reference_available": self.reference_available,
             "reward_computed": self.reward_computed,
             "reward_value": self.reward_value,
@@ -72,10 +75,27 @@ def build_reward_components_from_realized_cycle(
     replenishment_process_time: float = 0.0,
     stock_factor: float = 0.0,
 ) -> RTSRewardComponents:
+    return build_reward_components_from_paper_cycle(
+        selected_action_branch=selected_action_branch,
+        paper_cycle_duration=realized_cycle_time,
+        queue_time_estimate=queue_time_estimate,
+        replenishment_process_time=replenishment_process_time,
+        stock_factor=stock_factor,
+    )
+
+
+def build_reward_components_from_paper_cycle(
+    *,
+    selected_action_branch: str,
+    paper_cycle_duration: float,
+    queue_time_estimate: float = 0.0,
+    replenishment_process_time: float = 0.0,
+    stock_factor: float = 0.0,
+) -> RTSRewardComponents:
     return _build_components(
         selected_action_branch=selected_action_branch,
-        cycle_time=realized_cycle_time,
-        cycle_time_source="realized",
+        cycle_time=paper_cycle_duration,
+        cycle_time_source=REWARD_HORIZON,
         queue_time_estimate=queue_time_estimate,
         replenishment_process_time=replenishment_process_time,
         stock_factor=stock_factor,
@@ -161,7 +181,7 @@ def compute_cold_start_reward(
     reward_valid_cycle_count: int = 0,
 ) -> dict[str, Any]:
     return cold_start_reward_json(
-        realized_cycle_time=components.cycle_time,
+        paper_cycle_duration=components.cycle_time,
         reward_time_scale=reward_time_scale,
         reward_time_scale_source=reward_time_scale_source,
         reward_valid_cycle_count=reward_valid_cycle_count,
@@ -176,8 +196,8 @@ def validate_reward_reference(reference: RTSRewardReference) -> None:
     )
     if any(not math.isfinite(float(value)) or float(value) <= 0.0 for value in values):
         raise ValueError("RTS reward reference cycle times must be finite and positive")
-    if reference.semantics != "realized_robot_cycle_time":
-        raise ValueError("RTS reward reference semantics must be realized_robot_cycle_time")
+    if reference.semantics not in {REWARD_HORIZON, "realized_robot_cycle_time"}:
+        raise ValueError(f"RTS reward reference semantics must be {REWARD_HORIZON}")
 
 
 def _build_components(
@@ -202,6 +222,7 @@ def _build_components(
         queue_time_estimate=max(0.0, float(queue_time_estimate)),
         replenishment_process_time=max(0.0, float(replenishment_process_time)),
         stock_factor=max(0.0, float(stock_factor)),
+        reward_horizon=REWARD_HORIZON,
     )
 
 
