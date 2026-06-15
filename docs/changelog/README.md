@@ -29,6 +29,14 @@ For all future refactoring stages, developers must append entries in the followi
 
 ---
 
+## 2.5 Versioning Convention
+
+We apply the following versioning convention for updates:
+* **`+0.0.1`**: Small compatibility cleanup, docs cleanup, smoke cleanup, metadata cleanup, or small behavior cleanup that removes accidental friction without adding a new research capability.
+* **`+0.1`**: New functional research/training capability or meaningful simulator/training behavior extension.
+
+---
+
 ## 3. Historic Logs
 
 ### 2026-06-08 Phase 1 - Repository Audit & Inventory
@@ -300,3 +308,21 @@ For all future refactoring stages, developers must append entries in the followi
   * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_reward_cold_start_smoke.py`
   * Safe existing validation smokes listed in the task.
 * **Residual Risks**: No real simulation, `--execute` training, alpha/reference audit, paper reward validation, or performance validation was run.
+
+### 2026-06-15 RTS Light Operational Cleanup - +0.0.1
+* **Files Changed/Created/Deleted**:
+  * `[DELETE] scripts/training/rts_train_smoke.py`
+  * `[MODIFY] scripts/training/rts_train_controller.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/on_policy_config.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/controller.py`
+  * `[MODIFY] src/rmfs/orchestration/local_executor.py`
+  * `[MODIFY] scripts/validation/regret_k_training_config_smoke.py`
+  * `[MODIFY] docs/validation/rts_rl_training.md`
+  * `[MODIFY] docs/architecture/rts_decision_seam.md`
+  * `[MODIFY] docs/changelog/README.md`
+* **Behavior Changes**: No. Simplified routine RTS operational tasks: artifact labels are now auto-generated if omitted, latest local artifact pointer resolves automatically for resuming, obsolete synthetic cycle reference requirements in smokes are removed, and CLI descriptions/terminology are normalized.
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python` recursive `py_compile` checks.
+  * Executed all active validation smokes (cold-start, dry-run controller, checkpoint loader, dataset, PPO update, regret-k allocator, regret-k config).
+* **Residual Risks**: None. No real training run or simulation updates were made.
+

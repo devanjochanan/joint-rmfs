@@ -667,8 +667,8 @@ def main(argv=None):
     worker_parser.add_argument("--spec", required=True)
 
     controller_parser = subparsers.add_parser("controller")
-    controller_parser.add_argument("--runs", type=int, default=4)
-    controller_parser.add_argument("--ticks", type=int, default=3)
+    controller_parser.add_argument("--runs", type=int, default=4, help="Number of worker runs to execute.")
+    controller_parser.add_argument("--ticks", type=int, default=3, help="Number of NetLogo steps per worker run.")
     controller_parser.add_argument("--max-workers", type=int, default=2)
     controller_parser.add_argument("--output-root", required=True)
     controller_parser.add_argument("--repo-root", default=None)

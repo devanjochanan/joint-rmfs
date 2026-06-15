@@ -11,7 +11,7 @@ from src.rmfs.decisions.task_allocation import DEFAULT_REGRET_K, DEFAULT_ROBOT_T
 
 @dataclass(frozen=True)
 class RTSOnPolicyTrainingConfig:
-    artifact_label: str
+    artifact_label: str | None
     output_root: Path
     batches: int
     workers: int
@@ -78,7 +78,7 @@ def validate_on_policy_training_config(
     *,
     require_cycle_reference_exists: bool = True,
 ) -> None:
-    if not str(config.artifact_label).strip():
+    if config.artifact_label is not None and not str(config.artifact_label).strip():
         raise ValueError("artifact_label must be nonblank")
     if int(config.batches) < 1:
         raise ValueError("batches must be >= 1")

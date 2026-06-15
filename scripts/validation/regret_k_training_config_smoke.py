@@ -14,7 +14,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.training.rts_train_controller import main as controller_main
 from src.rmfs.experiments.ledger.ingest_phase9 import ingest_phase9_run
-from src.rmfs.rl.rts.training.references import write_synthetic_cycle_reference
+
 
 
 EXPECTED = {
@@ -39,8 +39,7 @@ def main():
     output_root = REPO_ROOT / "data" / "runtime" / "regret_k_training_config_smoke"
     shutil.rmtree(output_root, ignore_errors=True)
     output_root.mkdir(parents=True, exist_ok=True)
-    reference_path = output_root / "cycle_reference.json"
-    write_synthetic_cycle_reference(reference_path)
+
     try:
         controller_main(
             [
@@ -56,8 +55,7 @@ def main():
                 "3",
                 "--seed",
                 "42",
-                "--cycle-reference",
-                str(reference_path),
+
                 "--no-progress",
                 "--no-tensorboard",
                 "--dry-run",

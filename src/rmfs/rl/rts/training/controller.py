@@ -52,9 +52,41 @@ def run_on_policy_training_controller(
     except ValueError as exc:
         raise RuntimeError("training outputs must stay under data/runtime") from exc
 
+    # Resolve or generate artifact label if omitted
+    resolved_label = config.artifact_label
+    pointer_path = Path(config.output_root) / "latest_local_artifact.json"
+    if resolved_label is None or not str(resolved_label).strip():
+        if resume_latest:
+            if pointer_path.exists():
+                try:
+                    with pointer_path.open() as fh:
+                        pointer_data = json.load(fh)
+                    resolved_label = pointer_data.get("latest_artifact_label")
+                except Exception as exc:
+                    raise RuntimeError(f"failed to read latest local artifact pointer: {exc}")
+            if not resolved_label:
+                raise RuntimeError("resume_latest requested but no latest local artifact label could be resolved")
+        else:
+            operation = "dry_run" if dry_run else "train"
+            short_commit = "nogit"
+            try:
+                full_commit = git_value(repo_root, "rev-parse", "HEAD")
+                if full_commit:
+                    short_commit = full_commit[:7]
+            except Exception:
+                pass
+            timestamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+            resolved_label = f"dewa_rts_{operation}_{timestamp}_{short_commit}"
+
+    from dataclasses import replace
+    config = replace(config, artifact_label=resolved_label)
+
     validate_on_policy_training_config(config, require_cycle_reference_exists=True)
     run_root = Path(config.output_root) / config.artifact_label
     run_root.mkdir(parents=True, exist_ok=True)
+
+    # Write/update pointer file
+    atomic_write_json(pointer_path, {"latest_artifact_label": config.artifact_label})
 
     branch = git_value(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
     commit = git_value(repo_root, "rev-parse", "HEAD")

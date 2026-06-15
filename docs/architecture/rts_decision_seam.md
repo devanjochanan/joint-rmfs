@@ -114,5 +114,5 @@ PYTHONPATH=. /home/dewan/torch-gpu/bin/python -c "import netlogo; print('netlogo
 - Create `RLRTSPolicy` implementing `RTSPolicy` with observation/action/reward
 - Add policy selection via configuration or constructor argument
 - Add RTS-specific telemetry/logging hooks (optional decorator pattern)
-- Wire RL training loop to call policies during episodes
+- Wire RL training loop to call policies during worker runs
 - Golden trace comparison against Phase 5B baseline (1000+ ticks)
