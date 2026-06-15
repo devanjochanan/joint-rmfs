@@ -37,6 +37,7 @@ class RTSOnPolicyTrainingConfig:
     regret_k: int | None = DEFAULT_REGRET_K
     task_allocator_scope: str = TASK_ALLOCATOR_SCOPE
     committed_next_reservations_enabled: bool = False
+    debug_worker_logs: bool = False
 
     def to_json_dict(self) -> dict[str, Any]:
         data = asdict(self)

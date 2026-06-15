@@ -59,7 +59,9 @@ def upsert_pod_location(pod_id: str, x: int, y: int, db_path="warehouse.db"):
 
     conn.commit()
     conn.close()
-    print(f"Pod {pod_id} location set to ({x}, {y}).")
+    import os
+    if os.environ.get("RMFS_DEBUG_POD"):
+        print(f"Pod {pod_id} location set to ({x}, {y}).")
 
 def get_pod_location(pod_id: str, db_path="warehouse.db"):
     """

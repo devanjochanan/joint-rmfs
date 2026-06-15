@@ -29,6 +29,8 @@ This file records the repository state and refactor constraints at the time it w
 - **Phase 15**: Audited regret-k task allocation scheduling and classified full mature scheduling as deferred.
 - **Targeted Regret-k Patch**: Implemented active job-queue regret-k allocation with `robot_task_allocator=regret_k`, `regret_k=2`, and `task_allocator_scope=active_job_queue`. The previous nearest assignment is retained as `legacy_nearest`. Mature committed-next reservations/lookahead remain deferred.
 - **Reward Cold-Start Cleanup**: RTS-RL v1 training no longer requires a manual reference run or mandatory `cycle_reference.json`. Batch 1 can derive `reward_time_scale` from realized completed cycle times, while later batches use checkpoint-stored normalizer metadata. Alpha/reference update remains deferred.
+- **RTS Training Terminal-Output Cleanup Patch**: Suppressed worker subprocess stdout/stderr streams to `subprocess.DEVNULL` by default to prevent TQDM display corruption. Added `--debug-worker-logs` opt-in flag to persist stdout/stderr logs inside each worker's runtime directory, avoiding repository storage bloat by default. Worker failures are reported in detail (with stderr tail if debug is enabled), and noisy hot-path pod-location success prints are silenced.
+
 
 ## Key Design Constraints & Decisions
 - **Strict Opt-In Policy**: The default policy remains `CurrentRTSPolicy` (heuristic/nearest). RTS-RL policies (`rts_rl_explicit`, `random_valid`) are strictly opt-in via feature flags.

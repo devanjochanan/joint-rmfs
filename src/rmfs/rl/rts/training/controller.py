@@ -300,88 +300,109 @@ def run_on_policy_training_controller(
             if active_checkpoint_dir is None:
                 raise RuntimeError("non-dry on-policy training requires an active checkpoint")
             processes = []
-            for spec in worker_specs:
-                p = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-m",
-                        "src.rmfs.orchestration.local_executor",
-                        "worker",
-                        "--spec",
-                        str(Path(spec["runtime_root"]) / "run_spec.json"),
-                    ],
-                    cwd=repo_root,
-                )
-                processes.append(p)
-            
-            # Wait for all worker subprocesses to complete, updating progress bar
-            wait_start = time.perf_counter()
-            
-            progress_target = config.workers * config.netlogo_steps_per_run
-            pbar = RTSTrainingProgressBar(
-                enabled=progress_enabled,
-                batch_id=batch_id,
-                workers=config.workers,
-                progress_target=progress_target,
-                latest_checkpoint_id=active_checkpoint_id,
-                update_time=last_update_time,
-            )
-            
-            completed_workers = {}
-            worker_wall_times = [0.0] * config.workers
-            
-            while len(completed_workers) < len(processes):
-                for idx, p in enumerate(processes):
-                    if idx in completed_workers:
-                        continue
-                    exit_code = p.poll()
-                    if exit_code is not None:
-                        completed_workers[idx] = exit_code
-                        worker_wall_times[idx] = time.perf_counter() - wait_start
-                
-                # Check status files of all workers
-                progress_current = 0
-                workers_done = len(completed_workers)
-                worker_failed_count = sum(1 for ec in completed_workers.values() if ec != 0)
-                
-                for idx, spec in enumerate(worker_specs):
-                    status_file = Path(spec["runtime_root"]) / "worker_status.json"
-                    if idx in completed_workers:
-                        progress_current += spec["ticks"]
-                    elif status_file.exists():
-                        try:
-                            with status_file.open() as fh:
-                                payload = json.load(fh)
-                            progress_current += payload.get("current_progress_steps", 0)
-                        except Exception:
-                            pass
-                
-                current_wait_time = time.perf_counter() - wait_start
-                
-                # Straggler ratio calculation
-                current_durations = []
-                for idx in range(config.workers):
-                    if idx in completed_workers:
-                        current_durations.append(worker_wall_times[idx])
+            log_files = []
+            try:
+                for spec in worker_specs:
+                    runtime_root = Path(spec["runtime_root"])
+                    if config.debug_worker_logs:
+                        stdout_file = open(runtime_root / "worker_stdout.log", "w", encoding="utf-8")
+                        stderr_file = open(runtime_root / "worker_stderr.log", "w", encoding="utf-8")
+                        log_files.append((stdout_file, stderr_file))
+                        stdout_arg = stdout_file
+                        stderr_arg = stderr_file
                     else:
-                        current_durations.append(current_wait_time)
+                        stdout_arg = subprocess.DEVNULL
+                        stderr_arg = subprocess.DEVNULL
+
+                    p = subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-m",
+                            "src.rmfs.orchestration.local_executor",
+                            "worker",
+                            "--spec",
+                            str(runtime_root / "run_spec.json"),
+                        ],
+                        cwd=repo_root,
+                        stdout=stdout_arg,
+                        stderr=stderr_arg,
+                    )
+                    processes.append(p)
                 
-                import numpy as np
-                median_dur = float(np.median(current_durations)) if current_durations else 0.0
-                max_dur = float(np.max(current_durations)) if current_durations else 0.0
-                straggler_ratio = (max_dur / median_dur) if median_dur > 0.0 else 0.0
+                # Wait for all worker subprocesses to complete, updating progress bar
+                wait_start = time.perf_counter()
                 
-                pbar.update_live(
-                    progress_current=progress_current,
-                    workers_done=workers_done,
-                    worker_failed_count=worker_failed_count,
-                    wait_time=current_wait_time,
-                    straggler_ratio=straggler_ratio,
+                progress_target = config.workers * config.netlogo_steps_per_run
+                pbar = RTSTrainingProgressBar(
+                    enabled=progress_enabled,
+                    batch_id=batch_id,
+                    workers=config.workers,
+                    progress_target=progress_target,
+                    latest_checkpoint_id=active_checkpoint_id,
+                    update_time=last_update_time,
                 )
-                time.sleep(0.1)
                 
-            pbar.close()
-            wait_time = time.perf_counter() - wait_start
+                completed_workers = {}
+                worker_wall_times = [0.0] * config.workers
+                
+                while len(completed_workers) < len(processes):
+                    for idx, p in enumerate(processes):
+                        if idx in completed_workers:
+                            continue
+                        exit_code = p.poll()
+                        if exit_code is not None:
+                            completed_workers[idx] = exit_code
+                            worker_wall_times[idx] = time.perf_counter() - wait_start
+                    
+                    # Check status files of all workers
+                    progress_current = 0
+                    workers_done = len(completed_workers)
+                    worker_failed_count = sum(1 for ec in completed_workers.values() if ec != 0)
+                    
+                    for idx, spec in enumerate(worker_specs):
+                        status_file = Path(spec["runtime_root"]) / "worker_status.json"
+                        if idx in completed_workers:
+                            progress_current += spec["ticks"]
+                        elif status_file.exists():
+                            try:
+                                with status_file.open() as fh:
+                                    payload = json.load(fh)
+                                progress_current += payload.get("current_progress_steps", 0)
+                            except Exception:
+                                pass
+                    
+                    current_wait_time = time.perf_counter() - wait_start
+                    
+                    # Straggler ratio calculation
+                    current_durations = []
+                    for idx in range(config.workers):
+                        if idx in completed_workers:
+                            current_durations.append(worker_wall_times[idx])
+                        else:
+                            current_durations.append(current_wait_time)
+                    
+                    import numpy as np
+                    median_dur = float(np.median(current_durations)) if current_durations else 0.0
+                    max_dur = float(np.max(current_durations)) if current_durations else 0.0
+                    straggler_ratio = (max_dur / median_dur) if median_dur > 0.0 else 0.0
+                    
+                    pbar.update_live(
+                        progress_current=progress_current,
+                        workers_done=workers_done,
+                        worker_failed_count=worker_failed_count,
+                        wait_time=current_wait_time,
+                        straggler_ratio=straggler_ratio,
+                    )
+                    time.sleep(0.1)
+                    
+                pbar.close()
+                wait_time = time.perf_counter() - wait_start
+            finally:
+                for stdout_file, stderr_file in log_files:
+                    try:
+                        stdout_file.close()
+                    except Exception:
+                        pass
             
             # Check for failures
             failed_exit_code = None
@@ -392,7 +413,55 @@ def run_on_policy_training_controller(
                     failed_worker_idx = idx
             
             if failed_exit_code is not None:
-                raise RuntimeError(f"Worker {failed_worker_idx + 1} failed with exit code {failed_exit_code}")
+                failed_worker_id = failed_worker_idx + 1
+                failed_spec = worker_specs[failed_worker_idx]
+                failed_runtime_root = Path(failed_spec["runtime_root"])
+                
+                worker_summary_path = failed_runtime_root / "worker_summary.json"
+                error_type = None
+                error_message = None
+                if worker_summary_path.exists():
+                    try:
+                        with worker_summary_path.open() as fh:
+                            summary_data = json.load(fh)
+                        error_type = summary_data.get("error_type")
+                        error_message = summary_data.get("error_message")
+                    except Exception:
+                        pass
+                
+                lines = []
+                lines.append(f"Worker {failed_worker_id} failed with exit code {failed_exit_code}.")
+                lines.append(f"  Worker Runtime Root: {failed_runtime_root}")
+                if worker_summary_path.exists():
+                    lines.append(f"  Worker Summary Path: {worker_summary_path}")
+                if error_type:
+                    lines.append(f"  Worker Error Type: {error_type}")
+                if error_message:
+                    lines.append(f"  Worker Error Message: {error_message}")
+                
+                if config.debug_worker_logs:
+                    stdout_path = failed_runtime_root / "worker_stdout.log"
+                    stderr_path = failed_runtime_root / "worker_stderr.log"
+                    lines.append(f"  Worker Stdout Log: {stdout_path}")
+                    lines.append(f"  Worker Stderr Log: {stderr_path}")
+                    
+                    if stderr_path.exists():
+                        try:
+                            with stderr_path.open("r", errors="replace") as fh:
+                                stderr_lines = fh.readlines()
+                            if stderr_lines:
+                                tail_lines = stderr_lines[-15:]
+                                lines.append("  Worker Stderr Tail:")
+                                for l in tail_lines:
+                                    lines.append(f"    {l.rstrip()}")
+                        except Exception:
+                            pass
+                else:
+                    lines.append("  Worker output logs were not persisted; rerun with --debug-worker-logs for stdout/stderr capture.")
+                
+                full_error_msg = "\n".join(lines)
+                print(full_error_msg, file=sys.stderr)
+                raise RuntimeError(f"Worker {failed_worker_id} failed with exit code {failed_exit_code}")
             
             # Load worker summaries and rollout summaries to extract metrics
             worker_summaries = []

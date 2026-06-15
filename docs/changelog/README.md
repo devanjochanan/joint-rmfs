@@ -326,3 +326,22 @@ We apply the following versioning convention for updates:
   * Executed all active validation smokes (cold-start, dry-run controller, checkpoint loader, dataset, PPO update, regret-k allocator, regret-k config).
 * **Residual Risks**: None. No real training run or simulation updates were made.
 
+### 2026-06-15 RTS Training Terminal-Output Cleanup Patch - +0.0.1
+* **Files Changed/Created/Deleted**:
+  * `[MODIFY] src/rmfs/rl/rts/training/on_policy_config.py`
+  * `[MODIFY] scripts/training/rts_train_controller.py`
+  * `[MODIFY] src/rmfs/rl/rts/training/controller.py`
+  * `[MODIFY] model/tools/pod_location.py`
+  * `[MODIFY] model/tools/pod_info.py`
+  * `[MODIFY] scripts/validation/rts_training_controller_dry_run.py`
+  * `[MODIFY] docs/architecture/rts_rl_on_policy_training.md`
+  * `[MODIFY] docs/current/current_state.md`
+  * `[MODIFY] docs/changelog/README.md`
+* **Behavior Changes**: No simulator or training behavior changes. Worker subprocess stdout/stderr streams are now redirected to DEVNULL by default to keep the TQDM controller progress clean. Added `--debug-worker-logs` to persist logs per worker only when explicitly enabled. Gated noisy hot-path pod-location success prints.
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python` recursive `py_compile` checks.
+  * Executed extended `rts_training_controller_dry_run.py` validation test suite covering log suppression, opt-in log creation, and failure reporting.
+  * Executed other safe validation smoke tests (`regret_k_training_config_smoke.py`, `rts_training_checkpoint_loader_smoke.py`).
+* **Residual Risks**: None. No real multi-worker training execution or simulation updates were performed.
+
+

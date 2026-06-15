@@ -44,7 +44,9 @@ def upsert_pod_location(pod_id: str, x: float, y: float, db_path="warehouse.db")
 
     conn.commit()
     conn.close()
-    print(f"Pod {pod_id} location set to ({x}, {y}).")
+    import os
+    if os.environ.get("RMFS_DEBUG_POD"):
+        print(f"Pod {pod_id} location set to ({x}, {y}).")
 
 def upsert_pod_idle(pod_id: str, is_idle: bool, db_path="warehouse.db"):
     conn = sqlite3.connect(db_path)

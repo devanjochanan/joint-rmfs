@@ -36,3 +36,8 @@ The default task allocator is active job-queue `regret_k` with `regret_k=2`. The
   - `warehouse_time` is equal to the internal `Inventory._tick` (which is already scaled).
   - `netlogo_step` is derived dynamically as `warehouse_time / tick_to_second` (using rounded division).
   - Training and recording code does not hard-code conversion factors (e.g. 0.15 or 0.25).
+- **Worker Output & Logging Policy**:
+  - Worker subprocesses do not stream raw stdout/stderr to the controller terminal by default, keeping TQDM progress clean.
+  - Persistent worker logs (`worker_stdout.log` and `worker_stderr.log`) are created inside the worker's runtime directory only when `--debug-worker-logs` is explicitly enabled.
+  - If a worker process fails, a detailed failure report (worker ID, exit code, runtime path, and `worker_summary.json` error information) is displayed. If logging was enabled, a tail of `worker_stderr.log` is also printed to the controller terminal.
+

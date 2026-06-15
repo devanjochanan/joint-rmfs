@@ -41,6 +41,7 @@ def main(argv=None):
     parser.set_defaults(tensorboard_enabled=False)
     parser.add_argument("--dry-run", action="store_true", default=False, help="Deprecated no-op flag. Dry run is default.")
     parser.add_argument("--execute", action="store_true", default=False, help="Run real training instead of a dry run.")
+    parser.add_argument("--debug-worker-logs", action="store_true", default=False, help="Persist worker stdout/stderr logs for diagnosis.")
     args = parser.parse_args(argv)
 
     if args.execute:
@@ -70,6 +71,7 @@ def main(argv=None):
         zone_ids=zone_ids,
         robot_task_allocator=args.robot_task_allocator,
         regret_k=args.regret_k if args.robot_task_allocator == "regret_k" else None,
+        debug_worker_logs=args.debug_worker_logs,
     )
     result = run_on_policy_training_controller(
         config=config,
