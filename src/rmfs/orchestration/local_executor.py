@@ -43,9 +43,10 @@ EXPECTED_WORKER_FILES = [
 ]
 
 DEFERRED_ROOT_READ_ONLY_INPUTS = [
-    "generated_order.csv",
     "generated_pod.csv",
     "pods.csv",
+    "items.csv",
+    "raw_order.csv",
 ]
 
 
@@ -371,6 +372,9 @@ def run_controller(
     rts_policy_checkpoint_id: str | None = None,
     rts_policy_action_mode: str = "sample",
     rts_policy_device: str = "cpu",
+    keep_runtime_artifacts: bool = False,
+    detail_db: bool = False,
+    timing: bool = False,
 ):
     output_root.mkdir(parents=True, exist_ok=True)
     branch = git_value(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
@@ -418,6 +422,15 @@ def run_controller(
         "rts_policy_checkpoint_id": rts_policy_checkpoint_id,
         "rts_policy_action_mode": rts_policy_action_mode,
         "rts_policy_device": rts_policy_device,
+        "keep_runtime_artifacts": keep_runtime_artifacts,
+        "detail_db": detail_db,
+        "timing": timing,
+        "artifact_policy": {
+            "debug_trace": "enabled" if debug_trace else "disabled",
+            "successful_workers": "preserved" if keep_runtime_artifacts else "cleanup_eligible",
+            "failed_workers": "preserved",
+            "detail_db": "requested" if detail_db else "default_runtime_db",
+        },
     }
     write_json(output_root / "manifest.json", manifest)
     policy_config = None
@@ -585,6 +598,13 @@ def run_controller(
         for result in worker_results
         if result["return_code"] != 0 or result["summary"].get("status") != "success"
     ]
+    cleanup_eligible_workers = []
+    if not keep_runtime_artifacts:
+        for result in worker_results:
+            if result["return_code"] == 0 and result["summary"].get("status") == "success":
+                cleanup_marker = Path(result["runtime_files"]["state_file"]).parent / ".rmfs_cleanup_eligible"
+                cleanup_marker.write_text("successful worker; eligible for cleanup\n", encoding="utf-8")
+                cleanup_eligible_workers.append(result["run_id"])
 
     controller_status = "success"
     failure_reasons = []
@@ -650,6 +670,10 @@ def run_controller(
         "rts_policy_checkpoint_id": rts_policy_checkpoint_id,
         "rts_policy_action_mode": rts_policy_action_mode,
         "rts_policy_device": rts_policy_device,
+        "keep_runtime_artifacts": keep_runtime_artifacts,
+        "detail_db": detail_db,
+        "timing": timing,
+        "cleanup_eligible_workers": cleanup_eligible_workers,
     }
     write_json(output_root / "controller_summary.json", summary)
 
@@ -673,6 +697,9 @@ def main(argv=None):
     controller_parser.add_argument("--output-root", required=True)
     controller_parser.add_argument("--repo-root", default=None)
     controller_parser.add_argument("--debug-trace", action="store_true", default=False)
+    controller_parser.add_argument("--keep-runtime-artifacts", action="store_true", default=False)
+    controller_parser.add_argument("--detail-db", action="store_true", default=False, help="Record requested detail-DB mode in manifests; detailed DB optimization remains Phase 5.")
+    controller_parser.add_argument("--timing", action="store_true", default=False, help="Record timing intent in manifests; workers already report wall-clock timing.")
     controller_parser.add_argument("--trace-cadence", type=int, default=1000)
     controller_parser.add_argument("--trace-first-n", type=int, default=0)
     controller_parser.add_argument("--snapshot-inputs", action="store_true", default=False)
@@ -736,6 +763,9 @@ def main(argv=None):
         rts_policy_checkpoint_id=args.rts_policy_checkpoint_id,
         rts_policy_action_mode=args.rts_policy_action_mode,
         rts_policy_device=args.rts_policy_device,
+        keep_runtime_artifacts=args.keep_runtime_artifacts,
+        detail_db=args.detail_db,
+        timing=args.timing,
     )
     return 0
 
