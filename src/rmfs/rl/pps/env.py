@@ -53,6 +53,8 @@ from model.robot_job import RobotJob
 from model.tools.pod_location import get_pod_location
 from model.tools.job_task import upsert_job_task
 from src.rmfs.runtime_io import RunContext
+from src.rmfs.runtime_io.detail_db import configure_detail_db
+from src.rmfs.runtime_io.timing import timed
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +350,12 @@ class PPSEnv(gym.Env):
         ctx = self._runtime_context
         ctx.ensure_runtime_dirs()
         db_path = str(ctx.sqlite_db)
+        detail_env = os.environ.get("RMFS_DETAIL_DB")
+        if detail_env is None:
+            detail_db_enabled = not FAST_TRAIN_MODE
+        else:
+            detail_db_enabled = detail_env.strip().lower() in {"1", "true", "yes", "on"}
+        configure_detail_db(enabled=detail_db_enabled, db_path=db_path)
         netlogo.configure_run_context(ctx)
 
         # Initialize DB tables (same as netlogo.py setup())
@@ -617,67 +625,68 @@ class PPSEnv(gym.Env):
         return counts
 
     def _build_observation(self) -> Dict[str, np.ndarray]:
-        candidates = self._get_candidate_pods()
-        station_pos = self._get_station_positions()
-        station_demands = self._get_station_demands()
-        future_demands = self._get_future_station_demands()
-        station_ids = sorted(station_demands.keys())
+        with timed("pps_observation"):
+            candidates = self._get_candidate_pods()
+            station_pos = self._get_station_positions()
+            station_demands = self._get_station_demands()
+            future_demands = self._get_future_station_demands()
+            station_ids = sorted(station_demands.keys())
 
-        n = len(candidates)
-        features = np.zeros((self.max_pods, self.pod_feature_dim), dtype=np.float32)
-        station_feats = np.zeros((NUM_STATIONS, TOP_K_SKUS), dtype=np.float32)
-        zone_robot_counts = self._get_zone_robot_counts()
+            n = len(candidates)
+            features = np.zeros((self.max_pods, self.pod_feature_dim), dtype=np.float32)
+            station_feats = np.zeros((NUM_STATIONS, TOP_K_SKUS), dtype=np.float32)
+            zone_robot_counts = self._get_zone_robot_counts()
 
-        for j, sid in enumerate(station_ids[:NUM_STATIONS]):
-            fd = future_demands.get(sid, {})
-            for sku, qty in fd.items():
-                idx = self._sku_index.get(sku)
-                if idx is None:
-                    continue
-                station_feats[j, idx] = min(qty / 100.0, 1.0)
+            for j, sid in enumerate(station_ids[:NUM_STATIONS]):
+                fd = future_demands.get(sid, {})
+                for sku, qty in fd.items():
+                    idx = self._sku_index.get(sku)
+                    if idx is None:
+                        continue
+                    station_feats[j, idx] = min(qty / 100.0, 1.0)
 
-        # Max distance for normalization (diagonal of grid)
-        max_dist = 49.0 + 31.0  # Manhattan max
+            # Max distance for normalization (diagonal of grid)
+            max_dist = 49.0 + 31.0  # Manhattan max
 
-        for i, pod in enumerate(candidates):
-            # 1. SKU quantity features (normalized by 100)
-            for sku, det in pod.skus.items():
-                if sku in self._sku_index:
-                    idx = self._sku_index[sku]
-                    features[i, idx] = min(det["current_qty"] / 100.0, 1.0)
+            for i, pod in enumerate(candidates):
+                # 1. SKU quantity features (normalized by 100)
+                for sku, det in pod.skus.items():
+                    if sku in self._sku_index:
+                        idx = self._sku_index[sku]
+                        features[i, idx] = min(det["current_qty"] / 100.0, 1.0)
 
-            # 2. Distance to each station (normalized)
-            for j, (sx, sy) in enumerate(station_pos):
-                dist = abs(pod.pos_x - sx) + abs(pod.pos_y - sy)
-                features[i, TOP_K_SKUS + j] = 1.0 - min(dist / max_dist, 1.0)
+                # 2. Distance to each station (normalized)
+                for j, (sx, sy) in enumerate(station_pos):
+                    dist = abs(pod.pos_x - sx) + abs(pod.pos_y - sy)
+                    features[i, TOP_K_SKUS + j] = 1.0 - min(dist / max_dist, 1.0)
 
-            # 3. Match degree with each station's demand
-            for j, sid in enumerate(station_ids):
-                demand = station_demands.get(sid, {})
-                if not demand:
-                    features[i, TOP_K_SKUS + NUM_STATIONS + j] = 0.0
-                    continue
-                total_demand = sum(demand.values())
-                matched = 0
-                for sku, req in demand.items():
-                    if sku in pod.skus:
-                        matched += min(pod.skus[sku]["current_qty"], req)
-                features[i, TOP_K_SKUS + NUM_STATIONS + j] = (
-                    min(matched / max(total_demand, 1), 1.0)
-                )
+                # 3. Match degree with each station's demand
+                for j, sid in enumerate(station_ids):
+                    demand = station_demands.get(sid, {})
+                    if not demand:
+                        features[i, TOP_K_SKUS + NUM_STATIONS + j] = 0.0
+                        continue
+                    total_demand = sum(demand.values())
+                    matched = 0
+                    for sku, req in demand.items():
+                        if sku in pod.skus:
+                            matched += min(pod.skus[sku]["current_qty"], req)
+                    features[i, TOP_K_SKUS + NUM_STATIONS + j] = (
+                        min(matched / max(total_demand, 1), 1.0)
+                    )
 
-            # 4. Pod zone location as one-hot features.
-            zone_idx = self._get_traffic_zone_index(pod.pos_x, pod.pos_y)
-            if zone_idx is not None:
-                zone_offset = TOP_K_SKUS + NUM_STATIONS + NUM_STATIONS
-                features[i, zone_offset + zone_idx] = 1.0
+                # 4. Pod zone location as one-hot features.
+                zone_idx = self._get_traffic_zone_index(pod.pos_x, pod.pos_y)
+                if zone_idx is not None:
+                    zone_offset = TOP_K_SKUS + NUM_STATIONS + NUM_STATIONS
+                    features[i, zone_offset + zone_idx] = 1.0
 
-        return {
-            "pod_features": features,
-            "station_features": station_feats,
-            "num_candidates": np.array([n], dtype=np.int32),
-            "zone_robot_counts": zone_robot_counts,
-        }
+            return {
+                "pod_features": features,
+                "station_features": station_feats,
+                "num_candidates": np.array([n], dtype=np.int32),
+                "zone_robot_counts": zone_robot_counts,
+            }
 
     # ------------------------------------------------------------------
     # Action execution

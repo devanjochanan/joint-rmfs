@@ -61,6 +61,11 @@ def parse_args() -> argparse.Namespace:
         help="Disable RMFS_FAST_TRAIN and run with normal CSV/database I/O.",
     )
     parser.add_argument(
+        "--detail-db",
+        action="store_true",
+        help="Enable detail SQLite DB writes. Default stays off in fast training I/O.",
+    )
+    parser.add_argument(
         "--show-log",
         action="store_true",
         help="Show backend debug prints while the episode is running.",
@@ -86,6 +91,10 @@ def main() -> None:
         os.environ["PPS_RL_MODEL_PATH"] = args.model_path
     if args.seed is not None:
         os.environ["RMFS_SIM_SEED"] = str(args.seed)
+    if args.detail_db:
+        os.environ["RMFS_DETAIL_DB"] = "1"
+    elif not args.normal_io:
+        os.environ["RMFS_DETAIL_DB"] = "0"
 
     import netlogo
 
@@ -158,6 +167,7 @@ def main() -> None:
     print(f"Mode: {args.mode}")
     print(f"Seed: {args.seed if args.seed is not None else ''}")
     print(f"Fast training I/O: {'off' if args.normal_io else 'on'}")
+    print(f"Detail DB: {'on' if args.detail_db else 'default'}")
     print(f"Backend steps: {backend_steps}")
     print(f"Simulation tick: {universe._tick:.2f}")
     print(f"Setup + run seconds: {total_elapsed:.2f}")

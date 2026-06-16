@@ -29,6 +29,10 @@ class RunSpec:
     rts_policy_checkpoint_id: str | None = None
     rts_policy_action_mode: str = "sample"
     rts_policy_device: str = "cpu"
+    keep_runtime_artifacts: bool = False
+    detail_db: bool = False
+    timing: bool = False
+    worker_status_cadence: int = 10
     experiment_id: str | None = None
     scenario_id: str | None = None
     artifact_label: str | None = None

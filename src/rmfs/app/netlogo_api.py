@@ -27,6 +27,8 @@ from pandas import DataFrame
 from sklearn.cluster import KMeans
 
 from src.rmfs.runtime_io import RunContext
+from src.rmfs.runtime_io.detail_db import configure_detail_db, is_detail_db_configured
+from src.rmfs.runtime_io.timing import timed
 from src.rmfs.runtime_io.scenario_bundle import (
     activate_scenario_inputs as _activate_scenario_inputs,
     list_available_scenarios as _list_available_scenarios,
@@ -1473,6 +1475,16 @@ def setup():
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         db_path = _str_path("sqlite_db")
+        if not is_detail_db_configured():
+            detail_env = os.environ.get("RMFS_DETAIL_DB")
+            if detail_env is None:
+                detail_enabled = (
+                    os.environ.get("RMFS_FAST_TRAIN", "0").strip().lower()
+                    not in {"1", "true", "yes", "on"}
+                )
+            else:
+                detail_enabled = detail_env.strip().lower() in {"1", "true", "yes", "on"}
+            configure_detail_db(enabled=detail_enabled, db_path=db_path)
         configure_default_pod_location_db_path(db_path)
         configure_default_pod_travel_db_path(db_path)
 
@@ -1517,8 +1529,9 @@ def setup():
         next_result = universe.generateResult()
 
         # Save the universe state for future ticks
-        with open(_str_path("state_file"), 'wb') as config_dictionary_file:
-            pickle.dump(universe, config_dictionary_file)
+        with timed("pickle_dump"):
+            with open(_str_path("state_file"), 'wb') as config_dictionary_file:
+                pickle.dump(universe, config_dictionary_file)
 
         # Return only the first element (object positions) as NetLogo setup doesn't need station info
         return next_result[0]
@@ -1532,8 +1545,9 @@ def setup():
 def tick():
     try:
         # Load the simulation state
-        with open(_str_path("state_file"), 'rb') as file:
-            universe: Inventory = pickle.load(file)
+        with timed("pickle_load"):
+            with open(_str_path("state_file"), 'rb') as file:
+                universe: Inventory = pickle.load(file)
 
         # Update each object with the current universe context
         for _n in universe._objects:
@@ -1547,8 +1561,9 @@ def tick():
             return IndexError
 
         # Save updated state
-        with open(_str_path("state_file"), 'wb') as config_dictionary_file:
-            pickle.dump(universe, config_dictionary_file)
+        with timed("pickle_dump"):
+            with open(_str_path("state_file"), 'wb') as config_dictionary_file:
+                pickle.dump(universe, config_dictionary_file)
 
         # Return all required information for NetLogo
         # next_result[0] contains object positions
@@ -1566,8 +1581,9 @@ def tick():
 def console_tick():
     try:
         # Load the simulation state
-        with open(_str_path("state_file"), 'rb') as file:
-            universe: Inventory = pickle.load(file)
+        with timed("pickle_load"):
+            with open(_str_path("state_file"), 'rb') as file:
+                universe: Inventory = pickle.load(file)
 
         # Update each object with the current universe context
         for _n in universe._objects:
@@ -1581,8 +1597,9 @@ def console_tick():
                 return IndexError
 
         # Save updated state
-        with open(_str_path("state_file"), 'wb') as config_dictionary_file:
-            pickle.dump(universe, config_dictionary_file)
+        with timed("pickle_dump"):
+            with open(_str_path("state_file"), 'wb') as config_dictionary_file:
+                pickle.dump(universe, config_dictionary_file)
 
         # Return all required information for NetLogo
         # next_result[0] contains object positions

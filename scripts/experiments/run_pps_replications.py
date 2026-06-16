@@ -144,6 +144,11 @@ def parse_args() -> argparse.Namespace:
         help="Enable RMFS_FAST_TRAIN=1. Default is normal I/O for thesis-style runs.",
     )
     parser.add_argument(
+        "--detail-db",
+        action="store_true",
+        help="Enable detail SQLite DB writes. Default is disabled for headless replications.",
+    )
+    parser.add_argument(
         "--show-log",
         action="store_true",
         help="Show backend debug prints.",
@@ -426,6 +431,7 @@ def main() -> None:
         os.environ["RMFS_FAST_TRAIN"] = "1"
     else:
         os.environ.pop("RMFS_FAST_TRAIN", None)
+    os.environ["RMFS_DETAIL_DB"] = "1" if args.detail_db else "0"
 
     if args.model_path:
         os.environ["PPS_RL_MODEL_PATH"] = args.model_path
@@ -447,6 +453,7 @@ def main() -> None:
     print(f"Output directory: {output_dir}")
     print(f"Modes: {', '.join(args.modes)}")
     print(f"Fast training I/O: {'on' if args.fast_io else 'off'}")
+    print(f"Detail DB: {'on' if args.detail_db else 'off'}")
     print(f"Raw results: {results_path}")
 
     for replication in range(1, args.replications + 1):

@@ -39,6 +39,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 os.chdir(_REPO_ROOT)
+os.environ.setdefault("RMFS_DETAIL_DB", "0")
 
 # Keep Matplotlib/SB3 font-cache writes inside the project folder on Windows.
 _MPLCONFIGDIR = _REPO_ROOT / "data" / "models" / "pps" / ".matplotlib"
@@ -816,8 +817,11 @@ if __name__ == "__main__":
                         help="Number of parallel envs (SubprocVecEnv). 1 = serial.")
     parser.add_argument("--seed", type=int, default=None,
                         help="Base random seed. If omitted, one is generated and saved.")
+    parser.add_argument("--detail-db", action="store_true", default=False,
+                        help="Enable detail SQLite DB writes during PPS training/eval.")
 
     args = parser.parse_args()
+    os.environ["RMFS_DETAIL_DB"] = "1" if args.detail_db else "0"
 
     # Override paths if --save-path provided
     if args.save_path:

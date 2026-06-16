@@ -1,6 +1,7 @@
 # Runtime Artifact Policy
 
-Phase 4 defines cleanup ownership without changing simulator behavior.
+Phase 4 defines cleanup ownership without changing simulator behavior. Phase 5
+adds explicit timing and detail-DB runtime policy for headless workers.
 
 ## Defaults
 
@@ -9,6 +10,11 @@ Phase 4 defines cleanup ownership without changing simulator behavior.
 - Successful worker folders may be marked with `.rmfs_cleanup_eligible`.
 - Failed workers are preserved by policy so their logs and summaries can be inspected.
 - Compact summaries belong under `data/output/summaries/`.
+- Detail SQLite tables are disabled by default in local-executor headless workers
+  and fast PPS/backend paths unless `--detail-db` or `RMFS_DETAIL_DB=1` enables
+  them.
+- Worker status files are throttled by `--worker-status-cadence`; start and
+  final status are always written.
 
 ## Cleanup Tool
 
@@ -33,10 +39,31 @@ It never targets:
 - benchmark outputs
 - training checkpoints or model binaries
 
-`--apply` is required to delete anything. Phase 4 validation runs dry-run only.
+`--apply` is required to delete anything. Phase 4 and Phase 5 validation run
+dry-run only.
+
+## Detail DB
+
+The detail DB tables are inspection artifacts, not the canonical simulator
+state. When disabled, the detail table helpers avoid opening `warehouse.db`.
+Pod-location writes still update a process-local memory mirror so inventory code
+that reads the latest pod location can continue to do so without creating the
+detail DB.
+
+Enable detail DB writes explicitly with:
+
+```bash
+RMFS_DETAIL_DB=1
+```
+
+or, for local executor:
+
+```bash
+/home/dewan/torch-gpu/bin/python -m src.rmfs.orchestration.local_executor controller --detail-db ...
+```
 
 ## Pending
 
-Detail SQLite/CSV hot-path disabling remains Phase 5 work. The Phase 4
-`--detail-db` flag records intent in local-executor manifests but does not
-replace the DB implementation.
+Full CSV buffering and broader SQLite batching remain future work. Current
+`assign_order.csv` paths still read immediately after writes in active
+operations, so deferred flushing is intentionally not enabled by default.

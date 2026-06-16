@@ -16,6 +16,7 @@ import traceback
 from src.rmfs.orchestration.input_snapshot import create_input_snapshot
 from src.rmfs.orchestration.run_manifest import write_run_manifest
 from src.rmfs.orchestration.run_spec import RunSpec
+from src.rmfs.runtime_io.timing import configure_timing, timed, write_timing_summary
 
 
 ROOT_SENSITIVE_FILES = [
@@ -128,11 +129,31 @@ def run_worker(spec: RunSpec):
     original_cwd = Path.cwd()
     netlogo_module = None
     status_path = spec.runtime_root / "worker_status.json"
-    write_json(status_path, {
-        "current_progress_steps": 0,
-        "progress_target_steps": spec.ticks,
-        "status": "running"
-    })
+    ticks_done = 0
+    last_status_tick = -1
+
+    def write_worker_status(status: str, force: bool = False) -> None:
+        nonlocal last_status_tick
+        cadence = max(1, int(getattr(spec, "worker_status_cadence", 10) or 10))
+        should_write = (
+            force
+            or spec.debug_trace
+            or ticks_done == 0
+            or ticks_done == spec.ticks
+            or ticks_done - last_status_tick >= cadence
+        )
+        if not should_write:
+            return
+        with timed("worker_status_write"):
+            write_json(status_path, {
+                "current_progress_steps": ticks_done,
+                "progress_target_steps": spec.ticks,
+                "status": status,
+            })
+        last_status_tick = ticks_done
+
+    configure_timing(spec.timing, spec.runtime_root / "timing_summary.json")
+    write_worker_status("running", force=True)
     summary = {
         "run_id": spec.run_id,
         "status": "failure",
@@ -157,6 +178,7 @@ def run_worker(spec: RunSpec):
         os.chdir(spec.repo_root)
 
         from src.rmfs.runtime_io import RunContext
+        from src.rmfs.runtime_io.detail_db import configure_detail_db
         from src.rmfs.rl.rts.runtime_config import RTSRuntimeConfig
         from src.rmfs.rl.rts.runtime_registry import configure_rts_runtime, reset_rts_runtime
         import netlogo
@@ -164,6 +186,7 @@ def run_worker(spec: RunSpec):
         netlogo_module = netlogo
         ctx = RunContext.isolated(spec.runtime_root, repo_root=spec.repo_root, input_root=spec.input_root)
         ctx.ensure_runtime_dirs()
+        configure_detail_db(enabled=spec.detail_db, db_path=ctx.sqlite_db)
         netlogo.configure_run_context(ctx)
         configure_rts_runtime(
             RTSRuntimeConfig(
@@ -181,7 +204,8 @@ def run_worker(spec: RunSpec):
             runtime_root=spec.runtime_root,
         )
 
-        setup_result = netlogo.setup()
+        with timed("setup"):
+            setup_result = netlogo.setup()
         if isinstance(setup_result, str) and "An error occurred" in setup_result:
             raise RuntimeError(setup_result)
         summary["setup_digest"] = stable_digest(setup_result)
@@ -200,10 +224,9 @@ def run_worker(spec: RunSpec):
 
         first_result = None
         final_result = None
-        ticks_done = 0
-
         for index in range(spec.ticks):
-            tick_result = netlogo.tick()
+            with timed("tick"):
+                tick_result = netlogo.tick()
             if isinstance(tick_result, str) and "An error occurred" in tick_result:
                 raise RuntimeError(tick_result)
             
@@ -211,12 +234,7 @@ def run_worker(spec: RunSpec):
             digest = stable_digest(tick_result)
             sig = return_signature(tick_result)
             
-            # Write progress update
-            write_json(status_path, {
-                "current_progress_steps": ticks_done,
-                "progress_target_steps": spec.ticks,
-                "status": "running"
-            })
+            write_worker_status("running")
             
             if index == 0:
                 first_result = (digest, sig)
@@ -317,6 +335,10 @@ def run_worker(spec: RunSpec):
         rts_summary_path = spec.runtime_root / "rts_rollout_summary.json"
         if rts_summary_path.exists():
             summary["rts_rollout_summary_path"] = str(rts_summary_path)
+        if spec.timing:
+            timing_summary_path = write_timing_summary()
+            if timing_summary_path is not None:
+                summary["timing_summary_path"] = str(timing_summary_path)
         summary.update({
             "seed_base": spec.rts_seed_base,
             "derived_seed": spec.rts_random_seed,
@@ -332,14 +354,12 @@ def run_worker(spec: RunSpec):
             "regret_k": spec.regret_k,
             "task_allocator_scope": spec.task_allocator_scope,
             "committed_next_reservations_enabled": spec.committed_next_reservations_enabled,
+            "detail_db": spec.detail_db,
+            "timing": spec.timing,
+            "worker_status_cadence": spec.worker_status_cadence,
         })
         write_json(spec.runtime_root / "worker_summary.json", summary)
-        # Write final status to status_path
-        write_json(status_path, {
-            "current_progress_steps": ticks_done,
-            "progress_target_steps": spec.ticks,
-            "status": "success" if summary["status"] == "success" else "failure"
-        })
+        write_worker_status("success" if summary["status"] == "success" else "failure", force=True)
         os.chdir(original_cwd)
 
 
@@ -375,6 +395,7 @@ def run_controller(
     keep_runtime_artifacts: bool = False,
     detail_db: bool = False,
     timing: bool = False,
+    worker_status_cadence: int = 10,
 ):
     output_root.mkdir(parents=True, exist_ok=True)
     branch = git_value(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
@@ -425,11 +446,13 @@ def run_controller(
         "keep_runtime_artifacts": keep_runtime_artifacts,
         "detail_db": detail_db,
         "timing": timing,
+        "worker_status_cadence": worker_status_cadence,
         "artifact_policy": {
             "debug_trace": "enabled" if debug_trace else "disabled",
             "successful_workers": "preserved" if keep_runtime_artifacts else "cleanup_eligible",
             "failed_workers": "preserved",
-            "detail_db": "requested" if detail_db else "default_runtime_db",
+            "detail_db": "enabled" if detail_db else "disabled",
+            "worker_status_cadence": worker_status_cadence,
         },
     }
     write_json(output_root / "manifest.json", manifest)
@@ -492,6 +515,10 @@ def run_controller(
             rts_policy_checkpoint_id=rts_policy_checkpoint_id,
             rts_policy_action_mode=rts_policy_action_mode,
             rts_policy_device=rts_policy_device,
+            keep_runtime_artifacts=keep_runtime_artifacts,
+            detail_db=detail_db,
+            timing=timing,
+            worker_status_cadence=worker_status_cadence,
         )
         specs.append(spec)
         write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
@@ -673,6 +700,7 @@ def run_controller(
         "keep_runtime_artifacts": keep_runtime_artifacts,
         "detail_db": detail_db,
         "timing": timing,
+        "worker_status_cadence": worker_status_cadence,
         "cleanup_eligible_workers": cleanup_eligible_workers,
     }
     write_json(output_root / "controller_summary.json", summary)
@@ -698,8 +726,9 @@ def main(argv=None):
     controller_parser.add_argument("--repo-root", default=None)
     controller_parser.add_argument("--debug-trace", action="store_true", default=False)
     controller_parser.add_argument("--keep-runtime-artifacts", action="store_true", default=False)
-    controller_parser.add_argument("--detail-db", action="store_true", default=False, help="Record requested detail-DB mode in manifests; detailed DB optimization remains Phase 5.")
-    controller_parser.add_argument("--timing", action="store_true", default=False, help="Record timing intent in manifests; workers already report wall-clock timing.")
+    controller_parser.add_argument("--detail-db", action="store_true", default=False, help="Enable detail SQLite DB writes in workers. Disabled by default for headless runs.")
+    controller_parser.add_argument("--timing", action="store_true", default=False, help="Collect compact worker timing summaries.")
+    controller_parser.add_argument("--worker-status-cadence", type=int, default=10, help="Write worker_status.json every N ticks, plus start/final status.")
     controller_parser.add_argument("--trace-cadence", type=int, default=1000)
     controller_parser.add_argument("--trace-first-n", type=int, default=0)
     controller_parser.add_argument("--snapshot-inputs", action="store_true", default=False)
@@ -731,6 +760,8 @@ def main(argv=None):
         parser.error("--trace-cadence must be >= 0")
     if args.trace_first_n < 0:
         parser.error("--trace-first-n must be >= 0")
+    if args.worker_status_cadence < 1:
+        parser.error("--worker-status-cadence must be >= 1")
     if args.rts_max_events is not None and args.rts_max_events <= 0:
         parser.error("--rts-max-events must be positive")
     rts_zone_ids = None
@@ -766,6 +797,7 @@ def main(argv=None):
         keep_runtime_artifacts=args.keep_runtime_artifacts,
         detail_db=args.detail_db,
         timing=args.timing,
+        worker_status_cadence=args.worker_status_cadence,
     )
     return 0
 
