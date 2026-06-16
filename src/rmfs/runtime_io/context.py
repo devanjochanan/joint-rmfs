@@ -1,7 +1,24 @@
 """Runtime path context for RMFS simulator runs."""
 
+from __future__ import annotations
+
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
+
+
+BASE_INPUT_FILES = {
+    "items.csv",
+    "pods.csv",
+    "generated_pod.csv",
+    "raw_order.csv",
+}
+
+DICTIONARY_INPUT_FILES = {
+    "items_dictionary.csv",
+    "pods_dictionary.csv",
+    "items_slots_configuration.csv",
+}
 
 
 def _find_repo_root(start: Path | None = None) -> Path:
@@ -12,12 +29,52 @@ def _find_repo_root(start: Path | None = None) -> Path:
     return current
 
 
+def _resolve_existing(candidates: list[Path], description: str) -> Path:
+    for candidate in candidates:
+        if candidate.exists():
+            if len(candidates) > 1 and candidate == candidates[-1]:
+                warnings.warn(
+                    f"Using legacy root {description} at {candidate}; "
+                    "move canonical inputs under data/input.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            return candidate
+    return candidates[0]
+
+
+def _input_file(root: Path, input_root: Path, filename: str) -> Path:
+    if filename in DICTIONARY_INPUT_FILES:
+        return _resolve_existing(
+            [
+                input_root / "dictionaries" / filename,
+                input_root / filename,
+                root / "data" / "input" / "dictionaries" / filename,
+                root / filename,
+            ],
+            filename,
+        )
+    if filename in BASE_INPUT_FILES:
+        return _resolve_existing(
+            [
+                input_root / filename,
+                input_root / "base" / filename,
+                root / "data" / "input" / "base" / filename,
+                root / filename,
+            ],
+            filename,
+        )
+    return input_root / filename
+
+
 @dataclass(frozen=True)
 class RunContext:
     repo_root: Path
     input_root: Path
+    dictionaries_root: Path
     runtime_root: Path
     output_root: Path
+    model_root: Path
     state_file: Path
     sqlite_db: Path
     assign_order_csv: Path
@@ -32,32 +89,23 @@ class RunContext:
     pods_csv: Path
     raw_order_csv: Path
     items_csv: Path
+    items_dictionary_csv: Path
+    pods_dictionary_csv: Path
+    items_slots_configuration_csv: Path
     saved_models_dir: Path
 
     @classmethod
-    def default(cls, repo_root=None):
+    def default(cls, repo_root=None, input_root=None, runtime_root=None):
         root = Path(repo_root).resolve() if repo_root is not None else _find_repo_root()
-        return cls(
-            repo_root=root,
-            input_root=root,
-            runtime_root=root,
-            output_root=root / "output",
-            state_file=root / "netlogo.state",
-            sqlite_db=root / "warehouse.db",
-            assign_order_csv=root / "assign_order.csv",
-            pod_info_csv=root / "pod_info.csv",
-            skus_data_csv=root / "skus_data.csv",
-            sorted_skus_data_csv=root / "sorted_skus_data.csv",
-            generated_order_csv=root / "generated_order.csv",
-            generated_backlog_csv=root / "generated_backlog.csv",
-            generated_database_order_csv=root / "generated_database_order.csv",
-            generated_order_meta_json=root / "generated_order_meta.json",
-            generated_pod_csv=root / "generated_pod.csv",
-            pods_csv=root / "pods.csv",
-            raw_order_csv=root / "raw_order.csv",
-            items_csv=root / "items.csv",
-            saved_models_dir=root / "saved_models",
-        )
+        inputs = Path(input_root) if input_root is not None else root / "data" / "input" / "base"
+        if not inputs.is_absolute():
+            inputs = root / inputs
+        inputs = inputs.resolve()
+        runtime = Path(runtime_root) if runtime_root is not None else root / "data" / "runtime" / "latest"
+        if not runtime.is_absolute():
+            runtime = root / runtime
+        runtime = runtime.resolve()
+        return cls._build(root=root, input_root=inputs, runtime_root=runtime, output_root=root / "data" / "output")
 
     @classmethod
     def isolated(cls, runtime_root, repo_root=None, input_root=None):
@@ -66,35 +114,64 @@ class RunContext:
         if not runtime.is_absolute():
             runtime = root / runtime
         runtime = runtime.resolve()
-        inputs = Path(input_root) if input_root is not None else root
+        inputs = Path(input_root) if input_root is not None else root / "data" / "input" / "base"
         if not inputs.is_absolute():
             inputs = root / inputs
         inputs = inputs.resolve()
+        return cls._build(root=root, input_root=inputs, runtime_root=runtime, output_root=root / "data" / "output")
+
+    @classmethod
+    def with_input_root(cls, input_root, repo_root=None, runtime_root=None):
+        return cls.default(repo_root=repo_root, input_root=input_root, runtime_root=runtime_root)
+
+    @classmethod
+    def legacy_root(cls, repo_root=None):
+        root = Path(repo_root).resolve() if repo_root is not None else _find_repo_root()
+        return cls._build(root=root, input_root=root, runtime_root=root, output_root=root / "output")
+
+    @classmethod
+    def _build(cls, root: Path, input_root: Path, runtime_root: Path, output_root: Path):
+        dictionaries_root = root / "data" / "input" / "dictionaries"
+        model_root = root / "data" / "models"
         return cls(
             repo_root=root,
-            input_root=inputs,
-            runtime_root=runtime,
-            output_root=runtime / "output",
-            state_file=runtime / "netlogo.state",
-            sqlite_db=runtime / "warehouse.db",
-            assign_order_csv=runtime / "assign_order.csv",
-            pod_info_csv=runtime / "pod_info.csv",
-            skus_data_csv=runtime / "skus_data.csv",
-            sorted_skus_data_csv=runtime / "sorted_skus_data.csv",
-            generated_order_csv=runtime / "generated_order.csv",
-            generated_backlog_csv=runtime / "generated_backlog.csv",
-            generated_database_order_csv=runtime / "generated_database_order.csv",
-            generated_order_meta_json=runtime / "generated_order_meta.json",
-            generated_pod_csv=inputs / "generated_pod.csv",
-            pods_csv=inputs / "pods.csv",
-            raw_order_csv=inputs / "raw_order.csv",
-            items_csv=inputs / "items.csv",
-            saved_models_dir=root / "saved_models",
+            input_root=input_root,
+            dictionaries_root=dictionaries_root,
+            runtime_root=runtime_root,
+            output_root=output_root,
+            model_root=model_root,
+            state_file=runtime_root / "netlogo.state",
+            sqlite_db=runtime_root / "warehouse.db",
+            assign_order_csv=runtime_root / "assign_order.csv",
+            pod_info_csv=runtime_root / "pod_info.csv",
+            skus_data_csv=runtime_root / "skus_data.csv",
+            sorted_skus_data_csv=runtime_root / "sorted_skus_data.csv",
+            generated_order_csv=runtime_root / "generated_order.csv",
+            generated_backlog_csv=runtime_root / "generated_backlog.csv",
+            generated_database_order_csv=runtime_root / "generated_database_order.csv",
+            generated_order_meta_json=runtime_root / "generated_order_meta.json",
+            generated_pod_csv=_input_file(root, input_root, "generated_pod.csv"),
+            pods_csv=_input_file(root, input_root, "pods.csv"),
+            raw_order_csv=_input_file(root, input_root, "raw_order.csv"),
+            items_csv=_input_file(root, input_root, "items.csv"),
+            items_dictionary_csv=_input_file(root, dictionaries_root, "items_dictionary.csv"),
+            pods_dictionary_csv=_input_file(root, dictionaries_root, "pods_dictionary.csv"),
+            items_slots_configuration_csv=_input_file(root, dictionaries_root, "items_slots_configuration.csv"),
+            saved_models_dir=model_root,
         )
+
+    @property
+    def state_path(self):
+        return self.state_file
+
+    @property
+    def sqlite_db_path(self):
+        return self.sqlite_db
 
     def ensure_runtime_dirs(self):
         self.runtime_root.mkdir(parents=True, exist_ok=True)
         self.output_root.mkdir(parents=True, exist_ok=True)
+        self.model_root.mkdir(parents=True, exist_ok=True)
         for path in (
             self.state_file,
             self.sqlite_db,
@@ -102,6 +179,10 @@ class RunContext:
             self.pod_info_csv,
             self.skus_data_csv,
             self.sorted_skus_data_csv,
+            self.generated_order_csv,
+            self.generated_backlog_csv,
+            self.generated_database_order_csv,
+            self.generated_order_meta_json,
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
 

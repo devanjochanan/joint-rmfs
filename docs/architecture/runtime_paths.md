@@ -1,20 +1,38 @@
 # Runtime Paths
 
-Phase 2 introduces `src.rmfs.runtime_io.RunContext` as a narrow runtime I/O boundary for the NetLogo bridge.
+Phase 3 makes `src.rmfs.runtime_io.RunContext` the runtime/input path boundary.
 
-`RunContext.default()` preserves the current root-relative behavior:
+Canonical inputs:
 
-- `netlogo.state`
-- `warehouse.db`
-- `assign_order.csv`
-- `pod_info.csv`
-- `skus_data.csv`
-- `sorted_skus_data.csv`
+- `data/input/base/items.csv`
+- `data/input/base/pods.csv`
+- `data/input/base/generated_pod.csv`
+- `data/input/base/raw_order.csv`
+- `data/input/dictionaries/items_dictionary.csv`
+- `data/input/dictionaries/pods_dictionary.csv`
+- `data/input/dictionaries/items_slots_configuration.csv`
 
-`RunContext.isolated(runtime_root=...)` redirects mutable runtime artifacts into `runtime_root` while keeping canonical input CSVs root-compatible for this slice. The simulator still reads root-level generated inputs such as `generated_order.csv`, `generated_pod.csv`, and `pods.csv`.
+Runtime outputs:
 
-This phase does not prove full behavior equivalence. It is path isolation only, not a logic refactor, decision-module refactor, order-generation refactor, RL/checkpoint refactor, or parallel executor.
+- default/manual context: `data/runtime/latest/`
+- isolated/headless workers: `data/runtime/tmp/<run-or-worker>/`
+- debug scratch: `data/runtime/debug/`
 
-Generated runtime outputs must not be committed.
+Output/model roots:
 
-Deferred higher-risk paths for later slices include order/layout generator outputs, RL `saved_models/`, profile artifacts, `output/`, `result/`, and robot job CSV logs.
+- `data/output/`
+- `data/models/pps/`
+- `data/models/rts/`
+
+Legacy root compatibility remains available through `RunContext.legacy_root()` and
+the scenario activation `--legacy-root` flag. If canonical inputs are missing,
+`RunContext` can warn and fall back to legacy root files, but root is no longer
+the canonical input location.
+
+Pod-location randomization is explicit-only. Set
+`RMFS_POD_LOCATION_MODE=randomize_slots` plus `RMFS_POD_LOCATION_SEED` or
+`RMFS_SIM_SEED` to shuffle which `pod_id` starts at each existing storage slot.
+This does not modify `items.csv`, `pods.csv`, or `generated_pod.csv`.
+
+Not changed yet: CSV/SQLite hot-loop performance, behavior equivalence claims,
+charging mechanics, and full artifact cleanup policy.

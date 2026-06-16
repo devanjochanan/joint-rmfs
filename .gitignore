@@ -38,8 +38,26 @@ robot sa data/
 AGENTS.md
 agents.md
 
-# Local generated trace output
-data/runtime/
+# Local generated runtime output
+data/runtime/*
+!data/runtime/README.md
+!data/runtime/tmp/
+!data/runtime/debug/
+!data/runtime/latest/
+data/runtime/tmp/*
+data/runtime/debug/*
+data/runtime/latest/*
+!data/runtime/tmp/.gitkeep
+!data/runtime/debug/.gitkeep
+!data/runtime/latest/.gitkeep
+
+# Generated run outputs
+!data/output/
+data/output/*
+!data/output/README.md
+!data/output/summaries/
+data/output/summaries/*
+!data/output/summaries/.gitkeep
 
 # PPS model/training artifacts
 data/models/pps/*.zip
@@ -57,6 +75,8 @@ generated_order.csv
 generated_database_order.csv
 generated_order_meta.json
 generated_backlog.csv
+skus_data.csv
+sorted_skus_data.csv
 
 # Validation smoke-test scratch directories
 _smoke_seed_test/

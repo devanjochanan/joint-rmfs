@@ -24,8 +24,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario", help="Scenario name or alias to activate.")
     parser.add_argument(
         "--target-root",
-        default=str(REPO_ROOT),
-        help="Target root for items.csv and pods.csv. Defaults to the repository root.",
+        default=None,
+        help="Target root for items.csv and pods.csv. Defaults to data/input/base.",
+    )
+    parser.add_argument(
+        "--legacy-root",
+        action="store_true",
+        help="Compatibility mode: activate into the repository root.",
     )
     parser.add_argument(
         "--dry-run",
@@ -46,7 +51,7 @@ def main() -> int:
 
     metadata = activate_scenario_inputs(
         scenario_name=args.scenario,
-        target_root=args.target_root,
+        target_root=str(REPO_ROOT) if args.legacy_root else args.target_root,
         dry_run=args.dry_run,
     )
     print(json.dumps(metadata, indent=2))

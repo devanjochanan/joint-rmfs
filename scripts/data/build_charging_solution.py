@@ -20,7 +20,7 @@ This only regenerates the parked configuration artifact; it does not enable
 charging behavior in main_future.
 
 Dependencies: model/charging_layout_generator.py (P2 affinity propagation) and
-generated_pod.csv, both already in the shared repo.
+data/input/base/generated_pod.csv, both already in the shared repo.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT))
 from model.charging_layout_generator import ChargingLayoutGenerator  # noqa: E402
 
 OUT = ROOT / "data" / "input" / "charging" / "salsa_charging_config.json"
-GRID = ROOT / "generated_pod.csv"
+GRID = ROOT / "data" / "input" / "base" / "generated_pod.csv"
 
 # ── Final, validated policy (Phase-2b RSM region + Phase-3 Taguchi robust) ──
 POLICY = {"battery_low_pct": 18, "battery_charged_pct": 60,

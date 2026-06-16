@@ -119,10 +119,11 @@ def main() -> None:
             "Rerun with --show-log if you need the full traceback."
         )
 
-    if not os.path.exists("netlogo.state"):
-        raise SystemExit("Backend setup did not create netlogo.state.")
+    state_file = netlogo.get_run_context().state_file
+    if not state_file.exists():
+        raise SystemExit(f"Backend setup did not create {state_file}.")
 
-    with open("netlogo.state", "rb") as file:
+    with open(state_file, "rb") as file:
         universe = pickle.load(file)
 
     for obj in universe._objects:

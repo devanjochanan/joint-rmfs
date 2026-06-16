@@ -13,7 +13,8 @@ import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SCENARIO_ROOT = REPO_ROOT / "data" / "input" / "scenarios"
-DEFAULT_METADATA_PATH = REPO_ROOT / "data" / "runtime" / "active_scenario.json"
+DEFAULT_TARGET_ROOT = REPO_ROOT / "data" / "input" / "base"
+DEFAULT_METADATA_PATH = REPO_ROOT / "data" / "runtime" / "latest" / "active_scenario.json"
 
 SCENARIO_ALIASES = {
     "cindy_s1": "cindy_s1",
@@ -180,6 +181,7 @@ def activate_scenario_inputs(
     scenario_name: str | None = None,
     target_root: str | os.PathLike[str] | None = None,
     scenario_root: str | os.PathLike[str] | None = None,
+    metadata_path: str | os.PathLike[str] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any] | None:
     """Copy normalized scenario items.csv and pods.csv into a target root."""
@@ -193,10 +195,10 @@ def activate_scenario_inputs(
     items_frame = normalize_items_frame(_read_csv_auto(items_source))
     pods_frame = normalize_pods_frame(_read_csv_auto(pods_source))
 
-    destination_root = Path(target_root).resolve() if target_root is not None else REPO_ROOT
+    destination_root = Path(target_root).resolve() if target_root is not None else DEFAULT_TARGET_ROOT
     items_target = destination_root / "items.csv"
     pods_target = destination_root / "pods.csv"
-    metadata_path = destination_root / "data" / "runtime" / "active_scenario.json"
+    metadata_target = Path(metadata_path).resolve() if metadata_path is not None else DEFAULT_METADATA_PATH
     metadata = {
         "scenario_name": canonical,
         "scenario_bundle_root": str(_scenario_root(scenario_root)),
@@ -204,7 +206,7 @@ def activate_scenario_inputs(
         "pods_source": str(pods_source),
         "items_target": str(items_target),
         "pods_target": str(pods_target),
-        "metadata_target": str(metadata_path),
+        "metadata_target": str(metadata_target),
         "items_rows": int(len(items_frame)),
         "pods_rows": int(len(pods_frame)),
         "unique_item_ids": int(items_frame["item_id"].nunique()),
@@ -220,8 +222,8 @@ def activate_scenario_inputs(
     destination_root.mkdir(parents=True, exist_ok=True)
     items_frame.to_csv(items_target, index=False)
     pods_frame.to_csv(pods_target, index=False)
-    metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    metadata_target.parent.mkdir(parents=True, exist_ok=True)
+    metadata_target.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return metadata
 
 

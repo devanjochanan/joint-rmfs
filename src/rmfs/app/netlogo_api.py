@@ -31,6 +31,7 @@ from src.rmfs.runtime_io.scenario_bundle import (
     activate_scenario_inputs as _activate_scenario_inputs,
     list_available_scenarios as _list_available_scenarios,
 )
+from src.rmfs.runtime_io.layout_randomization import slot_index_to_pod_id
 from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH, pps_model_candidates
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
@@ -303,7 +304,7 @@ def _load_pps_rl_model():
 
 def _build_pps_rl_sku_index(universe):
     sku_ids = []
-    for csv_file, column in (("items.csv", "item_id"), ("skus_data.csv", "item_id")):
+    for csv_file, column in ((_str_path("items_csv"), "item_id"), (_str_path("skus_data_csv"), "item_id")):
         if not os.path.exists(csv_file):
             continue
         try:
@@ -393,14 +394,15 @@ def set_pps_mode(mode):
         _PPS_RL_LOAD_ATTEMPTED = False
     _PPS_RL_ACTIVE_LOGGED = False
 
-    if os.path.exists("netlogo.state"):
+    state_file = _str_path("state_file")
+    if os.path.exists(state_file):
         try:
-            with open("netlogo.state", "rb") as file:
+            with open(state_file, "rb") as file:
                 universe = pickle.load(file)
             for obj in universe._objects:
                 obj.setUniverse(universe)
             _configure_pps_rl_strategy(universe)
-            with open("netlogo.state", "wb") as file:
+            with open(state_file, "wb") as file:
                 pickle.dump(universe, file)
         except Exception:
             traceback.print_exc()
@@ -903,7 +905,7 @@ def draw_layout(universe):
     else:
         layout = Layout()
         # This one to generate new configuration
-        layout.generate()
+        layout.generate(output_path=_str_path("generated_pod_csv"))
         draw_layout_from_generated_file(universe)
 
 
@@ -1082,6 +1084,18 @@ def draw_storage_from_generated_file(universe: Inventory):
     pods_horizontal_length = 5
     pods_vertical_length = 2
     pod_counter = 0
+    pod_slot_counter = 0
+    pod_location_mode = os.environ.get("RMFS_POD_LOCATION_MODE", "fixed").strip().lower()
+    randomized_pod_ids = {}
+    if pod_location_mode == "randomize_slots":
+        seed_text = os.environ.get("RMFS_POD_LOCATION_SEED", "").strip()
+        randomization_seed = int(seed_text) if seed_text else (_SIM_SEED if _SIM_SEED is not None else 0)
+        randomized_pod_ids = slot_index_to_pod_id(
+            _str_path("generated_pod_csv"),
+            seed=randomization_seed,
+            mode=pod_location_mode,
+        )
+        print(f"[POD_LOCATION] randomize_slots enabled with seed {randomization_seed}")
     graph = DirectedGraph()
     graph_pod = DirectedGraph()
     graph_pod.key = 'pod'
@@ -1123,10 +1137,12 @@ def draw_storage_from_generated_file(universe: Inventory):
                     if ACTIVATE_NEAREST:
                         universe.storage_manager.createStorage(x, y)
                 elif value == 1:
-                    obj = Pod(pod_counter)
+                    pod_id = randomized_pod_ids.get(pod_slot_counter, pod_counter)
+                    obj = Pod(pod_id)
                     if ACTIVATE_NEAREST:
                         storage = universe.storage_manager.createStorage(x, y)
                     pod_counter += 1
+                    pod_slot_counter += 1
                     # obj.coordinate = NetLogoCoordinate(x, y)
                     obj.pos_x = x
                     obj.pos_y = y

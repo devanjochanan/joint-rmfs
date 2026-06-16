@@ -499,7 +499,7 @@ class Inventory(Universe):
         # robot job init and order start-processing
         if self.joint_rl:
             # Still need to start processing timer for assigned orders
-            if os.path.exists('assign_order.csv'):
+            if os.path.exists(self.assign_order_csv):
                 for order in self.order_manager.unfinished_orders:
                     if order.station_id is None:
                         continue

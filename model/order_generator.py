@@ -8,6 +8,8 @@ import pandas as pd
 
 current_directory = os.path.dirname(os.path.abspath(__file__))
 parent_directory = os.path.dirname(current_directory)
+CANONICAL_INPUT_BASE = Path(parent_directory) / "data" / "input" / "base"
+CANONICAL_RUNTIME_TMP = Path(parent_directory) / "data" / "runtime" / "tmp"
 
 RAW_ORDER_ID_CANDIDATES = ["order_id", "Order ID"]
 RAW_ITEM_CODE_CANDIDATES = ["item_code", "Item Code"]
@@ -53,11 +55,16 @@ def _bootstrap_source_path(source_path=None):
     env_path = os.getenv("RMFS_BOOTSTRAP_ORDER_PATH")
     if env_path:
         return Path(env_path)
-    return Path(parent_directory) / "raw_order.csv"
+    canonical = CANONICAL_INPUT_BASE / "raw_order.csv"
+    return canonical if canonical.exists() else Path(parent_directory) / "raw_order.csv"
 
 
 def _load_item_lookup(items_csv_path=None):
-    items_path = Path(items_csv_path) if items_csv_path else Path(parent_directory) / "items.csv"
+    if items_csv_path:
+        items_path = Path(items_csv_path)
+    else:
+        canonical = CANONICAL_INPUT_BASE / "items.csv"
+        items_path = canonical if canonical.exists() else Path(parent_directory) / "items.csv"
     items = pd.read_csv(items_path)
     items["item_code"] = items["item_code"].map(_normalize_item_code)
     return items[["item_id", "item_code"]].drop_duplicates("item_code")
@@ -296,7 +303,7 @@ def generate_orders_from_raw_bootstrap(
     )
     generated_database_order = _build_generated_database_order(generated_order)
 
-    output_dir = Path(target_dir) if target_dir else Path(parent_directory)
+    output_dir = Path(target_dir) if target_dir else CANONICAL_RUNTIME_TMP
     output_dir.mkdir(parents=True, exist_ok=True)
     generated_order_path = output_dir / "generated_order.csv"
     generated_database_order_path = output_dir / "generated_database_order.csv"

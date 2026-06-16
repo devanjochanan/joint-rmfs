@@ -52,6 +52,7 @@ from model.order import Order
 from model.robot_job import RobotJob
 from model.tools.pod_location import get_pod_location
 from model.tools.job_task import upsert_job_task
+from src.rmfs.runtime_io import RunContext
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,7 @@ TRAFFIC_ZONES = (
     ((5, 43), (19, 24)),
     ((5, 43), (25, 30)),
 )
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +242,8 @@ class PPSEnv(gym.Env):
         self._step_count: int = 0
         self._episode_index: int = 0
         self._episode_seed: Optional[int] = None
+        runtime_root = REPO_ROOT / "data" / "runtime" / "tmp" / f"pps_env_{os.getpid()}"
+        self._runtime_context = RunContext.isolated(runtime_root, repo_root=REPO_ROOT)
 
     # ------------------------------------------------------------------
     # Gym API
@@ -324,7 +328,7 @@ class PPSEnv(gym.Env):
     def _create_warehouse(self) -> Inventory:
         """Create and initialize a fresh warehouse, same as netlogo.py setup()."""
         from datetime import datetime
-        from netlogo import draw_layout
+        import netlogo
         from model.tools.pod_location import (
             initialize_pod_location_table, clear_pod_locations,
         )
@@ -341,24 +345,29 @@ class PPSEnv(gym.Env):
             initialize_pre_assign_table, clear_pre_assign_table,
         )
 
+        ctx = self._runtime_context
+        ctx.ensure_runtime_dirs()
+        db_path = str(ctx.sqlite_db)
+        netlogo.configure_run_context(ctx)
+
         # Initialize DB tables (same as netlogo.py setup())
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        initialize_job_task_table(timestamp)
-        initialize_order_history_table(timestamp)
-        initialize_pod_location_table(timestamp)
-        initialize_pod_travel_table(timestamp)
-        initialize_pre_assign_table(timestamp)
-        clear_job_task_table()
-        clear_order_history()
-        clear_pod_locations()
-        clear_pod_travel()
-        clear_pre_assign_table()
+        initialize_job_task_table(timestamp, db_path=db_path)
+        initialize_order_history_table(timestamp, db_path=db_path)
+        initialize_pod_location_table(timestamp, db_path=db_path)
+        initialize_pod_travel_table(timestamp, db_path=db_path)
+        initialize_pre_assign_table(timestamp, db_path=db_path)
+        clear_job_task_table(db_path=db_path)
+        clear_order_history(db_path=db_path)
+        clear_pod_locations(db_path=db_path)
+        clear_pod_travel(db_path=db_path)
+        clear_pre_assign_table(db_path=db_path)
 
         # Regenerate orders each episode for randomization
         from model.order_generator import config_orders
-        for f in ["generated_order.csv", "generated_database_order.csv", "generated_backlog.csv"]:
-            if os.path.exists(f):
-                os.remove(f)
+        for path in (ctx.generated_order_csv, ctx.generated_database_order_csv, ctx.generated_backlog_csv):
+            if path.exists():
+                path.unlink()
         config_orders(
             initial_order=100,
             total_requested_item=500,
@@ -370,6 +379,9 @@ class PPSEnv(gym.Env):
             date=1,
             sim_ver=1,
             dev_mode=False,
+            source_path=str(ctx.raw_order_csv),
+            target_dir=str(ctx.runtime_root),
+            items_csv_path=str(ctx.items_csv),
         )
         config_orders(
             initial_order=100,
@@ -382,24 +394,27 @@ class PPSEnv(gym.Env):
             date=1,
             sim_ver=2,
             dev_mode=True,
+            source_path=str(ctx.raw_order_csv),
+            target_dir=str(ctx.runtime_root),
+            items_csv_path=str(ctx.items_csv),
         )
 
         # Keep pod-SKU allocation fixed by default. Set
         # PPS_RANDOMIZE_PODS_EACH_EPISODE=1 to regenerate pods.csv/skus_data.csv
         # each episode while preserving the configured ABC distribution.
         if RANDOMIZE_POD_SKUS_EACH_EPISODE:
-            for f in ["pods.csv", "skus_data.csv", "sorted_skus_data.csv"]:
-                if os.path.exists(f):
-                    os.remove(f)
+            for path in (ctx.pods_csv, ctx.skus_data_csv, ctx.sorted_skus_data_csv):
+                if path.exists() and path.is_relative_to(ctx.runtime_root):
+                    path.unlink()
 
         # Remove stale CSVs
-        if os.path.exists("assign_order.csv"):
-            os.remove("assign_order.csv")
+        if ctx.assign_order_csv.exists():
+            ctx.assign_order_csv.unlink()
         if not FAST_TRAIN_MODE:
             # Recreate pod_info.csv with headers (finish_picking_task reads it)
             import pandas as pd
             pd.DataFrame(columns=["pod_id", "item_id", "qty", "order_id", "processed_time", "task_type"])\
-                .to_csv("pod_info.csv", index=False)
+                .to_csv(ctx.pod_info_csv, index=False)
 
         # Reset class-level mutable state that persists across instances
         # (Universe, Inventory, Landscape all use class-level lists/dicts)
@@ -423,7 +438,7 @@ class PPSEnv(gym.Env):
         Landscape._objects = {}
         Landscape.total_objects = 0
 
-        warehouse = Inventory()
+        warehouse = Inventory(runtime_paths=ctx.inventory_paths(), sqlite_db_path=db_path)
         warehouse.fast_train = FAST_TRAIN_MODE
         warehouse.tick_to_second = SIM_TICK_TO_SECOND
 
@@ -438,7 +453,7 @@ class PPSEnv(gym.Env):
         warehouse.pps_demand = False
         warehouse.pps_rl = True
 
-        draw_layout(warehouse)
+        netlogo.draw_layout(warehouse)
         warehouse.generateResult()
 
         return warehouse
@@ -454,8 +469,9 @@ class PPSEnv(gym.Env):
         column should represent the same SKU across episodes and in NetLogo.
         """
         sku_ids = []
-        for csv_file, column in (("items.csv", "item_id"), ("skus_data.csv", "item_id")):
-            if not os.path.exists(csv_file):
+        ctx = self._runtime_context
+        for csv_file, column in ((ctx.items_csv, "item_id"), (ctx.skus_data_csv, "item_id")):
+            if not csv_file.exists():
                 continue
             try:
                 import pandas as pd
