@@ -27,8 +27,10 @@ class RunContext:
     generated_order_csv: Path
     generated_backlog_csv: Path
     generated_database_order_csv: Path
+    generated_order_meta_json: Path
     generated_pod_csv: Path
     pods_csv: Path
+    raw_order_csv: Path
     items_csv: Path
     saved_models_dir: Path
 
@@ -49,8 +51,10 @@ class RunContext:
             generated_order_csv=root / "generated_order.csv",
             generated_backlog_csv=root / "generated_backlog.csv",
             generated_database_order_csv=root / "generated_database_order.csv",
+            generated_order_meta_json=root / "generated_order_meta.json",
             generated_pod_csv=root / "generated_pod.csv",
             pods_csv=root / "pods.csv",
+            raw_order_csv=root / "raw_order.csv",
             items_csv=root / "items.csv",
             saved_models_dir=root / "saved_models",
         )
@@ -77,11 +81,13 @@ class RunContext:
             pod_info_csv=runtime / "pod_info.csv",
             skus_data_csv=runtime / "skus_data.csv",
             sorted_skus_data_csv=runtime / "sorted_skus_data.csv",
-            generated_order_csv=inputs / "generated_order.csv",
-            generated_backlog_csv=inputs / "generated_backlog.csv",
-            generated_database_order_csv=inputs / "generated_database_order.csv",
+            generated_order_csv=runtime / "generated_order.csv",
+            generated_backlog_csv=runtime / "generated_backlog.csv",
+            generated_database_order_csv=runtime / "generated_database_order.csv",
+            generated_order_meta_json=runtime / "generated_order_meta.json",
             generated_pod_csv=inputs / "generated_pod.csv",
             pods_csv=inputs / "pods.csv",
+            raw_order_csv=inputs / "raw_order.csv",
             items_csv=inputs / "items.csv",
             saved_models_dir=root / "saved_models",
         )

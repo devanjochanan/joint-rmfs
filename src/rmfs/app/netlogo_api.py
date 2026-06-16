@@ -894,42 +894,15 @@ def draw_layout(universe):
 def draw_layout_from_generated_file(universe: Inventory):
     draw_storage_from_generated_file(universe)
 
-    # Config Orders
+    # Build one bootstrap-resampled order stream from raw_order.csv.
     assign_skus_to_pods(universe.pod_manager)
     config_orders(
-        initial_order=100,
-        total_requested_item=500,  # Number of SKU in warehouse
-        # total_requested_item=1000,
-        items_orders_class_configuration={"A": 0.5, "B": 0.3, "C": 0.2}, # data 13
-        # items_orders_class_configuration={"A": 0.6, "B": 0.2, "C": 0.2}, # data 10 , 11 , 12
-        # items_orders_class_configuration={"A": 0.7, "B": 0.2, "C": 0.1},  # data 1 - 8 Item class configuration in warehouse
-        # items_orders_class_configuration={"A": 0.3, "B": 0.3, "C": 0.5}, # original
-        quantity_range=[1, 12],  # Quantity range of number of SKU in each order
-        order_cycle_time=500,  # Number of order per hour
-        order_period_time=9,  # the total hours
-        order_start_arrival_time=0,  # Start time of order arrival
-        date=1,
-        sim_ver=1,
-        dev_mode=False)
-    # Config Backlog Orders
-    config_orders(
-        initial_order=100,  # Initial order in backlog
-        total_requested_item=500,  # Number of SKU in warehouse
-        # total_requested_item=1000,
-        # items_orders_class_configuration={"A": 0.7, "B": 0.2, "C": 0.1},  # data 1 -8 # Item class configuration in warehouse
-        items_orders_class_configuration={"A": 0.5, "B": 0.3, "C": 0.2}, # data 13
-        # items_orders_class_configuration={"A": 0.6, "B": 0.2, "C": 0.2}, #data 10 , 11 , 12
-        # items_orders_class_configuration={"A": 0.3, "B": 0.3, "C": 0.5}, # original
-        quantity_range=[1, 12],  # Quantity range of number of SKU in each order
-        order_cycle_time=500,  # Number of order per hour
-        order_period_time=9,
-        order_start_arrival_time=0,
-        date=1,
-        sim_ver=2,
-        dev_mode=True)
+        seed=_SIM_SEED,
+        source_path=_str_path("raw_order_csv"),
+        target_dir=str(get_run_context().runtime_root),
+        items_csv_path=_str_path("items_csv"),
+    )
     initRobots(universe)
-    # Assign backlog clustering
-    assign_backlog_orders(universe)
 
     pod = list(universe.pod_manager.coordinate_to_pods.values())[0]
     destinations = [
@@ -1488,6 +1461,17 @@ def setup():
         pod_info = _str_path("pod_info_csv")
         if os.path.exists(pod_info):
             os.remove(pod_info)
+
+        # The order stream is regenerated on every setup so bootstrap seeds take
+        # effect immediately and no stale synthetic files are reused.
+        for generated_attr in (
+            "generated_order_csv",
+            "generated_database_order_csv",
+            "generated_order_meta_json",
+        ):
+            generated_path = _str_path(generated_attr)
+            if os.path.exists(generated_path):
+                os.remove(generated_path)
         universe = Inventory(runtime_paths=ctx.inventory_paths(), sqlite_db_path=db_path)
 
         # Populate the universe with objects and connections
