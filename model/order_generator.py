@@ -1,396 +1,351 @@
+import json
 import os
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
-from pathlib import Path
-
-#%% 
 
 current_directory = os.path.dirname(os.path.abspath(__file__))
 parent_directory = os.path.dirname(current_directory)
 
-def get_working_path(dev_mode=False):
-    if dev_mode:
-        # development modes
-        
-        # get the parent directory
-        p = Path(__file__).parents[2]
+RAW_ORDER_ID_CANDIDATES = ["order_id", "Order ID"]
+RAW_ITEM_CODE_CANDIDATES = ["item_code", "Item Code"]
+RAW_QUANTITY_CANDIDATES = ["item_quantity", "quantity", "qty", "Item Quantity"]
+RAW_CREATED_AT_CANDIDATES = ["order_date", "created_at", "order_time", "Order Date"]
 
-        # p to string
-        p = str(p)
 
-        result = p
-    else:
-        # production/NetLogo mode 
-        
-        # get the parent directory
-        result = os.getcwd()
+def _normalize_item_code(value):
+    text = str(value).replace("\ufeff", "").strip()
+    if not text or text.lower() in {"nan", "none"}:
+        return ""
+    return text[:-2] if text.endswith(".0") else text
 
-    return result
 
-def get_random_quantity(quantity_range=[1, 12]):
+def _find_column(columns, candidates):
+    normalized = {str(col).replace("\ufeff", "").strip(): col for col in columns}
+    for candidate in candidates:
+        if candidate in normalized:
+            return normalized[candidate]
+    raise KeyError(
+        f"Could not find any of the expected columns {candidates}. "
+        f"Available columns: {list(columns)}"
+    )
 
-    ## Generate a random quantity based on a normal distribution
-    ## Even quantities are favored
 
-    # Define the quantities from min to max
-    min_qty = quantity_range[0]
-    max_qty = quantity_range[1]
-    numbers = np.arange(min_qty, max_qty + 1)
+def _env_int(name, default):
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return default
+    return int(value)
 
-    # Generate a normal distribution centered around the mean of the range
-    mean = np.mean(numbers)
-    std_dev = np.std(numbers)
-    normal_dist = np.exp(-((numbers - mean) ** 2) / (2 * std_dev ** 2))
 
-    # Adjust the probabilities to favor even numbers
-    adjusted_prob = np.array([prob * 2 if num % 2 == 0 else prob for num, prob in zip(numbers, normal_dist)])
-
-    # Normalize the adjusted probabilities to sum to 1
-    probabilities = adjusted_prob / adjusted_prob.sum()
-
-    # Make a random choice using the defined probabilities
-    random_qty = np.random.choice(numbers, p=probabilities)
-
-    return random_qty
-
-def gen_backlog(initial_order, total_requested_item, items_orders_class_configuration,quantity_range,dev_mode):
-
-    items_path = os.path.join(parent_directory, 'items.csv')
-    orders_path = os.path.join(parent_directory, 'generated_order.csv')
-    items = pd.read_csv(items_path, index_col=False)
-    order = pd.read_csv(orders_path, index_col=False)
-
-    total_available_item = items.shape[0]
-    if total_available_item >= total_requested_item:
-
-        if total_available_item > total_requested_item:
-            print("Total SKU is less than total items in the items.csv")
-            print("Total SKU will be set to the total items in the items.csv")
-            total_requested_item = total_available_item
-
-        temp = 0
-        # calculate cummulative the class_pod_conf value, to get the threshold to assign the item to the pod.
-        for key, value in items_orders_class_configuration.items():
-            if temp == 0:
-                temp = value
-            else:
-                temp += value
-                items_orders_class_configuration[key] = np.round(temp, 1)
-
-        # sort the class_pod_conf based on the value
-        items_orders_class_configuration = dict(sorted(items_orders_class_configuration.items(), key=lambda x: x[1]))
-
-        # get class_pod_conf values into list as thresholds. The keys will be used to get the item based on the class
-        thresholds = list(items_orders_class_configuration.values())
-        keys = list(items_orders_class_configuration.keys())
-        # print(keys, thresholds)
-
-        orders_in_backlog = list(i * -1 for i in range(1, initial_order+1))
-        items_in_order = np.random.geometric(p=0.5, size=initial_order) # data 1 -8 
-        # items_in_order = np.random.geometric(p=0.3, size=initial_order) # data 9 - 11
-        # items_in_order = np.random.geometric(p=0.4, size=initial_order) # data 12
-        # items_in_order = np.random.geometric(p=0.2, size=initial_order) # data 13
-        # print(orders_in_backlog, items_in_order)
-
-        orders_backlog = pd.DataFrame(columns=[ 'order_id', 
-                                               'order_type',
-                                               'item_id', 
-                                               'item_quantity', 
-                                               'order_arrival'])
-        
-        for i, order in enumerate(orders_in_backlog):
-            order_id = order
-            order_type = 1
-            order_duedate = 99999
-            
-            items_num = items_in_order[i]
-            # print(f"Order {order_id} has {items_num} items")
-
-            rand = np.random.rand(items_num)
-            item_exist = list()
-            # class_item = "A"
-            for r in rand:
-                if r <= thresholds[0]:
-                    # print(f"  below {thresholds[0]}, then the class is {keys[0]}")
-                    item_available = items.loc[(items["item_class"] == keys[0]) & (
-                        ~items.index.isin(item_exist)), "item_order_frequency"]
-                    # class_item = keys[0]
-
-                for l in range(len(thresholds) - 1):
-                    if thresholds[l] < r <= thresholds[l + 1]:
-                        # print(f"  between {thresholds[l]} and {thresholds[l + 1]}, then the class is {keys[l+1]}")
-                        item_available = items.loc[(items["item_class"] == keys[l+1]) & (
-                            ~items.index.isin(item_exist)), "item_order_frequency"]
-                        # class_item = keys[l+1]
-                
-                item_probability = (item_available / item_available.sum()).to_list()
-                item_available = item_available.index.to_list()
-                if len(item_available) > 0:
-                    item_id = np.random.choice(item_available, p=item_probability)
-                    qty = get_random_quantity(quantity_range=quantity_range)
-                    order_arrival = 0
-                    item_exist.append(item_id)
-                    # print("    ", item_id, qty, class_item)
-
-                    orders_backlog = pd.concat([orders_backlog, 
-                                                pd.DataFrame({"order_id": [order_id],
-                                                              "order_type": [order_type],
-                                                              "item_id": [item_id],
-                                                              "item_quantity": [qty],
-                                                              "order_arrival" : [order_arrival]})
-                                                ], axis=0)
-
-        orders_backlog.sort_values(by="order_id", ascending=True, inplace=True)                    
-        orders_backlog.reset_index(drop=True, inplace=True)
-        orders_backlog.insert(loc=0, column="sequence_id", value=orders_backlog.index.to_list())
-        orders_backlog_path = os.path.join(parent_directory, 'generated_backlog.csv')
-        orders_backlog.to_csv(orders_backlog_path, index=False)
-
-        return orders_backlog
-
-    else:
-        print("Total SKU ("+str(total_requested_item)+") is more than total items in the items.csv ("+str(total_available_item)+")")
-        print("Please provide a total SKU that is equal to or less than the total items in the items.csv")
+def _env_optional_int(name):
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
         return None
-    
-# ["order_id", 'order_dum', 'order_type', "item", "qty", "facing", "due_date", 'station', 'pod_id', 'status', 'finish_time', 'date', 'time_gen']
-
-def gen_order_arrival_time(order_cycle_time):
-    
-    # Define the total number of orders and the time period in minutes
-    total_orders = order_cycle_time     # number of orders in a cycle (hour)
-    time_period = 60                    # 60 minutes in an hour
-
-    # Calculate the average rate (lambda)
-    lambda_rate = total_orders / time_period
-
-    # Generate the number of orders per minute using a Poisson distribution
-    orders_per_minute = np.random.poisson(lambda_rate, size=time_period)
-
-    # Generate arrival times as integers
-    arrival_times = []
-    for minute, num_orders in enumerate(orders_per_minute):
-        arrival_times.extend([minute] * num_orders)
-
-    # If there are more than total_orders (due to Poisson randomness), truncate the list
-    if len(arrival_times) >= total_orders:
-        arrival_times = arrival_times[:total_orders]
-
-    # Sort the arrival times
-    arrival_times.sort()
-
-    # # Print the arrival times
-    # print(f"Order arrival times (in minutes): {arrival_times}")
-    
-    return arrival_times
+    return int(value)
 
 
-def gen_order(order_cycle_time,
-              order_period_time,  
-              order_start_arrival_time,
-              total_requested_item, 
-              items_orders_class_configuration,
-              quantity_range,
-              date, 
-              dev_mode):
-
-    items_path = os.path.join(parent_directory, 'items.csv')
-    items = pd.read_csv(items_path, index_col=False)    
-
-    total_available_item = items.shape[0]
-
-    if (total_available_item > total_requested_item) or (total_available_item == total_requested_item):
-        print("Total SKU is less than total items in the items.csv")
-        print("Total SKU will be set to the total items in the items.csv")
-        total_requested_item = total_available_item
-
-    if total_available_item >= total_requested_item:
-        temp = 0
-        # calculate cummulative the class_pod_conf value, to get the threshold to assign the item to the pod.
-        for key, value in items_orders_class_configuration.items():
-            if temp == 0:
-                temp = value
-            else:
-                temp += value
-                items_orders_class_configuration[key] = np.round(temp, 1)
-
-        # sort the class_pod_conf based on the value
-        items_orders_class_configuration = dict(sorted(items_orders_class_configuration.items(), key=lambda x: x[1]))
-
-        # get class_pod_conf values into list as thresholds. The keys will be used to get the item based on the class
-        thresholds = list(items_orders_class_configuration.values())
-        keys = list(items_orders_class_configuration.keys())
-        # print(keys, thresholds)
-
-        arrival_times_list = list()
-        last_arrival_time  = 0
-        for i in range(1, order_period_time+1):
-            arrival_times = gen_order_arrival_time(order_cycle_time=order_cycle_time)
-            if i==1:
-                index_start_arrival_time = np.where(np.array(arrival_times) > order_start_arrival_time)[0][0]
-
-                arrival_times_list = arrival_times[index_start_arrival_time:-1] + [arrival_times[-1] + 1 + x for x in arrival_times[:index_start_arrival_time]]
-                last_arrival_time = arrival_times[-1] + 1
-            else:
-                arrival_times_list = arrival_times_list + [last_arrival_time + x for x in arrival_times]
-                last_arrival_time = arrival_times_list[-1]
-
-        arrival_times_list = [60 * x for x in arrival_times_list] # convert to seconds
-        orders = range(0, len(arrival_times_list))
-        items_in_order = np.random.geometric(p=0.5, size=len(orders))
-        # items_in_order = np.random.geometric(p=0.3, size=len(orders))
-        # items_in_order = np.random.geometric(p=0.4, size=len(orders))
-        # items_in_order = np.random.geometric(p=0.2, size=len(orders)) # data 13
-
-        database_order = pd.DataFrame(columns=['order_dum', 
-                                               'order_type', 
-                                               "item", 
-                                               "qty", 
-                                               "facing", 
-                                               "due_date", 
-                                               'station', 
-                                               'pod_id', 
-                                               'status', 
-                                               'finish_time', 
-                                               'date', 
-                                               'time_gen'])
-        for i, order in enumerate(orders):
-            order_id = order
-            order_type = 1
-            order_duedate = 99999
-            
-            items_num = items_in_order[i]
-            # print(f"Order {order_id} has {items_num} items")
-
-            rand = np.random.rand(items_num)
-            item_exist = list()
-            # class_item = "A"
-            for r in rand:
-                if r <= thresholds[0]:
-                    # print(f"  below {thresholds[0]}, then the class is {keys[0]}")
-                    item_available = items.loc[(items["item_class"] == keys[0]) & (
-                        ~items.index.isin(item_exist)), "item_order_frequency"]
-                    class_item = keys[0]
-
-                for l in range(len(thresholds) - 1):
-                    if thresholds[l] < r <= thresholds[l + 1]:
-                        # print(f"  between {thresholds[l]} and {thresholds[l + 1]}, then the class is {keys[l+1]}")
-                        item_available = items.loc[(items["item_class"] == keys[l+1]) & (
-                            ~items.index.isin(item_exist)), "item_order_frequency"]
-                        class_item = keys[l+1]
-                
-                item_probability = (item_available / item_available.sum()).to_list()
-                item_available = item_available.index.to_list()
-                if len(item_available) > 0:
-                    item_id = np.random.choice(item_available, p=item_probability)
-                    qty = get_random_quantity(quantity_range=quantity_range)      
-                    item_exist.append(item_id)
-                    # print("    ", item_id, qty, class_item)
-
-                    database_order = pd.concat([database_order, 
-                                                pd.DataFrame({"order_dum": [order_id],
-                                                              "order_type": [order_type],
-                                                              "item": [item_id],
-                                                              "qty": [qty],
-                                                              "facing": [-1],
-                                                              "due_date": [order_duedate],
-                                                              "station": [-1],
-                                                              "pod_id": [-1],
-                                                              "status": [-3],
-                                                              "finish_time": [-1],
-                                                              "date": [date],
-                                                              "time_gen": [arrival_times_list[i]]})
-                                                ], axis=0)
+def _bootstrap_source_path(source_path=None):
+    if source_path is not None:
+        return Path(source_path)
+    env_path = os.getenv("RMFS_BOOTSTRAP_ORDER_PATH")
+    if env_path:
+        return Path(env_path)
+    return Path(parent_directory) / "raw_order.csv"
 
 
-        database_order.reset_index(drop=True, inplace=True)
-        database_order.insert(loc=0, column="order_id", value=database_order.index.to_list())
-        database_order_path = os.path.join(parent_directory, 'generated_database_order.csv')
-        database_order.to_csv(database_order_path, index=False)
+def _load_item_lookup():
+    items_path = Path(parent_directory) / "items.csv"
+    items = pd.read_csv(items_path)
+    items["item_code"] = items["item_code"].map(_normalize_item_code)
+    return items[["item_id", "item_code"]].drop_duplicates("item_code")
 
-        generated_order = database_order[["order_id", 'order_dum', 'order_type', "item", "qty", 'time_gen']].copy()
-        generated_order.columns = ["sequence_id", 'order_id', 'order_type', "item_id", "item_quantity", 'order_arrival']
-        
-        generated_order_path = os.path.join(parent_directory, 'generated_order.csv')
-        generated_order.to_csv(generated_order_path, index=False)
 
-        return database_order
+def _load_raw_orders(source_path):
+    # Auto-detect delimiter so the bootstrap input can be either comma- or
+    # semicolon-delimited without requiring a separate conversion step.
+    raw_orders = pd.read_csv(source_path, sep=None, engine="python")
 
-    else:
-        print("Total SKU ("+str(total_requested_item)+") is more than total items in the items.csv ("+str(total_available_item)+")")
-        print("Please provide a total SKU that is equal to or less than the total items in the items.csv")
-        return None
+    order_col = _find_column(raw_orders.columns, RAW_ORDER_ID_CANDIDATES)
+    item_code_col = _find_column(raw_orders.columns, RAW_ITEM_CODE_CANDIDATES)
+    qty_col = _find_column(raw_orders.columns, RAW_QUANTITY_CANDIDATES)
+    created_col = _find_column(raw_orders.columns, RAW_CREATED_AT_CANDIDATES)
 
-def config_orders(initial_order, total_requested_item, items_orders_class_configuration,quantity_range,order_cycle_time,order_period_time,order_start_arrival_time,date,sim_ver,dev_mode):
-    if sim_ver == 1:
-        print("Generate database orders...")
+    raw_orders = raw_orders[[order_col, item_code_col, qty_col, created_col]].copy()
+    raw_orders.columns = ["source_order_id", "item_code", "item_quantity", "created_at"]
+    raw_orders["source_order_id"] = raw_orders["source_order_id"].astype(str).str.strip()
+    raw_orders["item_code"] = raw_orders["item_code"].map(_normalize_item_code)
+    raw_orders["item_quantity"] = pd.to_numeric(raw_orders["item_quantity"], errors="coerce")
+    raw_orders["created_at"] = pd.to_datetime(
+        raw_orders["created_at"],
+        errors="coerce",
+        dayfirst=True,
+    )
 
-        database_order_path = os.path.join(parent_directory, 'generated_database_order.csv')
-        if not os.path.exists(database_order_path):
-            print("    Generated database orders is not found. We will generate database orders:")
-            orders = gen_order(order_cycle_time=order_cycle_time,order_period_time=order_period_time,order_start_arrival_time=order_start_arrival_time,total_requested_item=total_requested_item, items_orders_class_configuration=items_orders_class_configuration,quantity_range=quantity_range,date=date,dev_mode=dev_mode)
-            order_id_list = orders["order_dum"].unique().tolist()
-            print("    "+str(len(order_id_list))+" orders are generated.")
-        else:
-            print("    Generated database orders file is found. We will use the existing orders file.")    
-            print("    If you want to reconfigure the orders, please delete the generated_order.csv file.") 
+    raw_orders = raw_orders.dropna(
+        subset=["source_order_id", "item_code", "item_quantity", "created_at"]
+    ).copy()
+    raw_orders = raw_orders[raw_orders["item_code"] != ""].copy()
+    raw_orders["item_quantity"] = np.ceil(raw_orders["item_quantity"]).astype(int)
+    raw_orders = raw_orders[raw_orders["item_quantity"] > 0].copy()
 
-    elif sim_ver == 2:
-        
-        print("Generate backlog orders...")
-        backlogs_path = os.path.join(parent_directory, 'generated_backlog.csv')
-        backlog_generated = False
-        if not os.path.exists(backlogs_path):
-            
-            print("    Generated backlog orders is not found. We will generate backlog orders.")
-            backlogs = gen_backlog(initial_order=initial_order, total_requested_item=total_requested_item, 
-                                   items_orders_class_configuration=items_orders_class_configuration,
-                                   quantity_range=quantity_range,
-                                   dev_mode=dev_mode)
-            backlog_generated = True
-        else:
-            backlogs = pd.read_csv(backlogs_path, index_col=False)
-            backlogs_id_list = backlogs["order_id"].unique().tolist()
-            
-            if initial_order == len(backlogs_id_list):
-                print("    Initial order is the same as the number of orders in the backlog file.")
-                print("    We will use the existing items file.")
-            
-            else:
-                print("    Initial order is different from the number of orders in the backlog file.")
-                print("    We will re-generate backlog orders using the new intial order.")
-                backlogs = gen_backlog(initial_order=initial_order, total_requested_item=total_requested_item, 
-                                       items_orders_class_configuration=items_orders_class_configuration,
-                                       quantity_range=quantity_range,
-                                       dev_mode=dev_mode)
-                backlog_generated = True
-        print("    Generate backlog orders is done. If you want to reconfigure the backlog orders, please delete the generated_backlog.csv file.")
+    if raw_orders.empty:
+        raise ValueError(f"No valid order rows remained after parsing {source_path}.")
 
-        print("Generate orders...")
-        generated_order_path = os.path.join(parent_directory, 'generated_order.csv')
-        if not os.path.exists(generated_order_path):
-            print("    Generated orders is not found. We will generate database orders:")
-            orders = gen_order(order_cycle_time=order_cycle_time,
-                               order_period_time=order_period_time,  
-                               order_start_arrival_time=order_start_arrival_time,  
-                               total_requested_item=total_requested_item, 
-                               items_orders_class_configuration=items_orders_class_configuration,
-                               quantity_range=quantity_range,
-                               date=date,
-                               dev_mode=dev_mode)
-            order_id_list = orders["order_dum"].unique().tolist()
-            print("    "+str(len(order_id_list))+" orders are generated.")
-            print("    Generate orders is done. If you want to reconfigure the orders, please delete the generated_order.csv file.")
+    item_lookup = _load_item_lookup()
+    raw_orders = raw_orders.merge(item_lookup, on="item_code", how="left")
 
-        else:
-            print("    Generated orders file is found. We will use the existing orders file.")
-            print("    If you want to reconfigure the orders, please delete the generated_order.csv file.")  
-    
-        if backlog_generated:
-            csv_files = ['generated_backlog.csv','generated_order.csv']
-            dataframes = [pd.read_csv(file) for file in csv_files]
-            merged_df = pd.concat(dataframes, ignore_index=True)
-            merged_df['sequence_id'] = range(1, len(merged_df) + 1)
-            os.remove('generated_order.csv')
-            merged_df.to_csv('generated_order.csv', index=False)
+    missing_item_mask = raw_orders["item_id"].isna()
+    missing_sku_count = int(missing_item_mask.sum())
+    missing_codes = []
+    if missing_item_mask.any():
+        missing_codes = sorted(
+            raw_orders.loc[missing_item_mask, "item_code"].astype(str).unique().tolist()
+        )
+        raw_orders = raw_orders.loc[~missing_item_mask].copy()
+
+    if raw_orders.empty:
+        raise ValueError(
+            "No valid order rows remained after filtering to item codes present in items.csv."
+        )
+
+    raw_orders["item_id"] = raw_orders["item_id"].astype(int)
+    raw_orders = raw_orders.sort_values(
+        ["created_at", "source_order_id", "item_id"],
+        kind="stable",
+    ).reset_index(drop=True)
+
+    return raw_orders, missing_item_mask, missing_sku_count, missing_codes
+
+
+def _build_empirical_order_table(raw_orders):
+    order_table = (
+        raw_orders.groupby("source_order_id", sort=False)
+        .agg(created_at=("created_at", "min"))
+        .reset_index()
+        .sort_values(["created_at", "source_order_id"], kind="stable")
+        .reset_index(drop=True)
+    )
+    base_time = order_table["created_at"].min()
+    order_table["arrival_seconds"] = (
+        order_table["created_at"] - base_time
+    ).dt.total_seconds().round().astype(int)
+    return order_table
+
+
+def _bootstrap_arrivals(order_table, sample_size, rng, arrival_mode, order_start_arrival_time):
+    start_time = int(order_start_arrival_time)
+    if sample_size <= 0:
+        return np.asarray([], dtype=np.int64)
+
+    empirical_arrivals = order_table["arrival_seconds"].to_numpy(dtype=np.int64)
+    if empirical_arrivals.size == 0:
+        return np.full(sample_size, start_time, dtype=np.int64)
+
+    if arrival_mode == "sample_original_times":
+        sampled_arrivals = rng.choice(empirical_arrivals, size=sample_size, replace=True)
+        sampled_arrivals = np.sort(sampled_arrivals.astype(np.int64))
+        return sampled_arrivals + start_time
+
+    if arrival_mode != "empirical_interarrival":
+        raise ValueError(
+            "Unsupported bootstrap arrival mode: "
+            f"{arrival_mode}. Expected 'empirical_interarrival' or 'sample_original_times'."
+        )
+
+    horizon = int(empirical_arrivals.max())
+    if empirical_arrivals.size == 1 or horizon <= 0:
+        return np.full(sample_size, start_time, dtype=np.int64)
+
+    empirical_gaps = np.diff(empirical_arrivals)
+    if empirical_gaps.size == 0:
+        return np.full(sample_size, start_time, dtype=np.int64)
+
+    sampled_gaps = rng.choice(empirical_gaps, size=max(sample_size - 1, 0), replace=True)
+    sampled_arrivals = np.concatenate(
+        [np.asarray([0], dtype=np.float64), np.cumsum(sampled_gaps, dtype=np.float64)]
+    )
+
+    if sampled_arrivals[-1] > 0:
+        sampled_arrivals = (sampled_arrivals / sampled_arrivals[-1]) * horizon
+
+    sampled_arrivals = np.rint(sampled_arrivals).astype(np.int64)
+    sampled_arrivals = np.maximum.accumulate(sampled_arrivals)
+    return sampled_arrivals + start_time
+
+
+def _build_generated_orders(sampled_order_ids, raw_orders, sampled_arrivals):
+    order_lines = []
+    sequence_id = 0
+
+    for generated_order_id, (source_order_id, order_arrival) in enumerate(
+        zip(sampled_order_ids, sampled_arrivals)
+    ):
+        source_lines = raw_orders.loc[
+            raw_orders["source_order_id"] == source_order_id,
+            ["item_id", "item_quantity"],
+        ]
+        for line in source_lines.itertuples(index=False):
+            order_lines.append(
+                {
+                    "sequence_id": int(sequence_id),
+                    "order_id": int(generated_order_id),
+                    "order_type": 1,
+                    "item_id": int(line.item_id),
+                    "item_quantity": int(line.item_quantity),
+                    "order_arrival": int(order_arrival),
+                    "source_order_id": str(source_order_id),
+                }
+            )
+            sequence_id += 1
+
+    generated_order = pd.DataFrame(order_lines)
+    if generated_order.empty:
+        raise ValueError("Bootstrap generation produced no order lines.")
+
+    return generated_order
+
+
+def _build_generated_database_order(generated_order):
+    database_order = pd.DataFrame(
+        {
+            "order_id": generated_order["sequence_id"].astype(int),
+            "order_dum": generated_order["order_id"].astype(int),
+            "order_type": generated_order["order_type"].astype(int),
+            "item": generated_order["item_id"].astype(int),
+            "qty": generated_order["item_quantity"].astype(int),
+            "facing": -1,
+            "due_date": 99999,
+            "station": -1,
+            "pod_id": -1,
+            "status": -3,
+            "finish_time": -1,
+            "date": 1,
+            "time_gen": generated_order["order_arrival"].astype(int),
+            "source_order_id": generated_order["source_order_id"].astype(str),
+        }
+    )
+    return database_order
+
+
+def generate_orders_from_raw_bootstrap(
+    seed=None,
+    n_orders=None,
+    arrival_mode="empirical_interarrival",
+    order_start_arrival_time=0,
+    source_path=None,
+):
+    resolved_seed = _env_int("RMFS_BOOTSTRAP_SEED", 42) if seed is None else int(seed)
+    resolved_n_orders = (
+        _env_optional_int("RMFS_BOOTSTRAP_N_ORDERS") if n_orders is None else int(n_orders)
+    )
+    resolved_arrival_mode = os.getenv("RMFS_BOOTSTRAP_ARRIVAL_MODE", arrival_mode)
+    resolved_start_arrival = (
+        _env_int("RMFS_BOOTSTRAP_START_ARRIVAL", 0)
+        if order_start_arrival_time is None
+        else int(order_start_arrival_time)
+    )
+    resolved_source_path = _bootstrap_source_path(source_path)
+
+    rng = np.random.default_rng(resolved_seed)
+
+    raw_orders, _, missing_sku_count, missing_codes = _load_raw_orders(resolved_source_path)
+    order_table = _build_empirical_order_table(raw_orders)
+    source_order_ids = order_table["source_order_id"].to_numpy(dtype=object)
+    source_unique_orders = int(source_order_ids.size)
+
+    if source_unique_orders <= 0:
+        raise ValueError("Bootstrap source contains no valid unique orders.")
+
+    if resolved_n_orders is None:
+        resolved_n_orders = source_unique_orders
+    if resolved_n_orders <= 0:
+        raise ValueError("Bootstrap n_orders must be positive.")
+
+    sampled_order_ids = rng.choice(
+        source_order_ids,
+        size=int(resolved_n_orders),
+        replace=True,
+    )
+    sampled_arrivals = _bootstrap_arrivals(
+        order_table=order_table,
+        sample_size=int(resolved_n_orders),
+        rng=rng,
+        arrival_mode=resolved_arrival_mode,
+        order_start_arrival_time=resolved_start_arrival,
+    )
+    generated_order = _build_generated_orders(
+        sampled_order_ids=sampled_order_ids,
+        raw_orders=raw_orders,
+        sampled_arrivals=sampled_arrivals,
+    )
+    generated_database_order = _build_generated_database_order(generated_order)
+
+    generated_order_path = Path(parent_directory) / "generated_order.csv"
+    generated_database_order_path = Path(parent_directory) / "generated_database_order.csv"
+    generated_meta_path = Path(parent_directory) / "generated_order_meta.json"
+
+    generated_order.to_csv(generated_order_path, index=False)
+    generated_database_order.to_csv(generated_database_order_path, index=False)
+
+    metadata = {
+        "generator": "bootstrap_raw_order",
+        "source_path": str(resolved_source_path),
+        "seed": int(resolved_seed),
+        "n_orders": int(resolved_n_orders),
+        "arrival_mode": resolved_arrival_mode,
+        "order_start_arrival_time": int(resolved_start_arrival),
+        "source_unique_orders": int(source_unique_orders),
+        "sampled_unique_source_orders": int(pd.Series(sampled_order_ids).nunique()),
+        "generated_unique_orders": int(generated_order["order_id"].nunique()),
+        "generated_order_lines": int(len(generated_order)),
+        "generated_max_arrival": int(generated_order["order_arrival"].max()),
+        "missing_sku_lines_dropped": int(missing_sku_count),
+        "missing_sku_examples": missing_codes[:10],
+    }
+    with open(generated_meta_path, "w", encoding="utf-8") as metadata_file:
+        json.dump(metadata, metadata_file, indent=2, ensure_ascii=False)
+
+    print(
+        "Generated bootstrap order stream "
+        f"with {metadata['generated_unique_orders']:,} orders and "
+        f"{metadata['generated_order_lines']:,} lines "
+        f"(seed={metadata['seed']}, arrival_mode={metadata['arrival_mode']})."
+    )
+    if missing_sku_count > 0:
+        preview = ", ".join(metadata["missing_sku_examples"])
+        print(
+            f"Dropped {missing_sku_count:,} raw-order lines whose item_code was not found in items.csv. "
+            f"Sample missing codes: {preview}"
+        )
+
+    return generated_order
+
+
+def config_orders(
+    initial_order=None,
+    total_requested_item=None,
+    items_orders_class_configuration=None,
+    quantity_range=None,
+    order_cycle_time=None,
+    order_period_time=None,
+    order_start_arrival_time=None,
+    date=None,
+    sim_ver=None,
+    dev_mode=False,
+    seed=None,
+    n_orders=None,
+    arrival_mode="empirical_interarrival",
+    source_path=None,
+):
+    # Legacy synthetic parameters are intentionally ignored. joint-rmfs now
+    # always prepares its order stream from bootstrap resampling of raw_order.csv.
+    return generate_orders_from_raw_bootstrap(
+        seed=seed,
+        n_orders=n_orders,
+        arrival_mode=arrival_mode,
+        order_start_arrival_time=order_start_arrival_time,
+        source_path=source_path,
+    )
