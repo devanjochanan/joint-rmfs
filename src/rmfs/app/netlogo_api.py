@@ -42,6 +42,10 @@ from model.tools.pod_location import clear_pod_locations, initialize_pod_locatio
 from model.tools.pod_travel import clear_pod_travel, initialize_pod_travel_table
 from model.tools.job_task import clear_job_task_table, initialize_job_task_table
 from model.tools.order_history import clear_order_history, initialize_order_history_table
+from src.rmfs.runtime_io.scenario_bundle import (
+    activate_scenario_inputs as _activate_scenario_inputs,
+    list_available_scenarios as _list_available_scenarios,
+)
 
 from pip._internal import main as pipmain
 
@@ -69,6 +73,8 @@ __all__ = [
     "add_all_direction_paths",
     "assign_skus_to_pods",
     "assign_skus_to_pods_from_file",
+    "activate_scenario_inputs",
+    "list_available_scenarios",
     # Public API (called by simulation.nlogo / profile_netlogo.py)
     "setup",
     "tick",
@@ -77,6 +83,14 @@ __all__ = [
 ]
 
 ACTIVATE_NEAREST = True
+
+
+def activate_scenario_inputs(scenario_name=None):
+    return _activate_scenario_inputs(scenario_name=scenario_name)
+
+
+def list_available_scenarios():
+    return _list_available_scenarios()
 
 
 class DirectedGraph:
@@ -832,7 +846,7 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
     df_sorted.to_csv(sorted_csv_file, index=False)
 
 
-def setup():
+def setup(scenario_name=None):
     try:
         # Initiate DB
         from datetime import datetime
@@ -848,6 +862,16 @@ def setup():
         clear_order_history()
         clear_pod_locations()
         clear_pod_travel()
+
+        activated_scenario = activate_scenario_inputs(scenario_name)
+        if activated_scenario is not None:
+            print(
+                "Activated scenario bundle "
+                f"{activated_scenario['scenario_name']} "
+                f"({activated_scenario['items_rows']} items, "
+                f"{activated_scenario['unique_pods']} pods)."
+            )
+
         # Initialize the simulation universe
         assignment_path = "assign_order.csv"
         if os.path.exists(assignment_path):
