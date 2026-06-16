@@ -940,6 +940,26 @@ class Robot(Object):
             self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
             self.warehouse.storage_manager.addPodToStorage(self.job.pod, nearest_storage)
 
+        elif decision.mode == "rl":
+            # --- RL return: identical to nearest return but uses RL-selected storage ---
+            if decision.storage is None:
+                raise ValueError("RTS policy returned 'rl' mode but decision.storage is None")
+            if decision.destination is None:
+                raise ValueError("RTS policy returned 'rl' mode but decision.destination is None")
+            
+            nearest_storage = decision.storage
+            self.destination = decision.destination
+            self.job.pod_return_coordinate = self.destination
+            self.job.writePodReturnReport(
+                calculateManhattanDistance(
+                    (self.job.pod_return_coordinate.x, self.job.pod_return_coordinate.y),
+                    (self.job.pod_coordinate.x, self.job.pod_coordinate.y),
+                )
+            )
+
+            self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
+            self.warehouse.storage_manager.addPodToStorage(self.job.pod, nearest_storage)
+
         elif decision.mode in ("nearest_fallback", "none"):
             # --- Fallback: no empty storage, or neither flag set ---
             self.job.writePodReturnReport(-1)
