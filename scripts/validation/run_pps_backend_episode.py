@@ -22,14 +22,19 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 os.chdir(_REPO_ROOT)
+from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run one RMFS Python-backend episode headlessly."
     )
     parser.add_argument(
         "--mode",
-        choices=("ppo", "random", "rika", "demand"),
-        default="ppo",
+        "--pps-mode",
+        dest="mode",
+        choices=("ppo", "random", "rika", "heuristic", "demand"),
+        default="rika",
         help="PPS mode to use.",
     )
     parser.add_argument(
@@ -42,7 +47,7 @@ def parse_args() -> argparse.Namespace:
         "--model-path",
         type=str,
         default=None,
-        help="Optional PPO .zip model path. Defaults to docs/training_pps/saved_models/pps_rl_best.zip.",
+        help=f"Optional PPO .zip model path. Defaults to {DEFAULT_PPS_MODEL_PATH}.",
     )
     parser.add_argument(
         "--seed",

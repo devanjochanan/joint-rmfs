@@ -41,10 +41,6 @@ from collections import defaultdict
 from pathlib import Path
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-os.chdir(_REPO_ROOT)
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces

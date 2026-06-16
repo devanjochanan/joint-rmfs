@@ -27,6 +27,11 @@ from pandas import DataFrame
 from sklearn.cluster import KMeans
 
 from src.rmfs.runtime_io import RunContext
+from src.rmfs.runtime_io.scenario_bundle import (
+    activate_scenario_inputs as _activate_scenario_inputs,
+    list_available_scenarios as _list_available_scenarios,
+)
+from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH, pps_model_candidates
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
 from model.intersection import Intersection
@@ -81,6 +86,8 @@ __all__ = [
     "add_all_direction_paths",
     "assign_skus_to_pods",
     "assign_skus_to_pods_from_file",
+    "activate_scenario_inputs",
+    "list_available_scenarios",
     # Public API (called by simulation.nlogo / profile_netlogo.py)
     "setup",
     "tick",
@@ -95,6 +102,18 @@ __all__ = [
 
 ACTIVATE_NEAREST = True
 _RUN_CONTEXT = RunContext.default()
+
+
+def activate_scenario_inputs(scenario_name=None, target_root=None, dry_run=False):
+    return _activate_scenario_inputs(
+        scenario_name=scenario_name,
+        target_root=target_root,
+        dry_run=dry_run,
+    )
+
+
+def list_available_scenarios():
+    return _list_available_scenarios()
 
 
 def get_run_context():
@@ -145,13 +164,13 @@ PPS_RL_POD_FEATURE_DIM = (
 )
 PPS_RL_MODEL_PATH = os.environ.get(
     "PPS_RL_MODEL_PATH",
-    os.path.join(_REPO_ROOT, "docs", "training_pps", "saved_models", "pps_rl_best.zip"),
+    str(DEFAULT_PPS_MODEL_PATH),
 )
 
 _PPS_RL_MODEL = None
 _PPS_RL_LOAD_ATTEMPTED = False
 _PPS_RL_ACTIVE_LOGGED = False
-_PPS_MODE = os.environ.get("PPS_MODE", "ppo").strip().lower()
+_PPS_MODE = os.environ.get("PPS_MODE", "heuristic").strip().lower()
 _SIM_SEED = (
     int(os.environ["RMFS_SIM_SEED"])
     if os.environ.get("RMFS_SIM_SEED", "").strip()
@@ -191,14 +210,11 @@ def _normalize_pps_mode(mode):
         return "heuristic"
     if mode in {"demand", "demand_pps"}:
         return "demand"
-    return "ppo"
+    return "heuristic"
 
 
 def _pps_rl_model_candidates():
-    paths = [PPS_RL_MODEL_PATH]
-    if not PPS_RL_MODEL_PATH.endswith(".zip"):
-        paths.append(PPS_RL_MODEL_PATH + ".zip")
-    return paths
+    return [str(path) for path in pps_model_candidates(PPS_RL_MODEL_PATH)]
 
 
 def _ensure_numpy_pickle_compat():

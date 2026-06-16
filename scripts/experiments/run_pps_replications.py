@@ -30,6 +30,8 @@ if str(_REPO_ROOT) not in sys.path:
 os.chdir(_REPO_ROOT)
 import numpy as np
 
+from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH
+
 
 POLICY_MODES = ("rika", "random", "ppo")
 
@@ -128,7 +130,7 @@ def parse_args() -> argparse.Namespace:
         "--model-path",
         type=str,
         default=None,
-        help="Optional trained PPO .zip model path.",
+        help=f"Optional trained PPO .zip model path. Defaults to {DEFAULT_PPS_MODEL_PATH}.",
     )
     parser.add_argument(
         "--output-dir",

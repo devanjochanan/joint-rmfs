@@ -12,10 +12,10 @@ Uses Stable-Baselines3 PPO with:
   - Model save/load + checkpoints
 
 Usage:
-    python docs/training_pps/train_pps_rl.py --episodes 500 --max-ticks 5000
-    python docs/training_pps/train_pps_rl.py --resume
-    python docs/training_pps/train_pps_rl.py --eval
-    python -m tensorboard.main --logdir docs/training_pps/saved_models/runs
+    python scripts/training/train_pps_rl.py --episodes 500 --max-ticks 5000
+    python scripts/training/train_pps_rl.py --resume
+    python scripts/training/train_pps_rl.py --eval
+    python -m tensorboard.main --logdir data/models/pps/runs
 """
 
 from __future__ import annotations
@@ -35,16 +35,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-# Keep Matplotlib/SB3 font-cache writes inside the project folder on Windows.
-_MPLCONFIGDIR = os.path.join(os.path.dirname(__file__), "saved_models", ".matplotlib")
-os.makedirs(_MPLCONFIGDIR, exist_ok=True)
-os.environ.setdefault("MPLCONFIGDIR", _MPLCONFIGDIR)
-
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 os.chdir(_REPO_ROOT)
+
+# Keep Matplotlib/SB3 font-cache writes inside the project folder on Windows.
+_MPLCONFIGDIR = _REPO_ROOT / "data" / "models" / "pps" / ".matplotlib"
+_MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(_MPLCONFIGDIR))
+
 import numpy as np
 from tqdm import tqdm
 
@@ -54,10 +54,11 @@ from stable_baselines3.common.utils import get_linear_fn, set_random_seed
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from torch.utils.tensorboard import SummaryWriter
 
-from pps_env import PPSEnv
+from src.rmfs.rl.pps.env import PPSEnv
+from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH
 
 try:
-    from pps_env import (
+    from src.rmfs.rl.pps.env import (
         ALPHA_OCT,
         FAST_TRAIN_MODE,
         PICKED_QTY_WEIGHT,
@@ -126,10 +127,10 @@ def generate_training_seed() -> int:
 # ---------------------------------------------------------------------------
 # Paths (defaults, overridable via CLI)
 # ---------------------------------------------------------------------------
-MODEL_DIR = os.path.join("docs", "training_pps", "saved_models")
+MODEL_DIR = os.path.join("data", "models", "pps")
 LOG_DIR = os.path.join(MODEL_DIR, "runs")
 METRICS_DIR = os.path.join(MODEL_DIR, "metrics")
-BEST_MODEL = os.path.join(MODEL_DIR, "pps_rl_best")
+BEST_MODEL = str(DEFAULT_PPS_MODEL_PATH.with_suffix(""))
 CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")
 TRAIN_STATE_FILE = os.path.join(MODEL_DIR, "train_state.json")
 
