@@ -6,7 +6,8 @@ import pandas as pd
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_SHARED_SCENARIO_ROOT = (
+BUNDLED_SCENARIO_ROOT = REPO_ROOT / "data" / "scenarios"
+LEGACY_SHARED_SCENARIO_ROOT = (
     REPO_ROOT.parent / "_full_postt_parallel_runs" / "four_scenario_1000_shared_latest"
 )
 
@@ -14,9 +15,6 @@ SCENARIO_ALIASES = {
     "cindy_s1": "cindy_s1",
     "cindy1": "cindy_s1",
     "scenario1": "cindy_s1",
-    "cindy_s2": "cindy_s2",
-    "cindy2": "cindy_s2",
-    "scenario2": "cindy_s2",
     "cindy_s3": "cindy_s3",
     "cindy3": "cindy_s3",
     "scenario3": "cindy_s3",
@@ -46,7 +44,9 @@ def _shared_scenario_root():
     env_root = os.getenv("RMFS_SHARED_SCENARIO_ROOT")
     if env_root:
         return Path(env_root)
-    return DEFAULT_SHARED_SCENARIO_ROOT
+    if BUNDLED_SCENARIO_ROOT.exists():
+        return BUNDLED_SCENARIO_ROOT
+    return LEGACY_SHARED_SCENARIO_ROOT
 
 
 def _canonical_scenario_name(name):
@@ -63,13 +63,11 @@ def _canonical_scenario_name(name):
 
 
 def _scenario_output_dir(scenario_name):
-    return (
-        _shared_scenario_root()
-        / scenario_name
-        / "netlogo-rmfs"
-        / "data"
-        / "output"
-    )
+    root = _shared_scenario_root()
+    bundled_output_dir = root / scenario_name
+    if (bundled_output_dir / "items.csv").exists() and (bundled_output_dir / "pods.csv").exists():
+        return bundled_output_dir
+    return root / scenario_name / "netlogo-rmfs" / "data" / "output"
 
 
 def list_available_scenarios():
@@ -170,6 +168,7 @@ def activate_scenario_inputs(scenario_name=None, target_root=None):
 
     metadata = {
         "scenario_name": canonical_name,
+        "scenario_bundle_root": str(_shared_scenario_root()),
         "shared_scenario_root": str(_shared_scenario_root()),
         "items_source": str(items_source),
         "pods_source": str(pods_source),
