@@ -214,8 +214,10 @@ The following facts should guide the Phase 2 cleanup:
 - **Branch Name mismatch**: The repository branch is named `main_future` instead of the expected `future-main`. The user explicitly approved proceeding on `main_future`.
 - **Binary config file**: `config.dictionary` is tracked in the repository root as a binary pickle file.
 - **Model file missing**: The default model file `docs/training_pps/saved_models/pps_rl_best.zip` is gitignored and does not exist in the working checkout.
+- **Line Endings Mismatch (WSL vs. Windows)**: A cross-platform Git status discrepancy was identified. Windows Git normalizes CRLF (`\r\n`), but WSL Git defaults to `core.autocrlf = false`, marking 158 files as modified due to literal `\r` carriage returns. This was resolved locally by setting `git config core.autocrlf input` inside the WSL environment to preserve Linux shell script compatibility.
 
 ---
+
 
 ## 16. Files Changed By This Phase
 
