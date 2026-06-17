@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from model.order_generator import generate_orders_from_raw_bootstrap
+from src.rmfs.order_generation import generate_orders_from_raw_bootstrap
 from src.rmfs.runtime_io.run_profiles import resolve_run_profile
 
 

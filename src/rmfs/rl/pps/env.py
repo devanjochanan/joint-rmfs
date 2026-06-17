@@ -422,7 +422,7 @@ class PPSEnv(gym.Env):
         clear_pre_assign_table(db_path=db_path)
 
         # Regenerate one explicit, bounded order stream per episode.
-        from model.order_generator import config_orders
+        from src.rmfs.order_generation import config_orders
         for path in (ctx.generated_order_csv, ctx.generated_database_order_csv, ctx.generated_backlog_csv):
             if path.exists():
                 path.unlink()

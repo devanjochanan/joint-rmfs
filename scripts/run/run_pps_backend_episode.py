@@ -22,7 +22,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 os.chdir(_REPO_ROOT)
-from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH
+from src.rmfs.decisions.pps import DEFAULT_PPS_MODEL_PATH
 from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
 
 

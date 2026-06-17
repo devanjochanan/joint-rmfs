@@ -1,3 +1,9 @@
+"""Bootstrap order generation from raw order data.
+
+Moved from model/order_generator.py to become part of the order generation
+owner module at src/rmfs/order_generation/.
+"""
+
 import json
 import os
 from pathlib import Path
@@ -5,13 +11,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.rmfs.runtime_io.order_generation import resolve_order_generation_policy
+from src.rmfs.order_generation.policy import resolve_order_generation_policy
 
 
 current_directory = os.path.dirname(os.path.abspath(__file__))
-parent_directory = os.path.dirname(current_directory)
-CANONICAL_INPUT_BASE = Path(parent_directory) / "data" / "input" / "base"
-CANONICAL_RUNTIME_TMP = Path(parent_directory) / "data" / "runtime" / "tmp"
+# Parent of src/rmfs/order_generation/ is src/rmfs/, grandparent is src/, great-grandparent is repo root
+_repo_root = Path(__file__).resolve().parents[3]
+CANONICAL_INPUT_BASE = _repo_root / "data" / "input" / "base"
+CANONICAL_RUNTIME_TMP = _repo_root / "data" / "runtime" / "tmp"
 
 RAW_ORDER_ID_CANDIDATES = ["order_id", "Order ID"]
 RAW_ITEM_CODE_CANDIDATES = ["item_code", "Item Code"]
@@ -58,7 +65,7 @@ def _bootstrap_source_path(source_path=None):
     if env_path:
         return Path(env_path)
     canonical = CANONICAL_INPUT_BASE / "raw_order.csv"
-    return canonical if canonical.exists() else Path(parent_directory) / "raw_order.csv"
+    return canonical if canonical.exists() else _repo_root / "raw_order.csv"
 
 
 def _load_item_lookup(items_csv_path=None):
@@ -66,7 +73,7 @@ def _load_item_lookup(items_csv_path=None):
         items_path = Path(items_csv_path)
     else:
         canonical = CANONICAL_INPUT_BASE / "items.csv"
-        items_path = canonical if canonical.exists() else Path(parent_directory) / "items.csv"
+        items_path = canonical if canonical.exists() else _repo_root / "items.csv"
     items = pd.read_csv(items_path)
     items["item_code"] = items["item_code"].map(_normalize_item_code)
     return items[["item_id", "item_code"]].drop_duplicates("item_code")

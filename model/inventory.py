@@ -824,39 +824,8 @@ class Inventory(Universe):
         relevant_skus: list, 
         mode: str = "pile_on"  # or "demand"
     ):  # type: ignore
-
-        # Step 1: Collect pod candidates from relevant skus
-        pod_candidates: set[Pod] = set()
-        for sku in relevant_skus:
-            pod_candidates.update(self.pod_manager.sku_to_pods.get(sku, []))
-
-        # Step 2: Filter only idle pods
-        pod_candidates = {pod for pod in pod_candidates if self.pod_manager.is_idle(pod.pod_id)}
-
-        print(f"[DEBUG] Checking candidates for mode={mode} skus={relevant_skus}")
-        print(f"[DEBUG] pod_candidates={pod_candidates}")
-
-        if not pod_candidates:
-            return None, -1
-
-        # Step 3: Score function
-        def score_pod(pod: Pod) -> int:
-            score = 0
-            for sku, req_qty in sku_to_quantity.items():
-                if sku in pod.skus:
-                    current_total = pod.skus[sku]['current_qty']
-                    score += min(current_total, req_qty)
-            return score
-
-        # Step 4: Rank pods by score
-        ranked_pods = sorted(
-            [(pod, score_pod(pod)) for pod in pod_candidates],
-            key=lambda x: x[1],
-            reverse=True
-        )
-
-        print(f"[DEBUG] ranked_pods (mode={mode}) = {ranked_pods}")
-        return ranked_pods[0]
+        from src.rmfs.decisions.pps.heuristic import find_best_pod
+        return find_best_pod(self, sku_to_quantity, relevant_skus, mode)
 
     def add_picking_task_after_pps(self, station: Station, pod: Pod, sku_to_list_order_id_and_quantity: dict, sku_to_quantity: dict):
         latest_pod_location = get_pod_location(pod.pod_id, db_path=self.sqlite_db_path)
@@ -893,7 +862,7 @@ class Inventory(Universe):
                 self.pod_manager.reduce_sku_data(sku, quantity_to_take)
                 # station.reduce_sku
                 station.reduce_sku_from_station(sku, quantity_to_take)
-
+ 
         station.add_pod(pod.pod_id)
         pod.station = station
         # print(f"[DEBUG] assign job pod {pod.id} coordinate {pod.coordinate}")
@@ -905,74 +874,12 @@ class Inventory(Universe):
         return job
 
     def find_pod_with_the_highest_pile_on(self, sku_to_quantity: dict) -> (Pod, int): # type: ignore
-        # dict of order: {order_id_1: {sku1: X, sku2: Y}, order_id_2: {...}}    
-        sku_list = sku_to_quantity.keys()
-        pod_candidates: set[Pod] = set()
-        for sku in sku_list:
-            pod_candidates.update(self.pod_manager.sku_to_pods.get(sku, []))
-
-        print(f"checking candicate for sku {sku_list}")
-        print(f"pod_candidates {pod_candidates}")
-
-        def pile_on_score(pod: Pod):
-            # if pod.is_idle:
-            if self.pod_manager.is_idle(pod.pod_id):
-                # print(f"pod {pod} is idle")
-                score = 0
-                for sku, req_qty in sku_to_quantity.items():
-                    if sku in pod.skus:
-                        current_total = pod.skus[sku]['current_qty']
-                        score += min(current_total, req_qty)  # Only count up to what's needed
-            else:
-                # print(f"pod {pod} is NOT idle")
-                score = -1
-            return score
-
-        ranked_pods = sorted(
-            [(pod, pile_on_score(pod)) for pod in pod_candidates],
-            key=lambda x: x[1],
-            reverse=True
-        )
-        print("ranked_pods", ranked_pods)
-        return ranked_pods[0]
+        from src.rmfs.decisions.pps.heuristic import find_pod_with_the_highest_pile_on
+        return find_pod_with_the_highest_pile_on(self, sku_to_quantity)
     
     def find_pod_with_the_highest_demand(self, sku_to_quantity: dict, station_unfinished_skus: list) -> (Pod, int): # type: ignore
-        # dict of order: {order_id_1: {sku1: X, sku2: Y}, order_id_2: {...}}    
-        pod_candidates: set[Pod] = set()
-        for sku in station_unfinished_skus:
-            pod_candidates.update(self.pod_manager.sku_to_pods.get(sku, []))
-        # filter the pod status
-        # pod_candidates = {po for po in pod_candidates if po.is_idle}
-        pod_candidates = {po for po in pod_candidates if self.pod_manager.is_idle(po.pod_id)}
-        print(f"checking candidate for sku {station_unfinished_skus}")
-        print(f"pod_candidates {pod_candidates}")
-
-        # for early stage, if empty, then assign random ?
-        if not pod_candidates:
-            return None, -1
-            pod_candidates.update([po for po in self.pod_manager.pods if po.is_idle])
-
-        def demand_score(pod: Pod):
-            # if pod.is_idle:
-            if self.pod_manager.is_idle(pod.pod_id):
-                # print(f"pod {pod} is idle")
-                score = 0
-                for sku, req_qty in sku_to_quantity.items():
-                    if sku in pod.skus:
-                        current_total = pod.skus[sku]['current_qty']
-                        score += min(current_total, req_qty)  # Only count up to what's needed
-            else:
-                # print(f"pod {pod} is NOT idle")
-                score = -1
-            return score
-
-        ranked_pods = sorted(
-            [(pod, demand_score(pod)) for pod in pod_candidates],
-            key=lambda x: x[1],
-            reverse=True
-        )
-        print("ranked_pods", ranked_pods)
-        return ranked_pods[0]
+        from src.rmfs.decisions.pps.heuristic import find_pod_with_the_highest_demand
+        return find_pod_with_the_highest_demand(self, sku_to_quantity, station_unfinished_skus)
 
     def write_to_csv(self, filename, header, data):
         if self.fast_train:

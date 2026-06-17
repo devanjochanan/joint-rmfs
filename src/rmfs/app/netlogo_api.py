@@ -36,19 +36,34 @@ from src.rmfs.runtime_io.scenario_bundle import (
     list_available_scenarios as _list_available_scenarios,
 )
 from src.rmfs.runtime_io.layout_randomization import slot_index_to_pod_id
-from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH, pps_model_candidates
+from src.rmfs.decisions.pps import (
+    DEFAULT_PPS_MODEL_PATH,
+    pps_model_candidates,
+    configure_pps_rl_strategy,
+    runtime_set_pps_mode,
+    get_pps_mode,
+    load_pps_rl_model,
+    build_pps_rl_sku_index,
+    PPS_RL_NUM_STATIONS,
+    PPS_RL_TOP_K_SKUS,
+    PPS_RL_MAX_PODS,
+    PPS_RL_NUM_TRAFFIC_ZONES,
+    PPS_RL_MAX_ZONE_ROBOT_COUNT,
+    PPS_RL_TRAFFIC_ZONES,
+    PPS_RL_POD_FEATURE_DIM,
+    PPS_RL_MODEL_PATH,
+)
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
 from model.intersection import Intersection
 from model.inventory import Inventory
 from model.order import Order
-from model.order_generator import *
+from src.rmfs.order_generation import config_orders, generate_orders_from_raw_bootstrap, PodGenerator
 from model.pod import Pod
 from model.pod_manager import PodManager
 from model.robot import Robot
 from model.station import Station
 from model.layout import Layout
-from model.pod_generator import PodGenerator
 # DB
 from model.tools.pod_location import (
     clear_pod_locations,
@@ -147,35 +162,7 @@ def _path(name):
 def _str_path(name):
     return str(_path(name))
 
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-PPS_RL_NUM_STATIONS = 3
-PPS_RL_TOP_K_SKUS = 500
-PPS_RL_MAX_PODS = 60
-PPS_RL_NUM_TRAFFIC_ZONES = 5
-PPS_RL_MAX_ZONE_ROBOT_COUNT = 100.0
-PPS_RL_TRAFFIC_ZONES = (
-    ((5, 43), (0, 5)),
-    ((5, 43), (6, 11)),
-    ((5, 43), (12, 18)),
-    ((5, 43), (19, 24)),
-    ((5, 43), (25, 30)),
-)
-PPS_RL_POD_FEATURE_DIM = (
-    PPS_RL_TOP_K_SKUS
-    + PPS_RL_NUM_STATIONS
-    + PPS_RL_NUM_STATIONS
-    + PPS_RL_NUM_TRAFFIC_ZONES
-)
-PPS_RL_MODEL_PATH = os.environ.get(
-    "PPS_RL_MODEL_PATH",
-    str(DEFAULT_PPS_MODEL_PATH),
-)
-
-_PPS_RL_MODEL = None
-_PPS_RL_LOAD_ATTEMPTED = False
-_PPS_RL_ACTIVE_LOGGED = False
-_PPS_MODE = os.environ.get("PPS_MODE", "heuristic").strip().lower()
 _SIM_SEED = (
     int(os.environ["RMFS_SIM_SEED"])
     if os.environ.get("RMFS_SIM_SEED", "").strip()
@@ -247,219 +234,14 @@ def _apply_runtime_config(universe):
     )
 
 
-def _pps_rl_enabled():
-    value = os.environ.get("PPS_RL_ENABLED", "1").strip().lower()
-    return _PPS_MODE == "ppo" and value not in {"0", "false", "no", "off"}
-
-
-def _normalize_pps_mode(mode):
-    mode = str(mode).strip().lower().replace("-", "_").replace(" ", "_")
-    if mode in {"ppo", "rl", "pps_rl", "ppo_pps"}:
-        return "ppo"
-    if mode in {"random", "random_pps", "untrained", "untrained_ppo", "untrained_ppo_pps"}:
-        return "random"
-    if mode in {"rika", "rika_pps", "heuristic", "pile_on", "pileon", "baseline"}:
-        return "heuristic"
-    if mode in {"demand", "demand_pps"}:
-        return "demand"
-    return "heuristic"
-
-
-def _pps_rl_model_candidates():
-    return [str(path) for path in pps_model_candidates(PPS_RL_MODEL_PATH)]
-
-
-def _ensure_numpy_pickle_compat():
-    """Allow NumPy 2.x SB3 archives to load in older NumPy 1.x environments."""
-    try:
-        import importlib
-        import sys
-        import numpy.core as numpy_core
-    except ImportError:
-        return
-
-    sys.modules.setdefault("numpy._core", numpy_core)
-    for submodule in (
-        "multiarray",
-        "umath",
-        "numeric",
-        "fromnumeric",
-        "_multiarray_umath",
-        "_methods",
-        "overrides",
-    ):
-        try:
-            module = importlib.import_module(f"numpy.core.{submodule}")
-        except Exception:
-            continue
-        sys.modules.setdefault(f"numpy._core.{submodule}", module)
-
-
-def _pps_rl_model_matches_current_observation(model):
-    spaces = getattr(getattr(model, "observation_space", None), "spaces", None)
-    if not spaces:
-        return False
-
-    required = {
-        "pod_features",
-        "station_features",
-        "num_candidates",
-        "zone_robot_counts",
-    }
-    if not required.issubset(spaces.keys()):
-        return False
-
-    return (
-        spaces["pod_features"].shape == (PPS_RL_MAX_PODS, PPS_RL_POD_FEATURE_DIM)
-        and spaces["station_features"].shape == (
-            PPS_RL_NUM_STATIONS,
-            PPS_RL_TOP_K_SKUS,
-        )
-        and spaces["num_candidates"].shape == (1,)
-        and spaces["zone_robot_counts"].shape == (PPS_RL_NUM_TRAFFIC_ZONES,)
-    )
-
-
-def _load_pps_rl_model():
-    global _PPS_RL_MODEL, _PPS_RL_LOAD_ATTEMPTED
-
-    if _PPS_RL_MODEL is not None:
-        return _PPS_RL_MODEL
-    if _PPS_RL_LOAD_ATTEMPTED or not _pps_rl_enabled():
-        return None
-
-    _PPS_RL_LOAD_ATTEMPTED = True
-    model_path = next((path for path in _pps_rl_model_candidates() if os.path.exists(path)), None)
-    if model_path is None:
-        print(f"[PPS_RL] Model not found at {PPS_RL_MODEL_PATH}. Using heuristic PPS.")
-        return None
-
-    try:
-        from stable_baselines3 import PPO
-        _ensure_numpy_pickle_compat()
-        model = PPO.load(model_path, device="cpu")
-        if not _pps_rl_model_matches_current_observation(model):
-            print(
-                "[PPS_RL] Loaded model uses the old observation shape. "
-                "Retrain PPO after the traffic-zone feature update."
-            )
-            return None
-        _PPS_RL_MODEL = model
-        print(f"[PPS_RL] Loaded PPO model from {model_path}")
-        return _PPS_RL_MODEL
-    except Exception:
-        print("[PPS_RL] Failed to load PPO model. Using heuristic PPS.")
-        traceback.print_exc()
-        return None
-
-
-def _build_pps_rl_sku_index(universe):
-    sku_ids = []
-    for csv_file, column in ((_str_path("items_csv"), "item_id"), (_str_path("skus_data_csv"), "item_id")):
-        if not os.path.exists(csv_file):
-            continue
-        try:
-            df = pd.read_csv(csv_file, usecols=[column])
-            sku_ids = sorted(df[column].dropna().astype(int).unique().tolist())
-            if sku_ids:
-                break
-        except Exception:
-            sku_ids = []
-
-    if not sku_ids:
-        sku_set = set()
-        for pod in universe.pod_manager.pods:
-            for sku in pod.skus.keys():
-                try:
-                    sku_set.add(int(sku))
-                except (TypeError, ValueError):
-                    sku_set.add(sku)
-        sku_ids = sorted(sku_set)
-
-    return {sku: i for i, sku in enumerate(sku_ids[:PPS_RL_TOP_K_SKUS])}
-
-
-def _configure_pps_rl_strategy(universe):
-    """Enable PPO PPS when the model is available; otherwise keep heuristic PPS."""
-    global _PPS_RL_ACTIVE_LOGGED
-
-    if _PPS_MODE == "heuristic":
-        universe.pps_rl = False
-        universe.pps_rl_random = False
-        universe.pps_pileon = True
-        universe.pps_demand = False
-        return False
-
-    if _PPS_MODE == "demand":
-        universe.pps_rl = False
-        universe.pps_rl_random = False
-        universe.pps_pileon = False
-        universe.pps_demand = True
-        return False
-
-    if _PPS_MODE == "random":
-        universe.pps_pileon = False
-        universe.pps_demand = False
-        universe.pps_rl = True
-        universe.pps_rl_random = True
-        if not hasattr(universe, "pps_picked_quantity"):
-            universe.pps_picked_quantity = 0
-        if not hasattr(universe, "pps_pod_visits"):
-            universe.pps_pod_visits = 0
-        if not _PPS_RL_ACTIVE_LOGGED:
-            print("[PPS_RANDOM] NetLogo simulation is using random PPO-style PPS.")
-            _PPS_RL_ACTIVE_LOGGED = True
-        return True
-
-    if _load_pps_rl_model() is None:
-        universe.pps_rl = False
-        universe.pps_rl_random = False
-        universe.pps_pileon = True
-        universe.pps_demand = False
-        return False
-
-    universe.pps_pileon = False
-    universe.pps_demand = False
-    universe.pps_rl = True
-    universe.pps_rl_random = False
-
-    if not hasattr(universe, "pps_rl_sku_index"):
-        universe.pps_rl_sku_index = _build_pps_rl_sku_index(universe)
-    if not hasattr(universe, "pps_picked_quantity"):
-        universe.pps_picked_quantity = 0
-    if not hasattr(universe, "pps_pod_visits"):
-        universe.pps_pod_visits = 0
-
-    if not _PPS_RL_ACTIVE_LOGGED:
-        print("[PPS_RL] NetLogo simulation is using PPO for pick-pod selection.")
-        _PPS_RL_ACTIVE_LOGGED = True
-    return True
-
-
 def set_pps_mode(mode):
     """Switch PPS mode: 'ppo', 'random', 'heuristic'/'rika', or 'demand'."""
-    global _PPS_MODE, _PPS_RL_LOAD_ATTEMPTED, _PPS_RL_ACTIVE_LOGGED
-
-    _PPS_MODE = _normalize_pps_mode(mode)
-    if _PPS_MODE == "ppo" and _PPS_RL_MODEL is None:
-        _PPS_RL_LOAD_ATTEMPTED = False
-    _PPS_RL_ACTIVE_LOGGED = False
-
-    state_file = _str_path("state_file")
-    if os.path.exists(state_file):
-        try:
-            with open(state_file, "rb") as file:
-                universe = pickle.load(file)
-            for obj in universe._objects:
-                obj.setUniverse(universe)
-            _configure_pps_rl_strategy(universe)
-            with open(state_file, "wb") as file:
-                pickle.dump(universe, file)
-        except Exception:
-            traceback.print_exc()
-
-    print(f"[PPS_MODE] Current PPS mode: {_PPS_MODE}")
-    return _PPS_MODE
+    return runtime_set_pps_mode(
+        mode,
+        state_file_path=_str_path("state_file"),
+        items_csv=_str_path("items_csv"),
+        skus_data_csv=_str_path("skus_data_csv"),
+    )
 
 
 def _pps_rl_station_demands(universe, use_committed=True):
@@ -691,7 +473,7 @@ def _apply_pps_rl_policy(universe):
     if not _pps_rl_decision_needed(universe):
         return 0
 
-    if getattr(universe, "pps_rl_random", False) or _PPS_MODE == "random":
+    if getattr(universe, "pps_rl_random", False) or get_pps_mode() == "random":
         actions = np.random.randint(
             0,
             PPS_RL_NUM_STATIONS + 1,
@@ -700,7 +482,7 @@ def _apply_pps_rl_policy(universe):
         )
         return _execute_pps_rl_actions(universe, actions)
 
-    model = _load_pps_rl_model()
+    model = load_pps_rl_model()
     if model is None:
         return 0
 
@@ -1581,7 +1363,7 @@ def setup():
 
         # Set simulation parameters
         universe.tick_to_second = 0.15
-        _configure_pps_rl_strategy(universe)
+        configure_pps_rl_strategy(universe, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
 
         # Generate initial results
         next_result = universe.generateResult()
@@ -1610,7 +1392,7 @@ def tick():
         # Update each object with the current universe context
         for _n in universe._objects:
             _n.setUniverse(universe)
-        _configure_pps_rl_strategy(universe)
+        configure_pps_rl_strategy(universe, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
 
         # Perform a simulation tick
         next_result = universe.tick()
@@ -1646,7 +1428,7 @@ def console_tick():
         # Update each object with the current universe context
         for _n in universe._objects:
             _n.setUniverse(universe)
-        _configure_pps_rl_strategy(universe)
+        configure_pps_rl_strategy(universe, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
         while True:
             # Perform a simulation tick
             next_result = universe.tick()

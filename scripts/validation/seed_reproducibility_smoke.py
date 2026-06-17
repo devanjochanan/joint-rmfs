@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.rmfs.runtime_io.context import RunContext
-from model.order_generator import generate_orders_from_raw_bootstrap
+from src.rmfs.order_generation import generate_orders_from_raw_bootstrap
 
 
 def _run_bootstrap(seed, runtime_dir, ctx):
@@ -30,6 +30,7 @@ def _run_bootstrap(seed, runtime_dir, ctx):
         source_path=str(ctx.raw_order_csv),
         target_dir=str(runtime_dir),
         items_csv_path=str(ctx.items_csv),
+        profile="smoke",
     )
 
 

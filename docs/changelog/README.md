@@ -378,3 +378,47 @@ We apply the following versioning convention for updates:
   * `PYTHONPATH=. /home/dewan/torch-gpu/bin/python scripts/validation/rts_reward_cold_start_smoke.py`
   * `PYTHONPATH=. /home/dewan/torch-gpu/bin/python scripts/validation/init_rts_checkpoint_smoke.py`
 * **Residual Risks**: No full NetLogo simulation, BehaviorSpace experiment, PPO/RL training run, benchmark, or output-equivalence run was performed. The Rika-host path still does not implement mature `replenish_store(z)` pre-return route equivalence; replenishment next-task arrivals are censored for paper-cycle training eligibility.
+
+### 2026-06-17 Owner Architecture Migration - +0.1.0
+* **Files Changed/Created/Deleted**:
+  * `[NEW] scripts/validation/owner_architecture_migration_smoke.py`
+  * `[NEW] src/rmfs/decisions/charging/__init__.py`
+  * `[NEW] src/rmfs/decisions/charging/config.py`
+  * `[NEW] src/rmfs/decisions/charging/placement.py`
+  * `[NEW] src/rmfs/decisions/charging/policy.py`
+  * `[NEW] src/rmfs/decisions/charging/types.py`
+  * `[NEW] src/rmfs/decisions/pps/__init__.py`
+  * `[NEW] src/rmfs/decisions/pps/heuristic.py`
+  * `[NEW] src/rmfs/decisions/pps/model_paths.py`
+  * `[NEW] src/rmfs/decisions/pps/modes.py`
+  * `[NEW] src/rmfs/decisions/pps/runtime.py`
+  * `[NEW] src/rmfs/decisions/pps/types.py`
+  * `[NEW] src/rmfs/order_generation/__init__.py`
+  * `[NEW] src/rmfs/order_generation/bootstrap.py`
+  * `[NEW] src/rmfs/order_generation/pod_sku.py`
+  * `[NEW] src/rmfs/order_generation/policy.py`
+  * `[MODIFY] model/inventory.py`
+  * `[MODIFY] scripts/data/build_charging_solution.py`
+  * `[MODIFY] scripts/experiments/run_pps_replications.py`
+  * `[MODIFY] scripts/run/run_pps_backend_episode.py`
+  * `[MODIFY] scripts/training/train_pps_rl.py`
+  * `[MODIFY] scripts/validation/order_generation_policy_smoke.py`
+  * `[MODIFY] scripts/validation/seed_reproducibility_smoke.py`
+  * `[MODIFY] src/rmfs/app/netlogo_api.py`
+  * `[MODIFY] src/rmfs/decisions/charging/README.md`
+  * `[MODIFY] src/rmfs/decisions/pps/README.md`
+  * `[MODIFY] src/rmfs/order_generation/README.md`
+  * `[MODIFY] src/rmfs/rl/pps/__init__.py`
+  * `[MODIFY] src/rmfs/rl/pps/env.py`
+  * `[DELETE] model/item_pod_generator.py`
+  * `[DELETE] model/order_generator.py`
+  * `[DELETE] model/pod_generator.py`
+  * `[DELETE] src/rmfs/rl/pps/model_paths.py`
+  * `[DELETE] src/rmfs/runtime_io/order_generation.py`
+  * `[DELETE] You`
+  * `[DELETE] [!NOTE]`
+* **Behavior Changes**: No. Pure architectural refactoring to relocate owner features (Charging -> Salsa, PPS -> Devan, Order Generation -> Lukman) into modular `src/rmfs/` sub-packages, and remove legacy duplicate/scaffold scripts.
+* **Validation Run**:
+  - `wsl /home/dewan/torch-gpu/bin/python scripts/validation/owner_architecture_migration_smoke.py`
+  - `wsl PYTHONPATH=. /home/dewan/torch-gpu/bin/python -c "import netlogo; print('netlogo import ok')"`
+* **Residual Risks**: None. All legacy imports successfully redirected and validated via smoke tests.

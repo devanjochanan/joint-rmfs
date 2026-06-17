@@ -55,7 +55,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from torch.utils.tensorboard import SummaryWriter
 
 from src.rmfs.rl.pps.env import PPSEnv
-from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH
+from src.rmfs.decisions.pps import DEFAULT_PPS_MODEL_PATH
 from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
 
 try:

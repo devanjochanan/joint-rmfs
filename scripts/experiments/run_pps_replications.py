@@ -30,7 +30,7 @@ if str(_REPO_ROOT) not in sys.path:
 os.chdir(_REPO_ROOT)
 import numpy as np
 
-from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH
+from src.rmfs.decisions.pps import DEFAULT_PPS_MODEL_PATH
 from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
 
 

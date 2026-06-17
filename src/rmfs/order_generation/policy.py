@@ -1,11 +1,15 @@
-"""Run-local order generation policy helpers."""
+"""Run-local order generation policy helpers.
+
+Moved from src/rmfs/runtime_io/order_generation.py to become part of
+the order generation owner module.
+"""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 
-from .run_profiles import resolve_run_profile
+from src.rmfs.runtime_io.run_profiles import resolve_run_profile
 
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
