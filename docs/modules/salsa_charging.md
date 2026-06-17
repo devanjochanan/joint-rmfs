@@ -13,7 +13,7 @@ This profile documents the ownership details, current code mappings, and plans f
 
 ## 2. Refactoring Phase Status
 
-* **Status**: Scaffold placeholder only.
+* **Status**: Configuration artifact integrated / parked at `data/input/charging/salsa_charging_config.json`. Active charging simulation mechanism remains pending/inactive.
 * **Restrictions**:
   * Do not write execution code in the scaffold directories.
   * Do not add battery swap policies or charger relocation/placement heuristics yet.

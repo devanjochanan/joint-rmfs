@@ -26,7 +26,9 @@ loading.
 `run_baseline.py` is parked as a legacy charging runner. It is discoverable but
 inactive by default because `main_future` does not include the required charging
 mechanism. Set `RMFS_ALLOW_LEGACY_CHARGING_BASELINE=1` only for explicit legacy
-investigation.
+investigation. The final Salsa charging configuration is parked at
+`data/input/charging/salsa_charging_config.json` and documented under
+`docs/integration/salsa_charging_pending.md`.
 
 ## Remaining Phase 6/Follow-Up Notes
 

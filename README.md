@@ -85,7 +85,7 @@ For details, see the [Validation Guide](file:///wsl.localhost/Ubuntu-22.04/home/
 * **Training**: PPS RL training requires specific dependencies (Gymnasium/Stable-Baselines). Normal simulation and heuristic runs do not load these packages. Learn more in the [Training Guide](file:///wsl.localhost/Ubuntu-22.04/home/dewan/Project%20Ta/Fresh%20Start%20Structure%20V1/Rika%27s%20Version/docs/operations/training.md).
 
 ## Legacy / pending components
-* **Charging & Energy**: Battery charging layout and scheduling mechanisms (Salsa's area) are pending/inactive. `run_baseline.py` is parked as a legacy charging runner and is disabled by default.
+* **Charging & Energy**: Salsa charging: final config is parked at data/input/charging/salsa_charging_config.json and documented under docs/integration/. Active charging behavior remains pending/inactive unless a dedicated charging-mechanism validation proves otherwise. `run_baseline.py` is parked as a legacy charging runner and is disabled by default.
 * **Raw Order Replay**: Headless profile-driven runs generate mock orders; replaying raw orders is opt-in only via `--full-raw-order-replay` and is not default.
 
 ## Where to read next
