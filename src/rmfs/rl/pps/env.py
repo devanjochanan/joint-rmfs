@@ -54,6 +54,7 @@ from model.tools.pod_location import get_pod_location
 from model.tools.job_task import upsert_job_task
 from src.rmfs.runtime_io import RunContext
 from src.rmfs.runtime_io.detail_db import configure_detail_db
+from src.rmfs.runtime_io.run_profiles import resolve_run_profile
 from src.rmfs.runtime_io.timing import timed
 
 
@@ -108,6 +109,21 @@ def _silent_sim():
         yield
     finally:
         sys.stdout = saved
+
+
+@contextmanager
+def _temporary_env(overrides: Dict[str, str]):
+    """Apply process env overrides for one setup block, then restore them."""
+    previous = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _noop(*args, **kwargs):
@@ -182,6 +198,14 @@ class PPSEnv(gym.Env):
         reward_alpha: float = ALPHA_OCT,
         reward_visit_penalty: float = POD_VISIT_PENALTY,
         base_seed: Optional[int] = None,
+        run_profile: str = "training",
+        bootstrap_n_orders: Optional[int] = None,
+        demand_horizon_ticks: Optional[int] = None,
+        demand_buffer_ticks: Optional[int] = None,
+        pod_location_mode: Optional[str] = None,
+        pod_location_seed: Optional[int] = None,
+        full_raw_order_replay: bool = False,
+        runtime_root: Optional[str | Path] = None,
     ):
         super().__init__()
 
@@ -191,6 +215,13 @@ class PPSEnv(gym.Env):
         self.reward_alpha = reward_alpha
         self.reward_visit_penalty = reward_visit_penalty
         self.base_seed = base_seed
+        self.run_profile = run_profile
+        self.bootstrap_n_orders = bootstrap_n_orders
+        self.demand_horizon_ticks = demand_horizon_ticks
+        self.demand_buffer_ticks = demand_buffer_ticks
+        self.pod_location_mode = pod_location_mode
+        self.pod_location_seed = pod_location_seed
+        self.full_raw_order_replay = full_raw_order_replay
 
         # ---- spaces (will be refined in reset once we know pod count) ----
         self.max_pods = MAX_PODS_OBS
@@ -244,8 +275,12 @@ class PPSEnv(gym.Env):
         self._step_count: int = 0
         self._episode_index: int = 0
         self._episode_seed: Optional[int] = None
-        runtime_root = REPO_ROOT / "data" / "runtime" / "tmp" / f"pps_env_{os.getpid()}"
-        self._runtime_context = RunContext.isolated(runtime_root, repo_root=REPO_ROOT)
+        resolved_runtime_root = (
+            Path(runtime_root)
+            if runtime_root is not None
+            else REPO_ROOT / "data" / "runtime" / "tmp" / f"pps_env_{os.getpid()}"
+        )
+        self._runtime_context = RunContext.isolated(resolved_runtime_root, repo_root=REPO_ROOT)
 
     # ------------------------------------------------------------------
     # Gym API
@@ -349,6 +384,21 @@ class PPSEnv(gym.Env):
 
         ctx = self._runtime_context
         ctx.ensure_runtime_dirs()
+        episode_seed = self._episode_seed if self._episode_seed is not None else self.base_seed
+        run_profile = resolve_run_profile(
+            self.run_profile,
+            run_horizon_ticks=self.max_episode_ticks,
+            bootstrap_n_orders=self.bootstrap_n_orders,
+            demand_horizon_ticks=self.demand_horizon_ticks,
+            demand_buffer_ticks=self.demand_buffer_ticks,
+            full_raw_order_replay=self.full_raw_order_replay,
+            pod_location_mode=self.pod_location_mode,
+            pod_location_seed=self.pod_location_seed,
+            seed=episode_seed,
+        )
+        profile_env = run_profile.env()
+        if episode_seed is not None:
+            profile_env["RMFS_SIM_SEED"] = str(int(episode_seed))
         db_path = str(ctx.sqlite_db)
         detail_env = os.environ.get("RMFS_DETAIL_DB")
         if detail_env is None:
@@ -371,41 +421,35 @@ class PPSEnv(gym.Env):
         clear_pod_travel(db_path=db_path)
         clear_pre_assign_table(db_path=db_path)
 
-        # Regenerate orders each episode for randomization
+        # Regenerate one explicit, bounded order stream per episode.
         from model.order_generator import config_orders
         for path in (ctx.generated_order_csv, ctx.generated_database_order_csv, ctx.generated_backlog_csv):
             if path.exists():
                 path.unlink()
-        config_orders(
-            initial_order=100,
-            total_requested_item=500,
-            items_orders_class_configuration={"A": 0.5, "B": 0.3, "C": 0.2},
-            quantity_range=[1, 12],
-            order_cycle_time=500,
-            order_period_time=9,
-            order_start_arrival_time=0,
-            date=1,
-            sim_ver=1,
-            dev_mode=False,
-            source_path=str(ctx.raw_order_csv),
-            target_dir=str(ctx.runtime_root),
-            items_csv_path=str(ctx.items_csv),
-        )
-        config_orders(
-            initial_order=100,
-            total_requested_item=500,
-            items_orders_class_configuration={"A": 0.5, "B": 0.3, "C": 0.2},
-            quantity_range=[1, 12],
-            order_cycle_time=500,
-            order_period_time=9,
-            order_start_arrival_time=0,
-            date=1,
-            sim_ver=2,
-            dev_mode=True,
-            source_path=str(ctx.raw_order_csv),
-            target_dir=str(ctx.runtime_root),
-            items_csv_path=str(ctx.items_csv),
-        )
+        with _temporary_env(profile_env):
+            config_orders(
+                initial_order=100,
+                total_requested_item=500,
+                items_orders_class_configuration={"A": 0.5, "B": 0.3, "C": 0.2},
+                quantity_range=[1, 12],
+                order_cycle_time=500,
+                order_period_time=9,
+                order_start_arrival_time=0,
+                date=1,
+                sim_ver=2,
+                dev_mode=True,
+                seed=episode_seed,
+                n_orders=run_profile.bootstrap_n_orders,
+                source_path=str(ctx.raw_order_csv),
+                target_dir=str(ctx.runtime_root),
+                items_csv_path=str(ctx.items_csv),
+                run_horizon_ticks=run_profile.run_horizon_ticks,
+                demand_horizon_ticks=run_profile.demand_horizon_ticks,
+                demand_buffer_ticks=run_profile.demand_buffer_ticks,
+                order_generation_mode=run_profile.order_generation_mode,
+                full_raw_order_replay=run_profile.full_raw_order_replay,
+                profile=run_profile.profile,
+            )
 
         # Keep pod-SKU allocation fixed by default. Set
         # PPS_RANDOMIZE_PODS_EACH_EPISODE=1 to regenerate pods.csv/skus_data.csv
@@ -461,7 +505,8 @@ class PPSEnv(gym.Env):
         warehouse.pps_demand = False
         warehouse.pps_rl = True
 
-        netlogo.draw_layout(warehouse)
+        with _temporary_env(profile_env):
+            netlogo.draw_layout(warehouse)
         warehouse.generateResult()
 
         return warehouse

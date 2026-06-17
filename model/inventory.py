@@ -1,4 +1,5 @@
 from typing import Optional, List
+import builtins
 import csv
 import os
 import math
@@ -42,6 +43,15 @@ from src.rmfs.decisions.rts import CurrentRTSPolicy
 from src.rmfs.rl.rts.outcome_tracker import NoopRTSRolloutRuntime
 from src.rmfs.rl.rts.runtime_install import install_rts_runtime
 from src.rmfs.rl.rts.runtime_registry import get_rts_runtime_config, get_rts_runtime_root
+from src.rmfs.runtime_io.logging import debug_print as _rmfs_debug_print
+
+
+def print(*args, **kwargs):  # noqa: A001
+    """Gate legacy model debug chatter while preserving warnings/errors."""
+    first = str(args[0]) if args else ""
+    if first.startswith(("[ERROR]", "[WARN]")):
+        return builtins.print(*args, **kwargs)
+    return _rmfs_debug_print(*args, **kwargs)
 
 # Show full column content
 pd.set_option('display.max_colwidth', None)

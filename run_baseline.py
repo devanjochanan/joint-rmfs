@@ -59,11 +59,8 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
-
-import netlogo          # noqa: E402
-from model.robot import Robot  # noqa: E402
 
 
 # ── Baseline policy constants ───────────────────────────────────────────────
@@ -185,6 +182,22 @@ def main() -> int:
     )
     parser.add_argument("--out-root", type=str, default="eval/runs")
     args = parser.parse_args()
+
+    if os.environ.get("RMFS_ALLOW_LEGACY_CHARGING_BASELINE", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        print(
+            "run_baseline.py is a legacy charging runner and is inactive on main_future. "
+            "The current branch does not include the required charging mechanism. "
+            "Set RMFS_ALLOW_LEGACY_CHARGING_BASELINE=1 only for explicit legacy investigation."
+        )
+        return 2
+
+    import netlogo  # noqa: WPS433
+    from model.robot import Robot  # noqa: WPS433
 
     # ── 0. Seed RNGs ─────────────────────────────────────────────────────
     if args.seed is not None:

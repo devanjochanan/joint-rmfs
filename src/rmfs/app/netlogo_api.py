@@ -28,6 +28,8 @@ from sklearn.cluster import KMeans
 
 from src.rmfs.runtime_io import RunContext
 from src.rmfs.runtime_io.detail_db import configure_detail_db, is_detail_db_configured
+from src.rmfs.runtime_io.logging import debug_print
+from src.rmfs.runtime_io.run_profiles import resolve_run_profile
 from src.rmfs.runtime_io.timing import timed
 from src.rmfs.runtime_io.scenario_bundle import (
     activate_scenario_inputs as _activate_scenario_inputs,
@@ -196,6 +198,53 @@ def _apply_sim_seed():
     if _SIM_SEED is not None:
         random.seed(_SIM_SEED)
         np.random.seed(_SIM_SEED)
+
+
+def _env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name, default=None):
+    value = os.environ.get(name)
+    if value is None or str(value).strip() == "":
+        return default
+    return int(value)
+
+
+def _current_run_profile():
+    profile = os.environ.get("RMFS_RUN_PROFILE", "gui")
+    return resolve_run_profile(
+        profile,
+        run_horizon_ticks=_env_int("RMFS_RUN_HORIZON_TICKS"),
+        bootstrap_n_orders=_env_int("RMFS_BOOTSTRAP_N_ORDERS"),
+        demand_horizon_ticks=_env_int("RMFS_DEMAND_HORIZON_TICKS"),
+        demand_buffer_ticks=_env_int("RMFS_DEMAND_BUFFER_TICKS"),
+        order_generation_mode=os.environ.get("RMFS_ORDER_GENERATION_MODE"),
+        full_raw_order_replay=_env_bool("RMFS_FULL_RAW_ORDER_REPLAY", False),
+        detail_db=_env_bool("RMFS_DETAIL_DB", True) if os.environ.get("RMFS_DETAIL_DB") is not None else None,
+        pod_location_mode=os.environ.get("RMFS_POD_LOCATION_MODE"),
+        pod_location_seed=_env_int("RMFS_POD_LOCATION_SEED"),
+        seed=_SIM_SEED,
+    )
+
+
+def _apply_runtime_config(universe):
+    allocator = os.environ.get("RMFS_ROBOT_TASK_ALLOCATOR")
+    if allocator:
+        universe.robot_task_allocator = allocator
+    regret_k = _env_int("RMFS_REGRET_K")
+    if regret_k is not None:
+        universe.regret_k = regret_k
+    scope = os.environ.get("RMFS_TASK_ALLOCATOR_SCOPE")
+    if scope:
+        universe.task_allocator_scope = scope
+    universe.committed_next_reservations_enabled = _env_bool(
+        "RMFS_COMMITTED_NEXT_RESERVATIONS",
+        getattr(universe, "committed_next_reservations_enabled", False),
+    )
 
 
 def _pps_rl_enabled():
@@ -916,11 +965,19 @@ def draw_layout_from_generated_file(universe: Inventory):
 
     # Build one bootstrap-resampled order stream from raw_order.csv.
     assign_skus_to_pods(universe.pod_manager)
+    run_profile = _current_run_profile()
     config_orders(
         seed=_SIM_SEED,
         source_path=_str_path("raw_order_csv"),
         target_dir=str(get_run_context().runtime_root),
         items_csv_path=_str_path("items_csv"),
+        n_orders=run_profile.bootstrap_n_orders,
+        run_horizon_ticks=run_profile.run_horizon_ticks,
+        demand_horizon_ticks=run_profile.demand_horizon_ticks,
+        demand_buffer_ticks=run_profile.demand_buffer_ticks,
+        order_generation_mode=run_profile.order_generation_mode,
+        full_raw_order_replay=run_profile.full_raw_order_replay,
+        profile=run_profile.profile,
     )
     initRobots(universe)
 
@@ -1097,7 +1154,7 @@ def draw_storage_from_generated_file(universe: Inventory):
             seed=randomization_seed,
             mode=pod_location_mode,
         )
-        print(f"[POD_LOCATION] randomize_slots enabled with seed {randomization_seed}")
+        debug_print(f"[POD_LOCATION] randomize_slots enabled with seed {randomization_seed}")
     graph = DirectedGraph()
     graph_pod = DirectedGraph()
     graph_pod.key = 'pod'
@@ -1517,6 +1574,7 @@ def setup():
             if os.path.exists(generated_path):
                 os.remove(generated_path)
         universe = Inventory(runtime_paths=ctx.inventory_paths(), sqlite_db_path=db_path)
+        _apply_runtime_config(universe)
 
         # Populate the universe with objects and connections
         draw_layout(universe)

@@ -31,6 +31,7 @@ os.chdir(_REPO_ROOT)
 import numpy as np
 
 from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH
+from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
 
 
 POLICY_MODES = ("rika", "random", "ppo")
@@ -102,6 +103,12 @@ def parse_args() -> argparse.Namespace:
         description="Run paired Rika, random PPO-style, and trained PPO PPS replications."
     )
     parser.add_argument(
+        "--profile",
+        choices=available_profiles(),
+        default="ablation",
+        help="Run profile for horizon, demand, detail DB, and pod-location defaults.",
+    )
+    parser.add_argument(
         "--replications",
         type=int,
         default=30,
@@ -137,6 +144,42 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Output directory. Defaults to results/replications/<timestamp>.",
+    )
+    parser.add_argument(
+        "--bootstrap-n-orders",
+        type=int,
+        default=None,
+        help="Override profile bootstrap order count.",
+    )
+    parser.add_argument(
+        "--demand-horizon-ticks",
+        type=int,
+        default=None,
+        help="Override generated demand horizon.",
+    )
+    parser.add_argument(
+        "--demand-buffer-ticks",
+        type=int,
+        default=None,
+        help="Override generated demand buffer beyond run horizon.",
+    )
+    parser.add_argument(
+        "--pod-location-mode",
+        choices=("fixed", "randomize_slots"),
+        default=None,
+        help="Override profile pod-location mode.",
+    )
+    parser.add_argument(
+        "--pod-location-seed",
+        type=int,
+        default=None,
+        help="Override pod-location randomization seed.",
+    )
+    parser.add_argument(
+        "--full-raw-order-replay",
+        action="store_true",
+        default=False,
+        help="Opt in to replaying all unique raw orders.",
     )
     parser.add_argument(
         "--fast-io",
@@ -431,6 +474,19 @@ def main() -> None:
         os.environ["RMFS_FAST_TRAIN"] = "1"
     else:
         os.environ.pop("RMFS_FAST_TRAIN", None)
+    profile_cfg = resolve_run_profile(
+        args.profile,
+        run_horizon_ticks=int(args.max_ticks),
+        bootstrap_n_orders=args.bootstrap_n_orders,
+        demand_horizon_ticks=args.demand_horizon_ticks,
+        demand_buffer_ticks=args.demand_buffer_ticks,
+        full_raw_order_replay=args.full_raw_order_replay,
+        detail_db=args.detail_db if args.detail_db else None,
+        pod_location_mode=args.pod_location_mode,
+        pod_location_seed=args.pod_location_seed,
+        seed=args.base_seed,
+    )
+    os.environ.update(profile_cfg.env())
     os.environ["RMFS_DETAIL_DB"] = "1" if args.detail_db else "0"
 
     if args.model_path:
@@ -452,6 +508,10 @@ def main() -> None:
 
     print(f"Output directory: {output_dir}")
     print(f"Modes: {', '.join(args.modes)}")
+    print(f"Run profile: {profile_cfg.profile}")
+    print(f"Bootstrap orders: {profile_cfg.bootstrap_n_orders}")
+    print(f"Demand horizon ticks: {profile_cfg.demand_horizon_ticks}")
+    print(f"Pod location mode: {profile_cfg.pod_location_mode}")
     print(f"Fast training I/O: {'on' if args.fast_io else 'off'}")
     print(f"Detail DB: {'on' if args.detail_db else 'off'}")
     print(f"Raw results: {results_path}")

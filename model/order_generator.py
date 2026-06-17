@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.rmfs.runtime_io.order_generation import resolve_order_generation_policy
+
 
 current_directory = os.path.dirname(os.path.abspath(__file__))
 parent_directory = os.path.dirname(current_directory)
@@ -142,7 +144,14 @@ def _build_empirical_order_table(raw_orders):
     return order_table
 
 
-def _bootstrap_arrivals(order_table, sample_size, rng, arrival_mode, order_start_arrival_time):
+def _bootstrap_arrivals(
+    order_table,
+    sample_size,
+    rng,
+    arrival_mode,
+    order_start_arrival_time,
+    target_horizon_ticks=None,
+):
     start_time = int(order_start_arrival_time)
     if sample_size <= 0:
         return np.asarray([], dtype=np.int64)
@@ -162,7 +171,7 @@ def _bootstrap_arrivals(order_table, sample_size, rng, arrival_mode, order_start
             f"{arrival_mode}. Expected 'empirical_interarrival' or 'sample_original_times'."
         )
 
-    horizon = int(empirical_arrivals.max())
+    horizon = int(target_horizon_ticks) if target_horizon_ticks is not None else int(empirical_arrivals.max())
     if empirical_arrivals.size == 1 or horizon <= 0:
         return np.full(sample_size, start_time, dtype=np.int64)
 
@@ -245,6 +254,12 @@ def generate_orders_from_raw_bootstrap(
     source_path=None,
     target_dir=None,
     items_csv_path=None,
+    run_horizon_ticks=None,
+    demand_horizon_ticks=None,
+    demand_buffer_ticks=None,
+    order_generation_mode=None,
+    full_raw_order_replay=None,
+    profile=None,
 ):
     # Unified seed: prefer explicit seed arg, then RMFS_SIM_SEED, then
     # RMFS_BOOTSTRAP_SEED for backward compatibility, then default 42.
@@ -256,9 +271,20 @@ def generate_orders_from_raw_bootstrap(
             resolved_seed = int(sim_seed)
         else:
             resolved_seed = _env_int("RMFS_BOOTSTRAP_SEED", 42)
-    resolved_n_orders = (
-        _env_optional_int("RMFS_BOOTSTRAP_N_ORDERS") if n_orders is None else int(n_orders)
+    policy = resolve_order_generation_policy(
+        profile=profile,
+        n_orders=n_orders,
+        run_horizon_ticks=run_horizon_ticks,
+        demand_horizon_ticks=demand_horizon_ticks,
+        demand_buffer_ticks=demand_buffer_ticks,
+        order_generation_mode=order_generation_mode,
+        full_raw_order_replay=full_raw_order_replay,
     )
+    resolved_n_orders = policy.bootstrap_n_orders
+    resolved_full_raw_replay = bool(policy.full_raw_order_replay)
+    resolved_mode = policy.order_generation_mode
+    if resolved_mode == "full_raw_replay":
+        resolved_full_raw_replay = True
     resolved_arrival_mode = os.getenv("RMFS_BOOTSTRAP_ARRIVAL_MODE", arrival_mode)
     resolved_start_arrival = (
         _env_int("RMFS_BOOTSTRAP_START_ARRIVAL", 0)
@@ -279,23 +305,36 @@ def generate_orders_from_raw_bootstrap(
     if source_unique_orders <= 0:
         raise ValueError("Bootstrap source contains no valid unique orders.")
 
-    if resolved_n_orders is None:
+    if resolved_n_orders is None and not resolved_full_raw_replay:
+        resolved_full_raw_replay = True
+        resolved_mode = "legacy_compat"
+        print(
+            "[ORDER_GENERATION] Legacy GUI/manual fallback is replaying the full raw order source. "
+            "Set RMFS_BOOTSTRAP_N_ORDERS or RMFS_FULL_RAW_ORDER_REPLAY=1 explicitly for headless runs."
+        )
+
+    if resolved_full_raw_replay:
         resolved_n_orders = source_unique_orders
-    if resolved_n_orders <= 0:
+    if int(resolved_n_orders) <= 0:
         raise ValueError("Bootstrap n_orders must be positive.")
 
-    sampled_order_ids = rng.choice(
-        source_order_ids,
-        size=int(resolved_n_orders),
-        replace=True,
-    )
-    sampled_arrivals = _bootstrap_arrivals(
-        order_table=order_table,
-        sample_size=int(resolved_n_orders),
-        rng=rng,
-        arrival_mode=resolved_arrival_mode,
-        order_start_arrival_time=resolved_start_arrival,
-    )
+    if resolved_full_raw_replay:
+        sampled_order_ids = source_order_ids
+        sampled_arrivals = order_table["arrival_seconds"].to_numpy(dtype=np.int64) + int(resolved_start_arrival)
+    else:
+        sampled_order_ids = rng.choice(
+            source_order_ids,
+            size=int(resolved_n_orders),
+            replace=True,
+        )
+        sampled_arrivals = _bootstrap_arrivals(
+            order_table=order_table,
+            sample_size=int(resolved_n_orders),
+            rng=rng,
+            arrival_mode=resolved_arrival_mode,
+            order_start_arrival_time=resolved_start_arrival,
+            target_horizon_ticks=policy.demand_horizon_ticks,
+        )
     generated_order = _build_generated_orders(
         sampled_order_ids=sampled_order_ids,
         raw_orders=raw_orders,
@@ -314,9 +353,18 @@ def generate_orders_from_raw_bootstrap(
 
     metadata = {
         "generator": "bootstrap_raw_order",
+        "order_generation_mode": resolved_mode,
+        "profile": policy.profile,
         "source_path": str(resolved_source_path),
+        "items_csv_path": str(Path(items_csv_path)) if items_csv_path else None,
+        "target_dir": str(output_dir),
         "seed": int(resolved_seed),
         "n_orders": int(resolved_n_orders),
+        "bootstrap_n_orders": int(resolved_n_orders),
+        "run_horizon_ticks": policy.run_horizon_ticks,
+        "demand_horizon_ticks": policy.demand_horizon_ticks,
+        "demand_buffer_ticks": policy.demand_buffer_ticks,
+        "full_raw_order_replay": bool(resolved_full_raw_replay),
         "arrival_mode": resolved_arrival_mode,
         "order_start_arrival_time": int(resolved_start_arrival),
         "source_unique_orders": int(source_unique_orders),
@@ -363,6 +411,12 @@ def config_orders(
     source_path=None,
     target_dir=None,
     items_csv_path=None,
+    run_horizon_ticks=None,
+    demand_horizon_ticks=None,
+    demand_buffer_ticks=None,
+    order_generation_mode=None,
+    full_raw_order_replay=None,
+    profile=None,
 ):
     # Legacy synthetic parameters are intentionally ignored. joint-rmfs now
     # always prepares its order stream from bootstrap resampling of raw_order.csv.
@@ -374,4 +428,10 @@ def config_orders(
         source_path=source_path,
         target_dir=target_dir,
         items_csv_path=items_csv_path,
+        run_horizon_ticks=run_horizon_ticks,
+        demand_horizon_ticks=demand_horizon_ticks,
+        demand_buffer_ticks=demand_buffer_ticks,
+        order_generation_mode=order_generation_mode,
+        full_raw_order_replay=full_raw_order_replay,
+        profile=profile,
     )

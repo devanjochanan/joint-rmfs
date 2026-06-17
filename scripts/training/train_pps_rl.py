@@ -27,9 +27,7 @@ import inspect
 import json
 import os
 import random
-import shutil
 import sys
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +37,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 os.chdir(_REPO_ROOT)
+os.environ.setdefault("RMFS_RUN_PROFILE", "training")
 os.environ.setdefault("RMFS_DETAIL_DB", "0")
 
 # Keep Matplotlib/SB3 font-cache writes inside the project folder on Windows.
@@ -57,6 +56,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from src.rmfs.rl.pps.env import PPSEnv
 from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH
+from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
 
 try:
     from src.rmfs.rl.pps.env import (
@@ -105,9 +105,17 @@ def make_pps_env_kwargs(
     reward_alpha: float,
     visit_penalty: float,
     base_seed: int | None = None,
-) -> Dict[str, float | int]:
+    run_profile: str = "training",
+    bootstrap_n_orders: int | None = None,
+    demand_horizon_ticks: int | None = None,
+    demand_buffer_ticks: int | None = None,
+    pod_location_mode: str | None = None,
+    pod_location_seed: int | None = None,
+    full_raw_order_replay: bool = False,
+    runtime_root: str | Path | None = None,
+) -> Dict[str, Any]:
     """Build env kwargs compatible with both newer and older PPSEnv versions."""
-    kwargs: Dict[str, float | int] = {}
+    kwargs: Dict[str, Any] = {}
     if "max_episode_ticks" in _PPS_ENV_INIT_ARGS:
         kwargs["max_episode_ticks"] = max_ticks
     if "reward_picked_qty_weight" in _PPS_ENV_INIT_ARGS:
@@ -118,6 +126,19 @@ def make_pps_env_kwargs(
         kwargs["reward_visit_penalty"] = visit_penalty
     if base_seed is not None and "base_seed" in _PPS_ENV_INIT_ARGS:
         kwargs["base_seed"] = base_seed
+    optional = {
+        "run_profile": run_profile,
+        "bootstrap_n_orders": bootstrap_n_orders,
+        "demand_horizon_ticks": demand_horizon_ticks,
+        "demand_buffer_ticks": demand_buffer_ticks,
+        "pod_location_mode": pod_location_mode,
+        "pod_location_seed": pod_location_seed,
+        "full_raw_order_replay": full_raw_order_replay,
+        "runtime_root": runtime_root,
+    }
+    for key, value in optional.items():
+        if key in _PPS_ENV_INIT_ARGS and value is not None:
+            kwargs[key] = value
     return kwargs
 
 
@@ -347,21 +368,6 @@ def make_pps_env(**kwargs):
     return _init
 
 
-# Static input files each worker needs its own copy of.
-_WORKER_STATIC_FILES = [
-    "items.csv",
-    "pods.csv",
-    "generated_pod.csv",
-    "skus_data.csv",
-    "sorted_skus_data.csv",
-    "allowed_direction_changes.csv",
-    "pod_info.csv",
-    "generated_order.csv",
-    "generated_database_order.csv",
-    "generated_backlog.csv",
-]
-
-
 def make_worker_env(
     worker_id: int,
     base_dir: str,
@@ -370,38 +376,25 @@ def make_worker_env(
     reward_alpha: float,
     visit_penalty: float,
     base_seed: int | None,
+    run_profile: str,
+    bootstrap_n_orders: int | None,
+    demand_horizon_ticks: int | None,
+    demand_buffer_ticks: int | None,
+    pod_location_mode: str | None,
+    pod_location_seed: int | None,
+    full_raw_order_replay: bool,
 ):
     """Factory for SubprocVecEnv workers.
 
-    Each worker:
-      1. Creates a private tempdir.
-      2. Copies static input CSVs from base_dir into it.
-      3. chdirs into the tempdir so all CWD-relative file I/O is isolated.
-      4. Monkey-patches model.order_generator.parent_directory to point there
-         (order_generator uses an absolute path computed at import time).
-      5. Creates a fresh PPSEnv inside the tempdir.
-
-    Note: each worker regenerates its own orders independently, so random
-    seeds differ naturally — good for RL sample diversity.
+    Each worker gets a private runtime root under data/runtime/tmp and lets
+    RunContext resolve canonical inputs. The worker CWD is isolated only as a
+    temporary guard for legacy CWD-relative output helpers.
     """
     def _init():
-        workdir = tempfile.mkdtemp(prefix=f"pps_worker_{worker_id}_")
-
-        # Copy static files (skip missing ones silently)
-        for fname in _WORKER_STATIC_FILES:
-            src = os.path.join(base_dir, fname)
-            if os.path.exists(src):
-                try:
-                    shutil.copy2(src, os.path.join(workdir, fname))
-                except Exception:
-                    pass
-
-        os.makedirs(os.path.join(workdir, "output"), exist_ok=True)
+        workdir = Path(base_dir) / "data" / "runtime" / "tmp" / f"pps_worker_{worker_id}_{os.getpid()}"
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "output").mkdir(exist_ok=True)
         os.chdir(workdir)
-
-        # Redirect order_generator's absolute path to the worker dir
-        import model.order_generator as og_mod
-        og_mod.parent_directory = workdir
 
         return PPSEnv(**make_pps_env_kwargs(
             max_ticks,
@@ -409,6 +402,14 @@ def make_worker_env(
             reward_alpha,
             visit_penalty,
             None if base_seed is None else base_seed + worker_id * 1_000_000,
+            run_profile=run_profile,
+            bootstrap_n_orders=bootstrap_n_orders,
+            demand_horizon_ticks=demand_horizon_ticks,
+            demand_buffer_ticks=demand_buffer_ticks,
+            pod_location_mode=pod_location_mode,
+            pod_location_seed=pod_location_seed,
+            full_raw_order_replay=full_raw_order_replay,
+            runtime_root=workdir,
         ))
     return _init
 
@@ -431,13 +432,20 @@ def train(
     ent_coef: float = 0.001,
     vf_coef: float = 0.5,
     max_grad_norm: float = 0.5,
-    max_episode_ticks: int = 32400,
+    max_episode_ticks: int | None = None,
     picked_qty_weight: float = PICKED_QTY_WEIGHT,
     reward_alpha: float = ALPHA_OCT,
     visit_penalty: float = POD_VISIT_PENALTY,
     n_steps: int = 8192,
     n_envs: int = 1,
     seed: int | None = None,
+    run_profile: str = "training",
+    bootstrap_n_orders: int | None = None,
+    demand_horizon_ticks: int | None = None,
+    demand_buffer_ticks: int | None = None,
+    pod_location_mode: str | None = None,
+    pod_location_seed: int | None = None,
+    full_raw_order_replay: bool = False,
 ):
     """
     Train PPO for PPS using SB3's standard training loop.
@@ -498,6 +506,19 @@ def train(
     random.seed(training_seed)
     np.random.seed(training_seed)
     set_random_seed(training_seed)
+    profile_cfg = resolve_run_profile(
+        run_profile,
+        run_horizon_ticks=max_episode_ticks,
+        bootstrap_n_orders=bootstrap_n_orders,
+        demand_horizon_ticks=demand_horizon_ticks,
+        demand_buffer_ticks=demand_buffer_ticks,
+        full_raw_order_replay=full_raw_order_replay,
+        pod_location_mode=pod_location_mode,
+        pod_location_seed=pod_location_seed,
+        seed=training_seed,
+    )
+    max_episode_ticks = int(profile_cfg.run_horizon_ticks or 0)
+    os.environ.update(profile_cfg.env())
 
     # Vec env: Dummy (serial) for n_envs=1, Subproc (parallel) otherwise
     if n_envs > 1:
@@ -511,6 +532,13 @@ def train(
                 reward_alpha,
                 visit_penalty,
                 session_base_seed,
+                profile_cfg.profile,
+                profile_cfg.bootstrap_n_orders,
+                profile_cfg.demand_horizon_ticks,
+                profile_cfg.demand_buffer_ticks,
+                profile_cfg.pod_location_mode,
+                profile_cfg.pod_location_seed,
+                profile_cfg.full_raw_order_replay,
             )
             for i in range(n_envs)
         ]
@@ -524,6 +552,13 @@ def train(
                 reward_alpha,
                 visit_penalty,
                 session_base_seed,
+                run_profile=profile_cfg.profile,
+                bootstrap_n_orders=profile_cfg.bootstrap_n_orders,
+                demand_horizon_ticks=profile_cfg.demand_horizon_ticks,
+                demand_buffer_ticks=profile_cfg.demand_buffer_ticks,
+                pod_location_mode=profile_cfg.pod_location_mode,
+                pod_location_seed=profile_cfg.pod_location_seed,
+                full_raw_order_replay=profile_cfg.full_raw_order_replay,
             ))
         ])
 
@@ -628,6 +663,10 @@ def train(
     print(f"  Target KL                : {target_kl}")
     print(f"  Entropy coef             : {ent_coef}")
     print(f"  Training seed            : {training_seed}")
+    print(f"  Run profile              : {profile_cfg.profile}")
+    print(f"  Bootstrap orders         : {profile_cfg.bootstrap_n_orders}")
+    print(f"  Demand horizon ticks     : {profile_cfg.demand_horizon_ticks}")
+    print(f"  Pod location mode        : {profile_cfg.pod_location_mode}")
     print(f"  First episode seed       : {session_base_seed}")
     print(f"  Reward objective         : minimize assigned-order flow-time cost")
     print(f"  Fast training I/O        : {'on' if FAST_TRAIN_MODE else 'off'}")
@@ -809,8 +848,22 @@ if __name__ == "__main__":
                         help="Inactive compatibility option; pod visits are logged only")
     parser.add_argument("--save-path", type=str, default=None,
                         help="Override model save directory")
-    parser.add_argument("--max-ticks", type=int, default=32400,
-                        help="Max simulation ticks per episode (default 32400 = 9h)")
+    parser.add_argument("--profile", choices=available_profiles(), default="training",
+                        help="Run profile for horizon, demand, detail DB, and pod-location defaults")
+    parser.add_argument("--max-ticks", type=int, default=None,
+                        help="Max simulation ticks per episode. Defaults to the selected profile.")
+    parser.add_argument("--bootstrap-n-orders", type=int, default=None,
+                        help="Override profile bootstrap order count")
+    parser.add_argument("--demand-horizon-ticks", type=int, default=None,
+                        help="Override generated demand horizon")
+    parser.add_argument("--demand-buffer-ticks", type=int, default=None,
+                        help="Override generated demand buffer beyond run horizon")
+    parser.add_argument("--pod-location-mode", choices=("fixed", "randomize_slots"), default=None,
+                        help="Override profile pod-location mode")
+    parser.add_argument("--pod-location-seed", type=int, default=None,
+                        help="Override pod-location randomization seed")
+    parser.add_argument("--full-raw-order-replay", action="store_true", default=False,
+                        help="Opt in to replaying all unique raw orders")
     parser.add_argument("--n-steps", type=int, default=8192,
                         help="Steps per PPO rollout (set >= typical episode length)")
     parser.add_argument("--n-envs", type=int, default=1,
@@ -833,9 +886,21 @@ if __name__ == "__main__":
         CHECKPOINT_DIR = os.path.join(save_dir, "checkpoints")
 
     if args.eval:
+        eval_profile = resolve_run_profile(
+            args.profile,
+            run_horizon_ticks=args.max_ticks,
+            bootstrap_n_orders=args.bootstrap_n_orders,
+            demand_horizon_ticks=args.demand_horizon_ticks,
+            demand_buffer_ticks=args.demand_buffer_ticks,
+            full_raw_order_replay=args.full_raw_order_replay,
+            pod_location_mode=args.pod_location_mode,
+            pod_location_seed=args.pod_location_seed,
+            seed=args.seed,
+        )
+        os.environ.update(eval_profile.env())
         evaluate(
             n_episodes=args.eval_episodes,
-            max_episode_ticks=args.max_ticks,
+            max_episode_ticks=int(eval_profile.run_horizon_ticks or 0),
             picked_qty_weight=args.picked_qty_weight,
             reward_alpha=args.reward_alpha,
             visit_penalty=args.visit_penalty,
@@ -859,4 +924,11 @@ if __name__ == "__main__":
             n_steps=args.n_steps,
             n_envs=args.n_envs,
             seed=args.seed,
+            run_profile=args.profile,
+            bootstrap_n_orders=args.bootstrap_n_orders,
+            demand_horizon_ticks=args.demand_horizon_ticks,
+            demand_buffer_ticks=args.demand_buffer_ticks,
+            pod_location_mode=args.pod_location_mode,
+            pod_location_seed=args.pod_location_seed,
+            full_raw_order_replay=args.full_raw_order_replay,
         )

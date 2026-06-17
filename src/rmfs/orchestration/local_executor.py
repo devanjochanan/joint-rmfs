@@ -16,6 +16,7 @@ import traceback
 from src.rmfs.orchestration.input_snapshot import create_input_snapshot
 from src.rmfs.orchestration.run_manifest import write_run_manifest
 from src.rmfs.orchestration.run_spec import RunSpec
+from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
 from src.rmfs.runtime_io.timing import configure_timing, timed, write_timing_summary
 
 
@@ -33,9 +34,8 @@ ROOT_SENSITIVE_FILES = [
     "pods.csv",
 ]
 
-EXPECTED_WORKER_FILES = [
+BASE_EXPECTED_WORKER_FILES = [
     "netlogo.state",
-    "warehouse.db",
     "assign_order.csv",
     "pod_info.csv",
     "skus_data.csv",
@@ -49,6 +49,41 @@ DEFERRED_ROOT_READ_ONLY_INPUTS = [
     "items.csv",
     "raw_order.csv",
 ]
+
+
+def expected_worker_files(detail_db: bool = False) -> list[str]:
+    files = list(BASE_EXPECTED_WORKER_FILES)
+    if detail_db:
+        files.insert(1, "warehouse.db")
+    return files
+
+
+def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
+    env = {
+        "RMFS_RUN_PROFILE": spec.run_profile,
+        "RMFS_ORDER_GENERATION_MODE": spec.order_generation_mode,
+        "RMFS_FULL_RAW_ORDER_REPLAY": "1" if spec.full_raw_order_replay else "0",
+        "RMFS_DETAIL_DB": "1" if spec.detail_db else "0",
+        "RMFS_ROBOT_TASK_ALLOCATOR": spec.robot_task_allocator,
+        "RMFS_TASK_ALLOCATOR_SCOPE": spec.task_allocator_scope,
+        "RMFS_COMMITTED_NEXT_RESERVATIONS": "1" if spec.committed_next_reservations_enabled else "0",
+        "RMFS_POD_LOCATION_MODE": spec.pod_location_mode,
+    }
+    if spec.regret_k is not None:
+        env["RMFS_REGRET_K"] = str(spec.regret_k)
+    if spec.rts_random_seed is not None:
+        env["RMFS_SIM_SEED"] = str(spec.rts_random_seed)
+    if spec.run_horizon_ticks is not None:
+        env["RMFS_RUN_HORIZON_TICKS"] = str(spec.run_horizon_ticks)
+    if spec.bootstrap_n_orders is not None:
+        env["RMFS_BOOTSTRAP_N_ORDERS"] = str(spec.bootstrap_n_orders)
+    if spec.demand_horizon_ticks is not None:
+        env["RMFS_DEMAND_HORIZON_TICKS"] = str(spec.demand_horizon_ticks)
+    if spec.demand_buffer_ticks is not None:
+        env["RMFS_DEMAND_BUFFER_TICKS"] = str(spec.demand_buffer_ticks)
+    if spec.pod_location_seed is not None:
+        env["RMFS_POD_LOCATION_SEED"] = str(spec.pod_location_seed)
+    return env
 
 
 def file_digest(path: Path):
@@ -188,6 +223,11 @@ def run_worker(spec: RunSpec):
         ctx.ensure_runtime_dirs()
         configure_detail_db(enabled=spec.detail_db, db_path=ctx.sqlite_db)
         netlogo.configure_run_context(ctx)
+        env_overrides = worker_environment_overrides(spec)
+        previous_env = {key: os.environ.get(key) for key in env_overrides}
+        os.environ.update(env_overrides)
+        if spec.rts_random_seed is not None:
+            netlogo.set_sim_seed(spec.rts_random_seed)
         configure_rts_runtime(
             RTSRuntimeConfig(
                 policy_mode=spec.rts_policy_mode,
@@ -211,13 +251,13 @@ def run_worker(spec: RunSpec):
         summary["setup_digest"] = stable_digest(setup_result)
         summary["setup_signature"] = return_signature(setup_result)
 
-        universe = getattr(netlogo, "universe", None)
-        warehouse = getattr(universe, "warehouse", None)
-        if warehouse is not None:
-            warehouse.robot_task_allocator = spec.robot_task_allocator
-            warehouse.regret_k = spec.regret_k
-            warehouse.task_allocator_scope = spec.task_allocator_scope
-            warehouse.committed_next_reservations_enabled = spec.committed_next_reservations_enabled
+        warehouse = None
+        state_file = ctx.state_file
+        if state_file.exists():
+            with state_file.open("rb") as fh:
+                import pickle
+
+                warehouse = pickle.load(fh)
         tick_to_second = getattr(warehouse, "tick_to_second", 1.0)
         summary["warehouse_time_start"] = 0.0
         summary["tick_to_second"] = tick_to_second
@@ -313,6 +353,12 @@ def run_worker(spec: RunSpec):
         return 1
     finally:
         try:
+            if "previous_env" in locals():
+                for key, value in previous_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
             runtime = None
             if netlogo_module is not None:
                 universe = getattr(netlogo_module, "universe", None)
@@ -393,11 +439,36 @@ def run_controller(
     rts_policy_action_mode: str = "sample",
     rts_policy_device: str = "cpu",
     keep_runtime_artifacts: bool = False,
-    detail_db: bool = False,
+    detail_db: bool | None = None,
     timing: bool = False,
     worker_status_cadence: int = 10,
+    profile: str = "smoke",
+    bootstrap_n_orders: int | None = None,
+    demand_horizon_ticks: int | None = None,
+    demand_buffer_ticks: int | None = None,
+    pod_location_mode: str | None = None,
+    pod_location_seed: int | None = None,
+    full_raw_order_replay: bool = False,
 ):
     output_root.mkdir(parents=True, exist_ok=True)
+    profile_cfg = resolve_run_profile(
+        profile,
+        run_horizon_ticks=ticks,
+        bootstrap_n_orders=bootstrap_n_orders,
+        demand_horizon_ticks=demand_horizon_ticks,
+        demand_buffer_ticks=demand_buffer_ticks,
+        full_raw_order_replay=full_raw_order_replay,
+        detail_db=detail_db,
+        debug_trace=debug_trace or None,
+        keep_runtime_artifacts=keep_runtime_artifacts or None,
+        pod_location_mode=pod_location_mode,
+        pod_location_seed=pod_location_seed,
+        seed=rts_random_seed,
+    )
+    ticks = int(profile_cfg.run_horizon_ticks or 0)
+    debug_trace = bool(debug_trace or profile_cfg.debug_trace)
+    keep_runtime_artifacts = bool(keep_runtime_artifacts or profile_cfg.keep_runtime_artifacts)
+    detail_db = bool(profile_cfg.detail_db)
     branch = git_value(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
     commit = git_value(repo_root, "rev-parse", "HEAD")
     timestamp = datetime.datetime.now().isoformat()
@@ -418,6 +489,15 @@ def run_controller(
         "status": "started",
         "runs": runs,
         "ticks": ticks,
+        "run_profile": profile_cfg.profile,
+        "run_horizon_ticks": profile_cfg.run_horizon_ticks,
+        "bootstrap_n_orders": profile_cfg.bootstrap_n_orders,
+        "demand_horizon_ticks": profile_cfg.demand_horizon_ticks,
+        "demand_buffer_ticks": profile_cfg.demand_buffer_ticks,
+        "order_generation_mode": profile_cfg.order_generation_mode,
+        "full_raw_order_replay": profile_cfg.full_raw_order_replay,
+        "pod_location_mode": profile_cfg.pod_location_mode,
+        "pod_location_seed": profile_cfg.pod_location_seed,
         "max_workers": max_workers,
         "repo_root": str(repo_root),
         "output_root": str(output_root),
@@ -519,6 +599,15 @@ def run_controller(
             detail_db=detail_db,
             timing=timing,
             worker_status_cadence=worker_status_cadence,
+            run_profile=profile_cfg.profile,
+            run_horizon_ticks=profile_cfg.run_horizon_ticks,
+            bootstrap_n_orders=profile_cfg.bootstrap_n_orders,
+            demand_horizon_ticks=profile_cfg.demand_horizon_ticks,
+            demand_buffer_ticks=profile_cfg.demand_buffer_ticks,
+            order_generation_mode=profile_cfg.order_generation_mode,
+            full_raw_order_replay=profile_cfg.full_raw_order_replay,
+            pod_location_mode=profile_cfg.pod_location_mode,
+            pod_location_seed=profile_cfg.pod_location_seed if profile_cfg.pod_location_seed is not None else index,
         )
         specs.append(spec)
         write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
@@ -589,7 +678,7 @@ def run_controller(
         worker_summary = load_worker_summary(spec.runtime_root)
         expected_files = {
             name: file_digest(spec.runtime_root / name)
-            for name in EXPECTED_WORKER_FILES
+            for name in expected_worker_files(detail_db=spec.detail_db)
         }
         missing = [name for name, info in expected_files.items() if not info["exists"]]
         if missing:
@@ -672,6 +761,13 @@ def run_controller(
         "failure_reasons": failure_reasons,
         "runs_requested": runs,
         "ticks": ticks,
+        "run_profile": profile_cfg.profile,
+        "run_horizon_ticks": profile_cfg.run_horizon_ticks,
+        "bootstrap_n_orders": profile_cfg.bootstrap_n_orders,
+        "demand_horizon_ticks": profile_cfg.demand_horizon_ticks,
+        "demand_buffer_ticks": profile_cfg.demand_buffer_ticks,
+        "pod_location_mode": profile_cfg.pod_location_mode,
+        "pod_location_seed": profile_cfg.pod_location_seed,
         "max_workers": max_workers,
         "workers_succeeded": workers_succeeded,
         "workers_failed": workers_failed,
@@ -720,15 +816,22 @@ def main(argv=None):
 
     controller_parser = subparsers.add_parser("controller")
     controller_parser.add_argument("--runs", type=int, default=4, help="Number of worker runs to execute.")
-    controller_parser.add_argument("--ticks", type=int, default=3, help="Number of NetLogo steps per worker run.")
+    controller_parser.add_argument("--profile", choices=available_profiles(), default="smoke")
+    controller_parser.add_argument("--ticks", type=int, default=None, help="Number of NetLogo steps per worker run. Defaults to profile horizon.")
     controller_parser.add_argument("--max-workers", type=int, default=2)
     controller_parser.add_argument("--output-root", required=True)
     controller_parser.add_argument("--repo-root", default=None)
     controller_parser.add_argument("--debug-trace", action="store_true", default=False)
     controller_parser.add_argument("--keep-runtime-artifacts", action="store_true", default=False)
-    controller_parser.add_argument("--detail-db", action="store_true", default=False, help="Enable detail SQLite DB writes in workers. Disabled by default for headless runs.")
+    controller_parser.add_argument("--detail-db", action="store_true", default=None, help="Enable detail SQLite DB writes in workers. Disabled by default for headless runs.")
     controller_parser.add_argument("--timing", action="store_true", default=False, help="Collect compact worker timing summaries.")
     controller_parser.add_argument("--worker-status-cadence", type=int, default=10, help="Write worker_status.json every N ticks, plus start/final status.")
+    controller_parser.add_argument("--bootstrap-n-orders", type=int, default=None)
+    controller_parser.add_argument("--demand-horizon-ticks", type=int, default=None)
+    controller_parser.add_argument("--demand-buffer-ticks", type=int, default=None)
+    controller_parser.add_argument("--pod-location-mode", choices=("fixed", "randomize_slots"), default=None)
+    controller_parser.add_argument("--pod-location-seed", type=int, default=None)
+    controller_parser.add_argument("--full-raw-order-replay", action="store_true", default=False)
     controller_parser.add_argument("--trace-cadence", type=int, default=1000)
     controller_parser.add_argument("--trace-first-n", type=int, default=0)
     controller_parser.add_argument("--snapshot-inputs", action="store_true", default=False)
@@ -752,7 +855,7 @@ def main(argv=None):
 
     if args.runs < 1:
         parser.error("--runs must be >= 1")
-    if args.ticks < 0:
+    if args.ticks is not None and args.ticks < 0:
         parser.error("--ticks must be >= 0")
     if args.max_workers < 1:
         parser.error("--max-workers must be >= 1")
@@ -798,6 +901,13 @@ def main(argv=None):
         detail_db=args.detail_db,
         timing=args.timing,
         worker_status_cadence=args.worker_status_cadence,
+        profile=args.profile,
+        bootstrap_n_orders=args.bootstrap_n_orders,
+        demand_horizon_ticks=args.demand_horizon_ticks,
+        demand_buffer_ticks=args.demand_buffer_ticks,
+        pod_location_mode=args.pod_location_mode,
+        pod_location_seed=args.pod_location_seed,
+        full_raw_order_replay=args.full_raw_order_replay,
     )
     return 0
 

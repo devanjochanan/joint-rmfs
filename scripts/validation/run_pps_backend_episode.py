@@ -23,6 +23,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 os.chdir(_REPO_ROOT)
 from src.rmfs.rl.pps.model_paths import DEFAULT_PPS_MODEL_PATH
+from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +37,12 @@ def parse_args() -> argparse.Namespace:
         choices=("ppo", "random", "rika", "heuristic", "demand"),
         default="rika",
         help="PPS mode to use.",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=available_profiles(),
+        default="smoke",
+        help="Run profile for horizon, demand, detail DB, and pod-location defaults.",
     )
     parser.add_argument(
         "--max-ticks",
@@ -54,6 +61,42 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional simulation seed to apply before backend setup.",
+    )
+    parser.add_argument(
+        "--bootstrap-n-orders",
+        type=int,
+        default=None,
+        help="Override profile bootstrap order count.",
+    )
+    parser.add_argument(
+        "--demand-horizon-ticks",
+        type=int,
+        default=None,
+        help="Override generated demand horizon.",
+    )
+    parser.add_argument(
+        "--demand-buffer-ticks",
+        type=int,
+        default=None,
+        help="Override generated demand buffer beyond run horizon.",
+    )
+    parser.add_argument(
+        "--pod-location-mode",
+        choices=("fixed", "randomize_slots"),
+        default=None,
+        help="Override profile pod-location mode.",
+    )
+    parser.add_argument(
+        "--pod-location-seed",
+        type=int,
+        default=None,
+        help="Override pod-location randomization seed.",
+    )
+    parser.add_argument(
+        "--full-raw-order-replay",
+        action="store_true",
+        default=False,
+        help="Opt in to replaying all unique raw orders.",
     )
     parser.add_argument(
         "--normal-io",
@@ -91,9 +134,24 @@ def main() -> None:
         os.environ["PPS_RL_MODEL_PATH"] = args.model_path
     if args.seed is not None:
         os.environ["RMFS_SIM_SEED"] = str(args.seed)
+    profile_cfg = resolve_run_profile(
+        args.profile,
+        run_horizon_ticks=int(args.max_ticks),
+        bootstrap_n_orders=args.bootstrap_n_orders,
+        demand_horizon_ticks=args.demand_horizon_ticks,
+        demand_buffer_ticks=args.demand_buffer_ticks,
+        full_raw_order_replay=args.full_raw_order_replay,
+        detail_db=args.detail_db if args.detail_db else None,
+        pod_location_mode=args.pod_location_mode,
+        pod_location_seed=args.pod_location_seed,
+        seed=args.seed,
+    )
+    os.environ.update(profile_cfg.env())
     if args.detail_db:
         os.environ["RMFS_DETAIL_DB"] = "1"
-    elif not args.normal_io:
+    elif args.normal_io:
+        os.environ.setdefault("RMFS_DETAIL_DB", "1")
+    else:
         os.environ["RMFS_DETAIL_DB"] = "0"
 
     import netlogo
@@ -166,6 +224,10 @@ def main() -> None:
 
     print(f"Mode: {args.mode}")
     print(f"Seed: {args.seed if args.seed is not None else ''}")
+    print(f"Run profile: {profile_cfg.profile}")
+    print(f"Bootstrap orders: {profile_cfg.bootstrap_n_orders}")
+    print(f"Demand horizon ticks: {profile_cfg.demand_horizon_ticks}")
+    print(f"Pod location mode: {profile_cfg.pod_location_mode}")
     print(f"Fast training I/O: {'off' if args.normal_io else 'on'}")
     print(f"Detail DB: {'on' if args.detail_db else 'default'}")
     print(f"Backend steps: {backend_steps}")

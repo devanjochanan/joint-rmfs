@@ -33,6 +33,15 @@ class RunSpec:
     detail_db: bool = False
     timing: bool = False
     worker_status_cadence: int = 10
+    run_profile: str = "smoke"
+    run_horizon_ticks: int | None = None
+    bootstrap_n_orders: int | None = None
+    demand_horizon_ticks: int | None = None
+    demand_buffer_ticks: int | None = None
+    order_generation_mode: str = "controlled_count"
+    full_raw_order_replay: bool = False
+    pod_location_mode: str = "randomize_slots"
+    pod_location_seed: int | None = None
     experiment_id: str | None = None
     scenario_id: str | None = None
     artifact_label: str | None = None
