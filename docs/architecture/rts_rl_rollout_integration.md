@@ -28,7 +28,9 @@ No NetLogo bridge, POA/PPS, charging, order generation, pod-SKU allocation, path
 
 ## Reward
 
-Outcome rows include reward JSON. Reward is computed only when a valid cycle reference is configured and exists. If the reference is missing, Phase 7 records `reward_computed=false` and does not fabricate a reward.
+Outcome rows include reward JSON. In the original Phase 7 rollout integration, rewards were computed only when a valid cycle reference was configured and present; missing references produced `reward_computed=false`.
+
+Current RTS-RL v1 training no longer requires a manual reference run or mandatory `cycle_reference.json`. Reference-free completed paper-cycle outcomes carry cold-start reward metadata, and the on-policy dataset builder derives or reuses `reward_time_scale` before deciding whether a row is PPO-trainable. `cycle_reference.json` remains optional legacy compatibility when explicitly configured.
 
 ## Replenish-Store Execution Restriction in Evaluation
 random_valid is a behavior-changing evaluation mode, but in Phase 7 it executes store-branch actions only. Replenish-store action validity may still be logged in current_probe/state/mask data, but actual replenish-store execution is deferred until a real replenishment execution contract exists.

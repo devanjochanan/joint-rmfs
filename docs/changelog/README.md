@@ -323,8 +323,8 @@ We apply the following versioning convention for updates:
 * **Behavior Changes**: No. Simplified routine RTS operational tasks: artifact labels are now auto-generated if omitted, latest local artifact pointer resolves automatically for resuming, obsolete synthetic cycle reference requirements in smokes are removed, and CLI descriptions/terminology are normalized.
 * **Validation Run**:
   * `/home/dewan/torch-gpu/bin/python` recursive `py_compile` checks.
-  * Executed all active validation smokes (cold-start, dry-run controller, checkpoint loader, dataset, PPO update, regret-k allocator, regret-k config).
-* **Residual Risks**: None. No real training run or simulation updates were made.
+  * Executed a safe RTS validation subset available at the time (cold-start, dry-run controller, dataset/PPO-related smokes, regret-k allocator, regret-k config).
+* **Residual Risks**: No real training run, simulation, or exhaustive active-smoke sweep was performed.
 
 ### 2026-06-15 RTS Training Terminal-Output Cleanup Patch - +0.0.1
 * **Files Changed/Created/Deleted**:
@@ -422,3 +422,28 @@ We apply the following versioning convention for updates:
   - `wsl /home/dewan/torch-gpu/bin/python scripts/validation/owner_architecture_migration_smoke.py`
   - `wsl PYTHONPATH=. /home/dewan/torch-gpu/bin/python -c "import netlogo; print('netlogo import ok')"`
 * **Residual Risks**: None. All legacy imports successfully redirected and validated via smoke tests.
+
+### 2026-06-17 v1.10.0 RTS-RL Validation Cleanup - +0.0.1
+* **Files Changed/Created/Deleted**:
+  * `[RESTORE] scripts/validation/rts_on_policy_actor_smoke.py`
+  * `[RESTORE] scripts/validation/rts_on_policy_dataset_smoke.py`
+  * `[RESTORE] scripts/validation/rts_ppo_update_smoke.py`
+  * `[RESTORE] scripts/validation/rts_rl_port_smoke.py`
+  * `[RESTORE] scripts/validation/rts_rl_rollout_smoke.py`
+  * `[RESTORE] scripts/validation/rts_timebase_smoke.py`
+  * `[RESTORE] scripts/validation/rts_training_checkpoint_loader_smoke.py`
+  * `[MODIFY] docs/validation/rts_rl_on_policy_training.md`
+  * `[MODIFY] docs/validation/rts_rl_training.md`
+  * `[MODIFY] docs/architecture/rts_rl_rollout_integration.md`
+  * `[MODIFY] docs/changelog/README.md`
+* **Behavior Changes**: No simulator or training behavior changes. Active RTS-RL validation smokes accidentally removed during migration were restored from local history and lightly aligned to current cold-start reward semantics.
+* **Validation Run**:
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_reward_cold_start_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_on_policy_dataset_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_ppo_update_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_training_checkpoint_loader_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_timebase_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_on_policy_actor_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_rl_port_smoke.py`
+  * `/home/dewan/torch-gpu/bin/python scripts/validation/rts_rl_rollout_smoke.py`
+* **Residual Risks**: No real simulation, `--execute` training, BehaviorSpace run, benchmark, or long validation campaign was run; validation is limited to static checks and safe smokes.
