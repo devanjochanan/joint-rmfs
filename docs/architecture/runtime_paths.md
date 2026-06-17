@@ -11,6 +11,7 @@ Canonical inputs:
 - `data/input/dictionaries/items_dictionary.csv`
 - `data/input/dictionaries/pods_dictionary.csv`
 - `data/input/dictionaries/items_slots_configuration.csv`
+- `data/input/scenarios/`
 
 Runtime outputs:
 
@@ -30,10 +31,9 @@ the scenario activation `--legacy-root` flag. If canonical inputs are missing,
 `RunContext` can warn and fall back to legacy root files, but root is no longer
 the canonical input location.
 
-Pod-location randomization is explicit-only. Set
-`RMFS_POD_LOCATION_MODE=randomize_slots` plus `RMFS_POD_LOCATION_SEED` or
-`RMFS_SIM_SEED` to shuffle which `pod_id` starts at each existing storage slot.
-This does not modify `items.csv`, `pods.csv`, or `generated_pod.csv`.
+Profile-driven headless runs use the selected profile’s pod-location mode. Current smoke, training, ablation, and debug profiles default to `randomize_slots`; GUI/manual defaults to `fixed`. Manual overrides remain available through `RMFS_POD_LOCATION_MODE` and `RMFS_POD_LOCATION_SEED`.
+
+Pod-location randomization only shuffles starting pod IDs across existing storage slots. It does not change pod contents, SKU allocation, item quantities, orders, or storage-slot geometry. It does not modify `data/input/base/items.csv`, `data/input/base/pods.csv`, or `data/input/base/generated_pod.csv`.
 
 Runtime timing is explicit-only through `RMFS_TIMING=1` or `--timing` on local
 executor paths. Detail DB writes are explicit for headless workers through

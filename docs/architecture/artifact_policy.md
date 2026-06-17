@@ -7,8 +7,9 @@ adds explicit timing and detail-DB runtime policy for headless workers.
 
 - Runtime scratch state belongs under `data/runtime/tmp/`, `data/runtime/debug/`, or `data/runtime/latest/`.
 - Debug traces are disabled by default.
-- Successful worker folders may be marked with `.rmfs_cleanup_eligible`.
+- Successful worker folders may be marked with `.rmfs_cleanup_eligible`. Depending on profile and operator flags, successful headless workers may be cleanup-eligible.
 - Failed workers are preserved by policy so their logs and summaries can be inspected.
+- The `debug` profile preserves all runtime artifacts (detail DB, traces, worker logs) for inspection.
 - Compact summaries belong under `data/output/summaries/`.
 - Detail SQLite tables are disabled by default in local-executor headless workers
   and fast PPS/backend paths unless `--detail-db` or `RMFS_DETAIL_DB=1` enables
@@ -18,11 +19,13 @@ adds explicit timing and detail-DB runtime policy for headless workers.
 
 ## Cleanup Tool
 
-Use:
+The operator cleanup CLI command delegates execution to:
 
 ```bash
 /home/dewan/torch-gpu/bin/python scripts/runtime/cleanup_runtime_artifacts.py --dry-run
 ```
+
+The cleanup tool always defaults to dry-run mode. `--apply` is required to perform actual deletions.
 
 The cleanup tool targets only:
 
@@ -39,8 +42,7 @@ It never targets:
 - benchmark outputs
 - training checkpoints or model binaries
 
-`--apply` is required to delete anything. Phase 4 and Phase 5 validation run
-dry-run only.
+Phase 4 and Phase 5 validation runs use dry-run only.
 
 ## Detail DB
 

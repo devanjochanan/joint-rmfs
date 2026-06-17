@@ -18,6 +18,12 @@ data/models/pps/pps_rl_best.zip
 - `scripts/validation/run_pps_backend_episode.py`: one-episode backend CLI.
 - `scripts/experiments/run_pps_replications.py`: paired policy experiment CLI.
 
+## Dependencies
+
+- **Isolation Contract**: A normal NetLogo or heuristic simulation import (`import netlogo`) does not require the `gymnasium` package. This keeps the base simulation light and dependencies isolated.
+- **Training Dependencies**: PPS RL training does require PPS training dependencies (Gymnasium, Stable-Baselines3, PyTorch).
+- **Inspection Policy**: PPS training commands should be dry-run or profile-inspected first to review the exact configurations and delegation command outputs before execution.
+
 ## Intentional Duplication
 
 PPS observation/action construction still exists in both the NetLogo bridge and

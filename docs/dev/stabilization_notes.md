@@ -1,7 +1,6 @@
-# Phase 5B Stabilization Notes
+# Phase 5B/6/7 Stabilization Notes
 
-This pass keeps simulator semantics intact while removing current execution
-blockers before the human-operator documentation phase.
+This pass keeps simulator semantics intact while removing execution blockers and providing operator tools.
 
 ## Run Profiles
 
@@ -9,7 +8,7 @@ Human-facing runs should select one profile first:
 
 - `smoke`: small bounded run, detail DB off, deterministic pod-slot randomization.
 - `training`: bounded PPS/RL training horizon, detail DB off, pod slots randomized by seed.
-- `ablation`: 100000 tick default horizon, bounded demand, detail DB off, pod slots randomized by seed.
+- `ablation`: 100,000 tick default horizon, bounded demand, detail DB off, pod slots randomized by seed.
 - `debug`: small bounded run with detail DB/debug artifacts enabled.
 - `gui`: manual compatibility profile with fixed pod locations and legacy fallback behavior.
 
@@ -31,6 +30,7 @@ investigation.
 
 ## Remaining Phase 6/Follow-Up Notes
 
+- **Phase 6 & 7**: Phase 6 added an operator CLI; Phase 7 documents the current operator-facing workflow and updates stale profile/path statements.
 - PPS observation/action construction is still duplicated between the NetLogo
   bridge and PPSEnv; it was not extracted here to avoid tensor/action risk.
 - Replication orchestration still has older scenario snapshot/restore behavior;
