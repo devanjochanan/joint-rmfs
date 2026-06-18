@@ -85,8 +85,8 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         sel_repl_x_norm = _norm(getattr(selected_repl_station, "pos_x", 0.0))
         sel_repl_y_norm = _norm(getattr(selected_repl_station, "pos_y", 0.0))
         
-        # Count robots heading to or at this station
-        robots = list(getattr(warehouse, "_objects", []) or [])
+        # Count robots heading to or at this station.
+        robots = [obj for obj in getattr(warehouse, "_objects", []) or [] if _is_robot_object(obj)]
         sel_repl_logical_load = float(sum(
             1 for r in robots
             if getattr(r, "station", None) == selected_repl_station
@@ -202,3 +202,7 @@ def _norm(value: Any) -> float:
         return max(0.0, min(1.0, float(value) / 100.0))
     except Exception:
         return 0.0
+
+
+def _is_robot_object(obj: object) -> bool:
+    return str(getattr(obj, "object_type", "")).lower() == "robot"

@@ -155,6 +155,15 @@ def main() -> None:
         os.environ["RMFS_DETAIL_DB"] = "0"
 
     import netlogo
+    from src.rmfs.app.netlogo_api import (
+        _apply_pps_rl_policy,
+        _get_throughput,
+        _get_avg_order_completion_time,
+        _get_pod_visits,
+        _get_picked_quantity,
+        _get_pile_on_rate,
+    )
+    from src.rmfs.decisions.pps import configure_pps_rl_strategy
 
     progress_out = sys.stdout
 
@@ -197,7 +206,7 @@ def main() -> None:
         obj.setUniverse(universe)
 
     with maybe_silence_logs():
-        netlogo._configure_pps_rl_strategy(universe)
+        configure_pps_rl_strategy(universe)
 
     run_start = time.perf_counter()
     last_progress = run_start
@@ -206,7 +215,7 @@ def main() -> None:
     with maybe_silence_logs():
         while universe._tick < args.max_ticks:
             universe.tick()
-            netlogo._apply_pps_rl_policy(universe)
+            _apply_pps_rl_policy(universe)
             backend_steps += 1
             now = time.perf_counter()
             if args.progress_seconds > 0 and now - last_progress >= args.progress_seconds:
@@ -234,11 +243,11 @@ def main() -> None:
     print(f"Simulation tick: {universe._tick:.2f}")
     print(f"Setup + run seconds: {total_elapsed:.2f}")
     print(f"Run seconds: {run_elapsed:.2f}")
-    print(f"Throughput: {netlogo._get_throughput(universe)}")
-    print(f"Avg order completion time: {netlogo._get_avg_order_completion_time(universe)}")
-    print(f"Pod visits: {netlogo._get_pod_visits(universe)}")
-    print(f"Pile-on rate: {netlogo._get_pile_on_rate(universe)}")
-    print(f"Picked quantity: {netlogo._get_picked_quantity(universe)}")
+    print(f"Throughput: {_get_throughput(universe)}")
+    print(f"Avg order completion time: {_get_avg_order_completion_time(universe)}")
+    print(f"Pod visits: {_get_pod_visits(universe)}")
+    print(f"Pile-on rate: {_get_pile_on_rate(universe)}")
+    print(f"Picked quantity: {_get_picked_quantity(universe)}")
     print(f"Total energy: {universe.total_energy}")
     print(f"Stop-and-go: {universe.stop_and_go}")
     print(f"Total turning: {universe.total_turning}")

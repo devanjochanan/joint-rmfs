@@ -32,6 +32,15 @@ import numpy as np
 
 from src.rmfs.decisions.pps import DEFAULT_PPS_MODEL_PATH
 from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
+from src.rmfs.app.netlogo_api import (
+    _apply_pps_rl_policy,
+    _get_throughput,
+    _get_avg_order_completion_time,
+    _get_pod_visits,
+    _get_picked_quantity,
+    _get_pile_on_rate,
+)
+from src.rmfs.decisions.pps import configure_pps_rl_strategy
 
 
 POLICY_MODES = ("rika", "random", "ppo")
@@ -289,7 +298,7 @@ def run_policy(netlogo, args: argparse.Namespace, replication: int, seed: int, m
         obj.setUniverse(universe)
 
     with silence_backend(args.show_log):
-        netlogo._configure_pps_rl_strategy(universe)
+        configure_pps_rl_strategy(universe)
 
     if mode == "ppo":
         ppo_active = (
@@ -322,7 +331,7 @@ def run_policy(netlogo, args: argparse.Namespace, replication: int, seed: int, m
     with silence_backend(args.show_log):
         while universe._tick < args.max_ticks:
             universe.tick()
-            netlogo._apply_pps_rl_policy(universe)
+            _apply_pps_rl_policy(universe)
             backend_steps += 1
             now = time.perf_counter()
             if args.progress_seconds > 0 and now - last_progress >= args.progress_seconds:
@@ -332,7 +341,7 @@ def run_policy(netlogo, args: argparse.Namespace, replication: int, seed: int, m
                     f"rep={replication}, mode={mode}, "
                     f"tick={universe._tick:.2f}/{args.max_ticks:g}, "
                     f"steps={backend_steps}, "
-                    f"throughput={netlogo._get_throughput(universe)}, "
+                    f"throughput={_get_throughput(universe)}, "
                     f"elapsed={now - run_start:.1f}s",
                     file=progress_out,
                     flush=True,
@@ -349,11 +358,11 @@ def run_policy(netlogo, args: argparse.Namespace, replication: int, seed: int, m
         "fast_io": bool(args.fast_io),
         "backend_steps": backend_steps,
         "simulation_tick": round(universe._tick, 6),
-        "throughput": netlogo._get_throughput(universe),
-        "avg_order_completion_time": netlogo._get_avg_order_completion_time(universe),
-        "pod_visits": netlogo._get_pod_visits(universe),
-        "pile_on_rate": netlogo._get_pile_on_rate(universe),
-        "picked_quantity": netlogo._get_picked_quantity(universe),
+        "throughput": _get_throughput(universe),
+        "avg_order_completion_time": _get_avg_order_completion_time(universe),
+        "pod_visits": _get_pod_visits(universe),
+        "pile_on_rate": _get_pile_on_rate(universe),
+        "picked_quantity": _get_picked_quantity(universe),
         "total_energy": universe.total_energy,
         "stop_and_go": universe.stop_and_go,
         "total_turning": universe.total_turning,

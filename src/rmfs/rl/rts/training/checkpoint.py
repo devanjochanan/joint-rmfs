@@ -29,6 +29,25 @@ def batch_checkpoint_dir(output_root: Path, artifact_label: str, batch_id: int) 
     return checkpoint_root(output_root, artifact_label) / f"batch_{int(batch_id):06d}" / "checkpoint"
 
 
+def checkpoint_id_from_path(checkpoint_dir: Path) -> str:
+    checkpoint = Path(checkpoint_dir)
+    parent = checkpoint.parent
+    return parent.name if parent.name.startswith("batch_") else checkpoint.name
+
+
+def resolve_policy_checkpoint_id(checkpoint_dir: Path | None) -> str:
+    if checkpoint_dir is None:
+        return "dry_run_uninitialized"
+    checkpoint = Path(checkpoint_dir)
+    metadata_id = _policy_checkpoint_id_from_metadata(checkpoint)
+    if metadata_id:
+        return metadata_id
+    sidecar_id = _policy_checkpoint_id_from_sidecar(checkpoint)
+    if sidecar_id:
+        return sidecar_id
+    return checkpoint_id_from_path(checkpoint)
+
+
 def write_feature_schema(
     path: Path,
     *,
@@ -53,12 +72,14 @@ def write_feature_schema(
     return schema
 
 
-def write_latest_pointer(root: Path, *, batch_id: int, checkpoint_dir: Path) -> None:
+def write_latest_pointer(root: Path, *, batch_id: int, checkpoint_dir: Path, policy_checkpoint_id: str | None = None) -> None:
+    resolved_checkpoint_id = str(policy_checkpoint_id or resolve_policy_checkpoint_id(checkpoint_dir))
     atomic_write_json(
         Path(root) / "latest.json",
         {
             "batch_id": int(batch_id),
             "checkpoint_dir": str(checkpoint_dir),
+            "policy_checkpoint_id": resolved_checkpoint_id,
         },
     )
 
@@ -85,6 +106,7 @@ def save_training_checkpoint(
     import datetime
     root = checkpoint_root(config.output_root, config.artifact_label)
     checkpoint_dir = batch_checkpoint_dir(config.output_root, config.artifact_label, batch_id)
+    checkpoint_id_after = checkpoint_id_from_path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     atomic_torch_save(model.state_dict(), checkpoint_dir / "model.pt")
     atomic_torch_save(optimizer.state_dict(), checkpoint_dir / "optimizer.pt")
@@ -99,6 +121,7 @@ def save_training_checkpoint(
     metadata = json_safe(
         {
             "batch_id": int(batch_id),
+            "policy_checkpoint_id": checkpoint_id_after,
             "training_config": config,
             "dataset_summary": dataset_summary,
             "ppo_update_result": ppo_update_result,
@@ -109,9 +132,7 @@ def save_training_checkpoint(
         }
     )
     atomic_write_json(checkpoint_dir / "metadata.json", metadata)
-    write_latest_pointer(root, batch_id=batch_id, checkpoint_dir=checkpoint_dir)
-    
-    checkpoint_id_after = checkpoint_dir.parent.name if checkpoint_dir.parent.name.startswith("batch_") else checkpoint_dir.name
+    write_latest_pointer(root, batch_id=batch_id, checkpoint_dir=checkpoint_dir, policy_checkpoint_id=checkpoint_id_after)
     
     append_checkpoint_history(
         root,
@@ -119,6 +140,7 @@ def save_training_checkpoint(
             "batch_id": int(batch_id),
             "checkpoint_id_before": checkpoint_id_before,
             "checkpoint_id_after": checkpoint_id_after,
+            "policy_checkpoint_id": checkpoint_id_after,
             "checkpoint_dir": str(checkpoint_dir),
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "dataset_summary": dict(dataset_summary),
@@ -150,3 +172,27 @@ def load_training_checkpoint(checkpoint_dir: Path, *, model, optimizer=None, dev
 
 def write_batch_summary(path: Path, payload: Mapping[str, Any]) -> None:
     write_json(path, payload)
+
+
+def _policy_checkpoint_id_from_metadata(checkpoint_dir: Path) -> str | None:
+    try:
+        with (checkpoint_dir / "metadata.json").open() as fh:
+            import json
+
+            metadata = json.load(fh)
+    except Exception:
+        return None
+    value = metadata.get("policy_checkpoint_id")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _policy_checkpoint_id_from_sidecar(checkpoint_dir: Path) -> str | None:
+    try:
+        value = (checkpoint_dir / "policy_checkpoint_id").read_text(encoding="utf-8")
+    except Exception:
+        return None
+    normalized = value.strip()
+    return normalized or None

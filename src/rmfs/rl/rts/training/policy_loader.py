@@ -10,6 +10,7 @@ from typing import Any
 import torch
 
 from src.rmfs.rl.rts.training.device import resolve_rts_torch_device
+from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id
 from src.rmfs.rl.rts.model import RTSMaskedActorCritic
 from src.rmfs.rl.rts.graph_distance import DISTANCE_SEMANTICS_VERSION
 from src.rmfs.rl.rts.reward import REWARD_HORIZON
@@ -48,7 +49,7 @@ def load_policy_from_checkpoint(checkpoint_dir: Path, *, device: str = "cpu") ->
     model.load_state_dict(torch.load(model_path, map_location=resolved_device))
     model.to(resolved_device)
     model.eval()
-    policy_checkpoint_id = str(metadata.get("policy_checkpoint_id") or _checkpoint_id_from_path(checkpoint))
+    policy_checkpoint_id = resolve_policy_checkpoint_id(checkpoint)
     if not policy_checkpoint_id.strip():
         raise ValueError("policy_checkpoint_id must be nonblank")
     _validate_schema_semantics(feature_schema)
@@ -59,14 +60,6 @@ def load_policy_from_checkpoint(checkpoint_dir: Path, *, device: str = "cpu") ->
         feature_schema=feature_schema,
         metadata=metadata,
     )
-
-
-def _checkpoint_id_from_path(checkpoint_dir: Path) -> str:
-    parent = checkpoint_dir.parent
-    if parent.name.startswith("batch_"):
-        return parent.name
-    return checkpoint_dir.name
-
 
 def _validate_schema_semantics(feature_schema: dict[str, Any]) -> None:
     reward_horizon = feature_schema.get("reward_horizon")

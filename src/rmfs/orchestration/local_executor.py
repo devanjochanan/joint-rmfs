@@ -259,7 +259,7 @@ def run_worker(spec: RunSpec):
 
                 warehouse = pickle.load(fh)
         tick_to_second = getattr(warehouse, "tick_to_second", 1.0)
-        summary["warehouse_time_start"] = 0.0
+        summary["warehouse_time_start"] = float(getattr(warehouse, "_tick", 0.0)) if warehouse is not None else 0.0
         summary["tick_to_second"] = tick_to_second
 
         first_result = None
@@ -322,13 +322,19 @@ def run_worker(spec: RunSpec):
                     "total_turning": tick_res[4],
                 }
 
-        # Get final warehouse time and wall clock elapsed
-        final_tick = 0.0
-        if warehouse is not None:
-            final_tick = getattr(warehouse, "_tick", 0.0)
-            tick_to_second = getattr(warehouse, "tick_to_second", tick_to_second)
-            
-        summary["warehouse_time_end"] = float(final_tick) * float(tick_to_second)
+        # Refresh the pickled warehouse because netlogo.tick() owns state mutation.
+        final_warehouse = warehouse
+        if state_file.exists():
+            with state_file.open("rb") as fh:
+                import pickle
+
+                final_warehouse = pickle.load(fh)
+        final_warehouse_time = 0.0
+        if final_warehouse is not None:
+            final_warehouse_time = getattr(final_warehouse, "_tick", 0.0)
+            tick_to_second = getattr(final_warehouse, "tick_to_second", tick_to_second)
+
+        summary["warehouse_time_end"] = float(final_warehouse_time)
         summary["warehouse_time_elapsed"] = summary["warehouse_time_end"] - summary["warehouse_time_start"]
         summary["worker_wall_time_elapsed"] = time.perf_counter() - worker_start
 

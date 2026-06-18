@@ -15,7 +15,7 @@ import torch
 
 from src.rmfs.orchestration.run_spec import RunSpec
 from src.rmfs.orchestration.local_executor import git_value
-from src.rmfs.rl.rts.training.checkpoint import load_training_checkpoint, save_training_checkpoint
+from src.rmfs.rl.rts.training.checkpoint import load_training_checkpoint, resolve_policy_checkpoint_id, save_training_checkpoint
 from src.rmfs.rl.rts.training.config import RTSTrainingConfig
 from src.rmfs.rl.rts.training.on_policy_dataset import build_on_policy_ppo_batch, build_on_policy_training_steps
 from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint
@@ -680,10 +680,7 @@ def _read_latest(run_root: Path) -> dict[str, Any] | None:
 
 
 def _checkpoint_id(checkpoint_dir: Path | None) -> str:
-    if checkpoint_dir is None:
-        return "dry_run_uninitialized"
-    parent = checkpoint_dir.parent
-    return parent.name if parent.name.startswith("batch_") else checkpoint_dir.name
+    return resolve_policy_checkpoint_id(checkpoint_dir)
 
 
 def _load_rollout_shards(workers_dir: Path) -> list[dict[str, Any]]:

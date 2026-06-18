@@ -44,6 +44,33 @@ def infer_coordinate_zone_id(
     return ""
 
 
+def infer_pressure_zone_id(
+    coord: Any,
+    zone_ids: Sequence[str],
+    *,
+    registry: RTSZoneRegistry,
+) -> str:
+    pair = _coordinate_pair(coord)
+    if pair is None:
+        return ""
+    zone_id_set = set(str(zone_id) for zone_id in zone_ids)
+    exact_zone_id = registry.coordinate_to_zone_id.get(pair)
+    if exact_zone_id in zone_id_set:
+        return str(exact_zone_id)
+
+    x, y = pair
+    candidates: list[str] = []
+    for zone_id in zone_id_set:
+        zone_info = registry.zones_by_id.get(zone_id)
+        if zone_info is None:
+            continue
+        if any(abs(int(storage_x) - x) + abs(int(storage_y) - y) == 1 for storage_x, storage_y in zone_info.coordinates):
+            candidates.append(zone_id)
+
+    # A pathway coordinate can touch two zones; lexicographic order keeps the pressure owner deterministic.
+    return sorted(candidates)[0] if candidates else ""
+
+
 def build_zone_rows(
     context: Any,
     zone_ids: Sequence[str],
@@ -57,11 +84,20 @@ def build_zone_rows(
     
     storage_manager = getattr(warehouse, "storage_manager", None)
     storages = list(getattr(storage_manager, "storages", []) or [])
-    robots = list(getattr(warehouse, "_objects", []) or [])
+    robots = [obj for obj in getattr(warehouse, "_objects", []) or [] if _is_robot_object(obj)]
     warnings: list[str] = []
     rows = []
     registry = build_zone_registry(context, zone_ids)
     zone_ids = registry.zone_ids
+    present_pressure_zone_ids = [
+        infer_pressure_zone_id(robot, zone_ids, registry=registry)
+        for robot in robots
+    ]
+    destination_pressure_zone_ids = [
+        infer_pressure_zone_id(robot.destination, zone_ids, registry=registry)
+        for robot in robots
+        if getattr(robot, "destination", None) is not None
+    ]
     
     if not storages:
         warnings.append("storage_manager.storages unavailable; zone occupancy defaults to zero")
@@ -81,24 +117,22 @@ def build_zone_rows(
         total = len(zone_storages)
         
         present_robot_count = sum(
-            1 for robot in robots
-            if infer_coordinate_zone_id(robot, zone_ids, registry=registry) == zone_id
+            1 for pressure_zone_id in present_pressure_zone_ids
+            if pressure_zone_id == zone_id
         )
         destination_robot_count = sum(
-            1 for robot in robots
-            if getattr(robot, "destination", None) is not None
-            and infer_coordinate_zone_id(robot.destination, zone_ids, registry=registry) == zone_id
+            1 for pressure_zone_id in destination_pressure_zone_ids
+            if pressure_zone_id == zone_id
         )
         
         neighbors = zone_info.neighbor_zone_ids
         neighbor_present_count = sum(
-            1 for robot in robots
-            if infer_coordinate_zone_id(robot, zone_ids, registry=registry) in neighbors
+            1 for pressure_zone_id in present_pressure_zone_ids
+            if pressure_zone_id in neighbors
         )
         neighbor_dest_count = sum(
-            1 for robot in robots
-            if getattr(robot, "destination", None) is not None
-            and infer_coordinate_zone_id(robot.destination, zone_ids, registry=registry) in neighbors
+            1 for pressure_zone_id in destination_pressure_zone_ids
+            if pressure_zone_id in neighbors
         )
         
         superzone_members = [
@@ -107,13 +141,12 @@ def build_zone_rows(
             if registry.zones_by_id[other_zone_id].superzone_id == zone_info.superzone_id
         ]
         superzone_present_count = sum(
-            1 for robot in robots
-            if infer_coordinate_zone_id(robot, zone_ids, registry=registry) in superzone_members
+            1 for pressure_zone_id in present_pressure_zone_ids
+            if pressure_zone_id in superzone_members
         )
         superzone_dest_count = sum(
-            1 for robot in robots
-            if getattr(robot, "destination", None) is not None
-            and infer_coordinate_zone_id(robot.destination, zone_ids, registry=registry) in superzone_members
+            1 for pressure_zone_id in destination_pressure_zone_ids
+            if pressure_zone_id in superzone_members
         )
         
         zone_skus = set()
@@ -250,6 +283,20 @@ def _coord_for(obj: Any) -> _Coord | None:
     if x is None or y is None:
         return None
     return _Coord(x, y)
+
+
+def _coordinate_pair(obj: Any) -> tuple[int, int] | None:
+    coord = _coord_for(obj)
+    if coord is None:
+        return None
+    try:
+        return int(round(float(coord.x))), int(round(float(coord.y)))
+    except Exception:
+        return None
+
+
+def _is_robot_object(obj: object) -> bool:
+    return str(getattr(obj, "object_type", "")).lower() == "robot"
 
 
 def _metric_distance(a: Any, b: Any) -> float:
