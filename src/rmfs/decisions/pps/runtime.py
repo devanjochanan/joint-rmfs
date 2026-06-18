@@ -13,7 +13,7 @@ import pandas as pd
 
 from .types import PPSMode
 from .modes import normalize_pps_mode
-from .model_paths import DEFAULT_PPS_MODEL_PATH, pps_model_candidates
+from .model_paths import DEFAULT_PPS_MODEL_PATH, configured_pps_model_path, pps_model_candidates
 
 
 PPS_RL_NUM_STATIONS = 3
@@ -40,26 +40,29 @@ PPS_RL_MODEL_PATH = os.environ.get(
 )
 
 _PPS_RL_MODEL = None
+_PPS_RL_MODEL_SOURCE = None
 _PPS_RL_LOAD_ATTEMPTED = False
+_PPS_RL_LOAD_ATTEMPTED_FOR = None
 _PPS_RL_ACTIVE_LOGGED = False
-_PPS_MODE = os.environ.get("PPS_MODE", "heuristic").strip().lower()
+_PPS_MODE = normalize_pps_mode(os.environ.get("PPS_MODE", "heuristic"))
 
 
 def get_pps_mode() -> str:
     """Return the current PPS mode."""
-    global _PPS_MODE
-    return _PPS_MODE
+    env_mode = os.environ.get("PPS_MODE")
+    if env_mode is not None and str(env_mode).strip():
+        return normalize_pps_mode(env_mode)
+    return normalize_pps_mode(_PPS_MODE)
 
 
 def is_pps_rl_enabled() -> bool:
     """Check if PPS RL (PPO) is enabled based on current mode and env vars."""
-    global _PPS_MODE
     value = os.environ.get("PPS_RL_ENABLED", "1").strip().lower()
-    return _PPS_MODE == "ppo" and value not in {"0", "false", "no", "off"}
+    return get_pps_mode() == "ppo" and value not in {"0", "false", "no", "off"}
 
 
 def _pps_rl_model_candidates() -> list[str]:
-    return [str(path) for path in pps_model_candidates(PPS_RL_MODEL_PATH)]
+    return [str(path) for path in pps_model_candidates(configured_pps_model_path())]
 
 
 def _ensure_numpy_pickle_compat() -> None:
@@ -115,17 +118,25 @@ def _pps_rl_model_matches_current_observation(model) -> bool:
 
 def load_pps_rl_model():
     """Load the PPO model from the configured path, with NumPy compat fallback."""
-    global _PPS_RL_MODEL, _PPS_RL_LOAD_ATTEMPTED
+    global _PPS_RL_MODEL, _PPS_RL_MODEL_SOURCE, _PPS_RL_LOAD_ATTEMPTED, _PPS_RL_LOAD_ATTEMPTED_FOR
 
-    if _PPS_RL_MODEL is not None:
+    configured_path = str(configured_pps_model_path())
+    candidates = _pps_rl_model_candidates()
+    if _PPS_RL_MODEL is not None and _PPS_RL_MODEL_SOURCE in candidates:
         return _PPS_RL_MODEL
-    if _PPS_RL_LOAD_ATTEMPTED or not is_pps_rl_enabled():
+    if _PPS_RL_MODEL is not None and _PPS_RL_MODEL_SOURCE not in candidates:
+        _PPS_RL_MODEL = None
+        _PPS_RL_MODEL_SOURCE = None
+    if not is_pps_rl_enabled():
+        return None
+    if _PPS_RL_LOAD_ATTEMPTED and _PPS_RL_LOAD_ATTEMPTED_FOR == configured_path:
         return None
 
     _PPS_RL_LOAD_ATTEMPTED = True
-    model_path = next((path for path in _pps_rl_model_candidates() if os.path.exists(path)), None)
+    _PPS_RL_LOAD_ATTEMPTED_FOR = configured_path
+    model_path = next((path for path in candidates if os.path.exists(path)), None)
     if model_path is None:
-        print(f"[PPS_RL] Model not found at {PPS_RL_MODEL_PATH}. Using heuristic PPS.")
+        print(f"[PPS_RL] Model not found at {configured_path}. Using heuristic PPS.")
         return None
 
     try:
@@ -139,6 +150,7 @@ def load_pps_rl_model():
             )
             return None
         _PPS_RL_MODEL = model
+        _PPS_RL_MODEL_SOURCE = str(model_path)
         print(f"[PPS_RL] Loaded PPO model from {model_path}")
         return _PPS_RL_MODEL
     except Exception:
@@ -184,23 +196,24 @@ def configure_pps_rl_strategy(
     skus_data_csv: Optional[str] = None,
 ) -> bool:
     """Enable PPO PPS when the model is available; otherwise keep heuristic PPS."""
-    global _PPS_RL_ACTIVE_LOGGED, _PPS_MODE
+    global _PPS_RL_ACTIVE_LOGGED
+    pps_mode = get_pps_mode()
 
-    if _PPS_MODE == "heuristic":
+    if pps_mode == "heuristic":
         universe.pps_rl = False
         universe.pps_rl_random = False
         universe.pps_pileon = True
         universe.pps_demand = False
         return False
 
-    if _PPS_MODE == "demand":
+    if pps_mode == "demand":
         universe.pps_rl = False
         universe.pps_rl_random = False
         universe.pps_pileon = False
         universe.pps_demand = True
         return False
 
-    if _PPS_MODE == "random":
+    if pps_mode == "random":
         universe.pps_pileon = False
         universe.pps_demand = False
         universe.pps_rl = True
@@ -249,6 +262,7 @@ def runtime_set_pps_mode(
     global _PPS_MODE, _PPS_RL_LOAD_ATTEMPTED, _PPS_RL_ACTIVE_LOGGED, _PPS_RL_MODEL
 
     _PPS_MODE = normalize_pps_mode(mode)
+    os.environ["PPS_MODE"] = _PPS_MODE
     if _PPS_MODE == "ppo" and _PPS_RL_MODEL is None:
         _PPS_RL_LOAD_ATTEMPTED = False
     _PPS_RL_ACTIVE_LOGGED = False

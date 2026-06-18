@@ -9,7 +9,11 @@
 /.idea/
 .DS_Store
 .vscode/
+.codex/
 .claude/
+.agents/
+.gemini/
+scratch/
 
 # Local NetLogo/Python runtime state
 netlogo.state
@@ -18,6 +22,8 @@ netlogo.state
 *.pkl
 
 # Runtime databases
+warehouse.db
+warehouse_ps_old_*.db
 *.db
 *.sqlite
 *.sqlite3
@@ -28,6 +34,7 @@ pod_info.csv
 
 # Profiling artifacts
 *.prof
+netlogo_profile_summary.txt
 
 # Simulation outputs / archived local runs
 output/
