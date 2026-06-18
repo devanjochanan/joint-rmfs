@@ -1,10 +1,13 @@
 # RMFS Order Generation Module
 
-This folder is part of the future refactored structure for the Rika RMFS simulation.
+This module manages order stream generation and pod SKU allocations.
 
-* **Status**: Placeholder only.
-* **Rules**:
-  * No behavior/logic lives here yet.
-  * Do not import from this folder yet.
-* **Future Purpose**: Order generation stream management and pod SKU allocation algorithms.
-* **Future Owner**: Lukman
+* **Status**: Active. Logic has been relocated from legacy model and runtime locations.
+* **Owner**: Lukman / Luki (order generation / pod-SKU allocation)
+
+## Structure
+
+- `__init__.py`: Package entry point exporting generators and configuration loaders.
+- `bootstrap.py`: Logic to resample and generate order streams from raw transactional datasets (`raw_order.csv`).
+- `policy.py`: Resolvers mapping default simulation configuration profiles (smoke, training, gui, etc.) to target order limits, buffers, and time horizons.
+- `pod_sku.py`: `PodGenerator` class, responsible for configuring slot mappings, allocating inventory levels across classes, and generating `pods.csv` and `items.csv`.

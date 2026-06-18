@@ -1,5 +1,13 @@
 import sqlite3
 
+from src.rmfs.runtime_io.detail_db import (
+    commit,
+    connect,
+    debug_log,
+    execute,
+    is_detail_db_enabled,
+)
+
 TS = None  # Same global timestamp
 
 def initialize_pre_assign_table(timestamp: str, db_path="warehouse.db"):
@@ -8,11 +16,13 @@ def initialize_pre_assign_table(timestamp: str, db_path="warehouse.db"):
     """
     global TS
     TS = timestamp
+    if not is_detail_db_enabled():
+        return
 
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute(f"""
+    execute(cursor, f"""
         CREATE TABLE IF NOT EXISTS pre_assign_{TS} (
             time REAL,
             current TEXT,
@@ -23,21 +33,24 @@ def initialize_pre_assign_table(timestamp: str, db_path="warehouse.db"):
         )
     """)
 
-    conn.commit()
+    commit(conn)
     conn.close()
-    print("pre_assign table initialized.")
+    debug_log("pre_assign table initialized.")
 
 def clear_pre_assign_table(db_path="warehouse.db"):
     """
     Delete all rows from the pre_assign table.
     """
-    conn = sqlite3.connect(db_path)
+    if not is_detail_db_enabled():
+        return
+
+    conn = connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute(f"DELETE FROM pre_assign_{TS}")
-    conn.commit()
+    execute(cursor, f"DELETE FROM pre_assign_{TS}")
+    commit(conn)
     conn.close()
-    print("All pre_assign records have been cleared.")
+    debug_log("All pre_assign records have been cleared.")
 
 def insert_pre_assign(
         time: float,
@@ -50,15 +63,18 @@ def insert_pre_assign(
     """
     Insert a new pre_assign record.
     """
-    conn = sqlite3.connect(db_path)
+    if not is_detail_db_enabled():
+        return
+
+    conn = connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute(f"""
+    execute(cursor, f"""
         INSERT INTO pre_assign_{TS} 
         (time, current, order_id, score, bestpicker, bestscore)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (time, current, order, score, bestpicker, bestscore))
 
-    conn.commit()
+    commit(conn)
     conn.close()
-    print(f"Inserted pre_assign record: current={current}, order_id={order}, score={score}")
+    debug_log(f"Inserted pre_assign record: current={current}, order_id={order}, score={score}")

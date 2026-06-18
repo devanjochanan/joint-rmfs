@@ -1,28 +1,41 @@
 import sqlite3
 
+from src.rmfs.runtime_io.detail_db import (
+    commit,
+    connect,
+    debug_log,
+    execute,
+    is_detail_db_enabled,
+)
+
 TS = None
 
 def clear_order_history(db_path="warehouse.db"):
     """
     Delete all rows from the order_history table.
     """
-    conn = sqlite3.connect(db_path)
+    if not is_detail_db_enabled():
+        return
+
+    conn = connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute(f"DELETE FROM order_history_{TS}")
+    execute(cursor, f"DELETE FROM order_history_{TS}")
 
-    conn.commit()
+    commit(conn)
     conn.close()
-    print("All orders have been cleared.")
+    debug_log("All orders have been cleared.")
 
 def initialize_order_history_table(timestamp: str, db_path="warehouse.db"):
     global TS
     TS = timestamp
+    if not is_detail_db_enabled():
+        return
 
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute(f"""
+    execute(cursor, f"""
         CREATE TABLE IF NOT EXISTS order_history_{TS} (
             order_id TEXT PRIMARY KEY,
             arrival_time REAL,
@@ -32,9 +45,9 @@ def initialize_order_history_table(timestamp: str, db_path="warehouse.db"):
         )
     """)
 
-    conn.commit()
+    commit(conn)
     conn.close()
-    print("order_history table initialized.")
+    debug_log("order_history table initialized.")
 
 def upsert_order_history(
         order_id: str, 
@@ -47,11 +60,14 @@ def upsert_order_history(
     Insert a new order or update an existing one in the order_history table.
     Only non-None fields are updated.
     """
-    conn = sqlite3.connect(db_path)
+    if not is_detail_db_enabled():
+        return
+
+    conn = connect(db_path)
     cursor = conn.cursor()
 
     # Check if the order already exists
-    cursor.execute(f"SELECT * FROM order_history_{TS} WHERE order_id = ?", (str(order_id),))
+    execute(cursor, f"SELECT * FROM order_history_{TS} WHERE order_id = ?", (str(order_id),))
     existing = cursor.fetchone()
 
     if existing:
@@ -75,17 +91,17 @@ def upsert_order_history(
         if fields:
             query = f"UPDATE order_history_{TS} SET {', '.join(fields)} WHERE order_id = ?"
             values.append(str(order_id))
-            cursor.execute(query, tuple(values))
+            execute(cursor, query, tuple(values))
     else:
         # Insert new row
-        cursor.execute(f"""
+        execute(cursor, f"""
             INSERT INTO order_history_{TS} (order_id, arrival_time, assigned_station, order_assigned_time, order_finish_time)
             VALUES (?, ?, ?, ?, ?)
         """, (str(order_id), arrival_time, assigned_station, order_assigned_time, order_finish_time))
 
-    conn.commit()
+    commit(conn)
     conn.close()
-    print(f"Order {order_id} upserted.")
+    debug_log(f"Order {order_id} upserted.")
 
 def get_order_history(order_id: str = None, db_path: str = "warehouse.db"):
     """
@@ -93,7 +109,10 @@ def get_order_history(order_id: str = None, db_path: str = "warehouse.db"):
     - If order_id is provided, returns a single matching order (or None).
     - If order_id is None, returns all orders as a list of dicts.
     """
-    conn = sqlite3.connect(db_path)
+    if not is_detail_db_enabled():
+        return None if order_id else []
+
+    conn = connect(db_path)
     conn.row_factory = sqlite3.Row  # Enables dictionary-like access
     cursor = conn.cursor()
 

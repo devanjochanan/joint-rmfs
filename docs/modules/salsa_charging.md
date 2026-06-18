@@ -13,11 +13,12 @@ This profile documents the ownership details, current code mappings, and plans f
 
 ## 2. Refactoring Phase Status
 
-* **Status**: Scaffold placeholder only.
+* **Status**: Configuration artifact integrated at `data/input/charging/salsa_charging_config.json`. Stage 3 adds an explicit opt-in runtime bridge at `src/rmfs/app/charging_bridge.py` for forced fixture validation only.
 * **Restrictions**:
-  * Do not write execution code in the scaffold directories.
+  * Keep charging disabled by default in baseline simulator runs.
   * Do not add battery swap policies or charger relocation/placement heuristics yet.
-  * Do not edit charging variables in the simulation model.
+  * Do not edit charging variables in the simulation model for Stage 3.
+  * Do not change path planning or robot dispatch semantics.
   * Preserving current baseline simulation behavior is paramount.
 
 ---
@@ -26,6 +27,11 @@ This profile documents the ownership details, current code mappings, and plans f
 The active behavior logic remains housed in:
 * `model/robot.py`: Implements battery calculations (specifically `calculateEnergy`, angular rotational energy coefficients, and lift parameters).
 * `model/layout.py`: Dynamically marks physical grid cells as chargers (value `2`).
+* `src/rmfs/app/charging_bridge.py`: Provides Stage 3 opt-in bridge accounting for config loading, charger registry state, low-battery detection, deterministic charger assignment, and summary metrics. It does not alter default setup/tick behavior.
+
+The Stage 3 bridge validates forced runtime accounting only. It does not prove
+paper-level charging performance, long-run stability, or physical charger-trip
+execution.
 
 ---
 
@@ -34,3 +40,4 @@ Refactoring these formulas affects:
 * **Energy kinetics**: Incorrect calculation of friction, mass, or acceleration coefficients breaks telemetry metrics.
 * **Movement synchronization**: If energy evaluations take too long or trigger state changes dynamically, robot step rates can stall.
 * **Charger layout definitions**: Grid charger marker changes can confuse pathing algorithms which read coordinate weights.
+* **Physical dispatch**: Routing a robot to a charger requires pathing and task-lifecycle work outside the Stage 3 bridge.

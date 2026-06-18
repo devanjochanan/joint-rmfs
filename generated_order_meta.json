@@ -1,0 +1,26 @@
+{
+  "generator": "bootstrap_raw_order",
+  "source_path": "D:\\ITB\\Tugas Akhir\\joint-rmfs\\raw_order.csv",
+  "seed": 42,
+  "n_orders": 20,
+  "arrival_mode": "empirical_interarrival",
+  "order_start_arrival_time": 0,
+  "source_unique_orders": 15910,
+  "sampled_unique_source_orders": 20,
+  "generated_unique_orders": 20,
+  "generated_order_lines": 36,
+  "generated_max_arrival": 344760,
+  "missing_sku_lines_dropped": 3896,
+  "missing_sku_examples": [
+    "10014116001",
+    "10020093001",
+    "10020094001",
+    "10031916001",
+    "10041016001",
+    "11010052001",
+    "11010055001",
+    "11010057001",
+    "11021017001",
+    "11022011001"
+  ]
+}

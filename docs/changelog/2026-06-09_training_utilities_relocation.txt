@@ -1,0 +1,11 @@
+PPS training utilities relocation
+Date: 2026-06-09
+
+Changes:
+- Moved PPS RL/training-related Python utilities from the repository root into docs/training_pps/.
+- Moved files: pps_env.py, train_pps_rl.py, run_backend_episode.py, run_pps_replications.py.
+- Added repo-root bootstrap code to those scripts so they still import model/, netlogo.py, and src/ correctly when run from docs/training_pps/.
+- Added docs/training_pps/README.md with training, backend-evaluation, and replication commands.
+
+Run examples now use paths like:
+python docs/training_pps/train_pps_rl.py --episodes 500 --save-path docs/training_pps/saved_models/pps_rl.pt --max-ticks 3000

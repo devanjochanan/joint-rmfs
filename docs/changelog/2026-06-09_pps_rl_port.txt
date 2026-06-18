@@ -1,0 +1,18 @@
+PPS RL port from Fresh Start Main RMFS backup
+Date: 2026-06-09
+
+Changes:
+- Connected this folder to GitHub remote https://github.com/devanjochanan/joint-rmfs.git on branch devan_pps.
+- Added PPS PPO training/evaluation scripts: pps_env.py, train_pps_rl.py, run_backend_episode.py, run_pps_replications.py.
+- Ported the PPS RL NetLogo bridge into src/rmfs/app/netlogo_api.py while keeping the root netlogo.py compatibility shim.
+- Added PPO PPS, Random PPS, and Rika PPS mode switching through netlogo.set_pps_mode().
+- Added optional reproducibility through netlogo.set_sim_seed() / sim_seed.
+- Added NetLogo metrics for throughput, average order completion time, pod visits, pile-on rate, and picked quantity.
+- Ported the Inventory implementation that supports PPS RL flags, fast training I/O guards, PPS picked quantity/pod visit counters, and dynamic job updates.
+- Reactivated dynamic job updates so active/queued pod jobs can absorb newly assigned compatible station orders before completion.
+- Updated requirements.txt with the missing RL dependencies.
+
+Notes:
+- The active NetLogo bridge remains src/rmfs/app/netlogo_api.py; root netlogo.py remains only a shim for import compatibility.
+- The target repo's generated-layout order_cycle_time setting is preserved in netlogo_api.py.
+- PPO mode expects a compatible model at docs/training_pps/saved_models/pps_rl_best.zip unless PPS_RL_MODEL_PATH is set.

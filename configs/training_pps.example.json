@@ -1,0 +1,11 @@
+{
+  "profile": "training",
+  "scenario": "base",
+  "target": "pps",
+  "seed": 123,
+  "ticks": 5000,
+  "bootstrap_n_orders": 1000,
+  "detail_db": false,
+  "debug_trace": false,
+  "keep_runtime_artifacts": false
+}

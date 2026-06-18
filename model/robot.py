@@ -19,6 +19,7 @@ from .tools.pod_travel import upsert_pod_travel
 if TYPE_CHECKING:
     from model.inventory import Inventory
     from model.storage import Storage
+    from src.rmfs.decisions.rts.types import RTSDestinationContext
 
 ACTIVATE_NEAREST = True
 
@@ -182,6 +183,8 @@ class Robot(Object):
             )
         elif self.current_state == "delivering_pod":
             self.current_state = "station_processing"
+            station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
+            self.warehouse.rts_rollout_runtime.on_station_arrival(robot=self, station=station)
             upsert_pod_travel(
                 self.job.my_id,
                 self.robotID(self.robotName()),
@@ -199,6 +202,7 @@ class Robot(Object):
             # input()
             # raise AssertionError
             upsert_pod_location(self.job.pod.pod_id, self.job.pod.pos_x, self.job.pod.pos_y)
+            self.warehouse.rts_rollout_runtime.on_return_completed(robot=self)
             e_li = self.load_mass * self._gravity * self._lift_coef
             self.energy_consumption += e_li
             self.load_mass = 0
@@ -699,8 +703,8 @@ class Robot(Object):
                 self.job.record_delivery(self.universe._tick)
                 if storage:
                     storage.removeStoragePod()
-                    storage.is_empty = True
                     del storage_manager.pods_to_storage[pod]
+                    storage_manager.setStorageAvailable(NetLogoCoordinate(storage.pos_x, storage.pos_y))
 
                 self.set_move_to_station_gate()
                 upsert_pod_travel(
@@ -727,35 +731,7 @@ class Robot(Object):
                 station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
                 station.remove_robot(self.robotName())
 
-                if self.return_fix:
-                    self.job.writePodReturnReport(-1)
-                    self.destination = self.job.pod_coordinate
-                    self.set_move(self.destination, self.warehouse.graph_pod, need_neutralize_robot=False)
-
-                elif self.return_nearest:
-                    nearest_storage: Storage = self.warehouse.storage_manager.getNearestEmptyStorageToLocation(
-                        location_coordinate=station.coordinate,
-                        robot_coordinate=self.coordinate
-                    )
-                    print(f"[DEBUG] nearest_storage: {nearest_storage}")
-                    print(f"[DEBUG] {vars(nearest_storage)}")
-
-                    if nearest_storage is not None:
-                        self.destination = NetLogoCoordinate(nearest_storage.pos_x, nearest_storage.pos_y)  # nearest_storage.coordinate
-                        print(f"[DEBUG] destination: {self.destination}")
-                        self.job.pod_return_coordinate = self.destination
-                        self.job.writePodReturnReport(
-                            calculateManhattanDistance((self.job.pod_return_coordinate.x,self.job.pod_return_coordinate.y),
-                                                                                (self.job.pod_coordinate.x, self.job.pod_coordinate.y)))
-
-                        self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
-                        nearest_storage.setStoragePod(self.job.pod)
-                        self.warehouse.storage_manager.pods_to_storage[self.job.pod] = nearest_storage
-                        nearest_storage.is_empty = False
-                    else:
-                        self.job.writePodReturnReport(-1)
-                        self.destination = NetLogoCoordinate(self.job.pod.pos_x, self.job.pod.pos_y)
-                        self.set_move(self.destination, self.warehouse.graph_pod, need_neutralize_robot=False)
+                self.handle_pod_return(station)
 
                 self.initial_w1 = False
                 upsert_pod_travel(
@@ -915,6 +891,80 @@ class Robot(Object):
 
         write_to_csv("intersection-energy-consumption.csv", header, data,
                      self.universe.landscape.current_date_string)
+
+    def handle_pod_return(self, station: "Station"):
+        """Select a storage destination via the RTS policy seam, then
+        execute all side effects (storage reservation, path planning,
+        report writing).  Introduced in Phase 5B.
+
+        The policy only *selects* a destination; all mutation stays here
+        so that pathing, telemetry, and storage bookkeeping are unchanged.
+        """
+        from src.rmfs.decisions.rts.types import RTSDestinationContext
+
+        context = RTSDestinationContext(
+            warehouse=self.warehouse,
+            robot=self,
+            pod=self.job.pod,
+            station=station,
+        )
+        decision = self.warehouse.rts_policy.select_destination(context)
+        self.warehouse.rts_rollout_runtime.on_decision(
+            robot=self,
+            context=context,
+            decision=decision,
+        )
+
+        if decision.mode == "fixed":
+            # --- Fixed return: identical to old self.return_fix branch ---
+            self.job.writePodReturnReport(-1)
+            self.destination = decision.destination
+            self.set_move(self.destination, self.warehouse.graph_pod, need_neutralize_robot=False)
+
+        elif decision.mode == "nearest":
+            # --- Nearest return: identical to old self.return_nearest branch (storage found) ---
+            nearest_storage = decision.storage
+            print(f"[DEBUG] nearest_storage: {nearest_storage}")
+            print(f"[DEBUG] {vars(nearest_storage)}")
+
+            self.destination = decision.destination
+            print(f"[DEBUG] destination: {self.destination}")
+            self.job.pod_return_coordinate = self.destination
+            self.job.writePodReturnReport(
+                calculateManhattanDistance(
+                    (self.job.pod_return_coordinate.x, self.job.pod_return_coordinate.y),
+                    (self.job.pod_coordinate.x, self.job.pod_coordinate.y),
+                )
+            )
+
+            self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
+            self.warehouse.storage_manager.addPodToStorage(self.job.pod, nearest_storage)
+
+        elif decision.mode == "rl":
+            # --- RL return: identical to nearest return but uses RL-selected storage ---
+            if decision.storage is None:
+                raise ValueError("RTS policy returned 'rl' mode but decision.storage is None")
+            if decision.destination is None:
+                raise ValueError("RTS policy returned 'rl' mode but decision.destination is None")
+            
+            nearest_storage = decision.storage
+            self.destination = decision.destination
+            self.job.pod_return_coordinate = self.destination
+            self.job.writePodReturnReport(
+                calculateManhattanDistance(
+                    (self.job.pod_return_coordinate.x, self.job.pod_return_coordinate.y),
+                    (self.job.pod_coordinate.x, self.job.pod_coordinate.y),
+                )
+            )
+
+            self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
+            self.warehouse.storage_manager.addPodToStorage(self.job.pod, nearest_storage)
+
+        elif decision.mode in ("nearest_fallback", "none"):
+            # --- Fallback: no empty storage, or neither flag set ---
+            self.job.writePodReturnReport(-1)
+            self.destination = decision.destination
+            self.set_move(self.destination, self.warehouse.graph_pod, need_neutralize_robot=False)
 
     def assign_job_and_set_move_to_take_pod(self, job: RobotJob):
         self.job = job

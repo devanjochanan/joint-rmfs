@@ -1,0 +1,10 @@
+{
+  "profile": "debug",
+  "scenario": "base",
+  "seed": 123,
+  "ticks": 100,
+  "bootstrap_n_orders": 100,
+  "detail_db": true,
+  "debug_trace": true,
+  "keep_runtime_artifacts": true
+}

@@ -1,7 +1,9 @@
-# RMFS Runtime Data Placeholder
+# Runtime Data
 
-This folder is reserved for future runtime state and telemetry organization.
+Mutable simulator state belongs here, not in the repository root.
 
-No runtime files were moved here in Phase 3. Local files such as SQLite databases, pickle/state files, telemetry CSVs, profiling output, and simulation outputs remain ignored and should not be committed.
+- `latest/`: default manual/headless runtime context.
+- `tmp/`: isolated workers and smoke-test scratch runs.
+- `debug/`: opt-in local debug output.
 
-Moving runtime artifacts into this folder later requires explicit path-handling work and behavior validation.
+Generated files in these folders are ignored except for `.gitkeep`.
