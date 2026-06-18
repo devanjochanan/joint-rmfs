@@ -46,7 +46,9 @@ def load_policy_from_checkpoint(checkpoint_dir: Path, *, device: str = "cpu") ->
         stock_hidden_sizes=tuple(training_config.get("stock_hidden_sizes", (32, 32))),
         stock_embedding_dim=int(training_config.get("stock_embedding_dim", 16)),
     )
-    model.load_state_dict(torch.load(model_path, map_location=resolved_device))
+    model.load_state_dict(
+        torch.load(model_path, map_location=resolved_device, weights_only=True)
+    )
     model.to(resolved_device)
     model.eval()
     policy_checkpoint_id = resolve_policy_checkpoint_id(checkpoint)

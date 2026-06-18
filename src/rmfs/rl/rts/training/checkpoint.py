@@ -158,10 +158,18 @@ def save_training_checkpoint(
 
 def load_training_checkpoint(checkpoint_dir: Path, *, model, optimizer=None, device: str | torch.device = "cpu") -> dict[str, Any]:
     checkpoint_dir = Path(checkpoint_dir)
-    model_state = torch.load(checkpoint_dir / "model.pt", map_location=device)
+    model_state = torch.load(
+        checkpoint_dir / "model.pt",
+        map_location=device,
+        weights_only=True,
+    )
     model.load_state_dict(model_state)
     if optimizer is not None:
-        optimizer_state = torch.load(checkpoint_dir / "optimizer.pt", map_location=device)
+        optimizer_state = torch.load(
+            checkpoint_dir / "optimizer.pt",
+            map_location=device,
+            weights_only=True,
+        )
         optimizer.load_state_dict(optimizer_state)
     with (checkpoint_dir / "metadata.json").open() as fh:
         import json

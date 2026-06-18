@@ -24,10 +24,10 @@ The configuration and metadata are derived from Salsa's baseline branch:
 
 ## 3. Current Canonical Paths in `main_future`
 To fit the restructured repository layout, the files have been integrated into current-path aware locations:
-* **Canonical Configuration**: [salsa_charging_config.json](file:///wsl.localhost/Ubuntu-22.04/home/dewan/Project%20Ta/Fresh%20Start%20Structure%20V1/Rika's%20Version/data/input/charging/salsa_charging_config.json)
-* **Regeneration Script**: [build_charging_solution.py](file:///wsl.localhost/Ubuntu-22.04/home/dewan/Project%20Ta/Fresh%20Start%20Structure%20V1/Rika's%20Version/scripts/data/build_charging_solution.py)
+* **Canonical Configuration**: `data/input/charging/salsa_charging_config.json`
+* **Regeneration Script**: `scripts/data/build_charging_solution.py`
 * **Stage 3 Runtime Bridge**: `src/rmfs/app/charging_bridge.py`
-* **Status and Documentation**: This file ([salsa_charging_pending.md](file:///wsl.localhost/Ubuntu-22.04/home/dewan/Project%20Ta/Fresh%20Start%20Structure%20V1/Rika's%20Version/docs/integration/salsa_charging_pending.md))
+* **Status and Documentation**: `docs/integration/salsa_charging_pending.md`
 
 ---
 

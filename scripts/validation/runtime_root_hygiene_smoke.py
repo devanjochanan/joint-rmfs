@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Validate isolated RunContext routing for root-sensitive runtime artifacts."""
+"""Fixture smoke for isolated RunContext root-sensitive artifact routing.
+
+This smoke validates RunContext path construction and no new root-sensitive
+artifact creation in a controlled fixture. It does not run NetLogo setup/tick
+and does not replace local-executor root-leak validation.
+"""
 
 from __future__ import annotations
 
@@ -60,8 +65,9 @@ def main() -> int:
         assert path.exists(), f"expected isolated artifact missing: {name}"
 
     shutil.rmtree(ARTIFACT_ROOT, ignore_errors=True)
-    print("runtime root hygiene smoke ok")
-    print("validated isolated routing for warehouse.db, netlogo.state, assign_order.csv, and pod_info.csv")
+    print("runtime root hygiene fixture smoke ok")
+    print("validated controlled RunContext routing for warehouse.db, netlogo.state, assign_order.csv, and pod_info.csv")
+    print("this fixture does not replace local-executor setup/tick root-leak validation")
     print("cleaned task-specific runtime output after validation")
     return 0
 

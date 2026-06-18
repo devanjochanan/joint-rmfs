@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -13,6 +14,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.rmfs.app.charging_bridge import (
     apply_charging_runtime_tick,
+    charging_runtime_disabled_reason,
     get_charging_runtime_summary,
     install_charging_runtime_if_enabled,
     load_charging_runtime_config,
@@ -79,6 +81,7 @@ def main() -> int:
 
     assert tick_summary["tick"] == 11
     assert tick_summary["low_battery_robots"] == ["robot-low"]
+    assert tick_summary["eligible_low_battery_robots"] == ["robot-low"]
     assert len(tick_summary["new_assignments"]) == 1
     assignment = tick_summary["new_assignments"][0]
     assert assignment["robot_id"] == "robot-low"
@@ -98,8 +101,29 @@ def main() -> int:
 
     disabled_universe = SimpleNamespace(_objects=[robot("disabled", 0, 0)])
     disabled_flags = default_rika_rts_rl_feature_flags()
+    assert charging_runtime_disabled_reason(disabled_flags, config) == "feature_flag_disabled"
     assert install_charging_runtime_if_enabled(disabled_universe, disabled_flags, config) is None
     assert not hasattr(disabled_universe, "charging_runtime")
+
+    config_disabled_universe = SimpleNamespace(_objects=[robot("config-disabled", 0, 0)])
+    config_disabled = replace(config, disable_active_charging=True)
+    assert charging_runtime_disabled_reason(flags, config_disabled) == "config_disable_active_charging"
+    assert install_charging_runtime_if_enabled(config_disabled_universe, flags, config_disabled) is None
+    assert not hasattr(config_disabled_universe, "charging_runtime")
+
+    second_tick = apply_charging_runtime_tick(
+        state,
+        tick=12,
+        robot_positions={
+            "robot-low": (7, 2),
+            "robot-normal": (1, 2),
+            "robot-high": (25, 2),
+        },
+    )
+    assert second_tick["low_battery_robots"] == ["robot-low"]
+    assert second_tick["eligible_low_battery_robots"] == []
+    assert second_tick["new_assignments"] == []
+    assert state.total_low_battery_detections == 1
 
     root_after = snapshot_root()
     assert root_before == root_after, "fixture-runtime charging smoke changed root runtime artifacts"

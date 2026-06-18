@@ -85,6 +85,8 @@ class ChargingRuntimeState:
     assignments: List[ChargingAssignment] = field(default_factory=list)
 
     # Metrics
+    # Counts newly eligible, unassigned low-battery robots observed by the
+    # runtime tick hook. Already-assigned low-battery robots are not recounted.
     total_low_battery_detections: int = 0
     total_assignments_made: int = 0
     total_ticks_processed: int = 0
@@ -141,6 +143,18 @@ def is_charging_enabled(feature_flags: Dict[str, Any]) -> bool:
     if feature_flags is None:
         return False
     return bool(feature_flags.get("charging_enabled", False))
+
+
+def charging_runtime_disabled_reason(
+    feature_flags: Dict[str, Any] | None,
+    config: ChargingConfig,
+) -> str:
+    """Return a short reason when the runtime bridge should stay disabled."""
+    if not is_charging_enabled(feature_flags or {}):
+        return "feature_flag_disabled"
+    if config.disable_active_charging:
+        return "config_disable_active_charging"
+    return ""
 
 
 def _is_robot_like(obj: Any) -> bool:
@@ -220,9 +234,9 @@ def install_charging_runtime_if_enabled(
     config: ChargingConfig | None = None,
 ) -> Optional[ChargingRuntimeState]:
     """Install charging state only when explicit feature flags enable it."""
-    if not is_charging_enabled(feature_flags or {}):
-        return None
     resolved_config = config if config is not None else load_charging_runtime_config()
+    if charging_runtime_disabled_reason(feature_flags, resolved_config):
+        return None
     return install_charging_runtime(universe, resolved_config)
 
 
@@ -376,8 +390,7 @@ def apply_charging_runtime_tick(
     state.total_ticks_processed += 1
 
     low_battery_ids = detect_low_battery_robots(state)
-    state.total_low_battery_detections += len(low_battery_ids)
-
+    eligible_low_battery_ids = []
     new_assignments = []
     for robot_id in low_battery_ids:
         # Skip if already assigned
@@ -389,13 +402,16 @@ def apply_charging_runtime_tick(
         if already_assigned:
             continue
 
+        eligible_low_battery_ids.append(robot_id)
         row, col = robot_positions.get(robot_id, (0, 0))
         assignment = assign_charger(state, robot_id, row, col, tick)
         if assignment is not None:
             new_assignments.append(assignment)
+    state.total_low_battery_detections += len(eligible_low_battery_ids)
 
     return {
         "low_battery_robots": low_battery_ids,
+        "eligible_low_battery_robots": eligible_low_battery_ids,
         "new_assignments": [
             {
                 "robot_id": a.robot_id,
