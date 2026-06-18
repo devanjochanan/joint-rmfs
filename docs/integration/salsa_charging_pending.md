@@ -3,9 +3,9 @@
 This document describes the integration status and specifications of Salsa's final charging solution on the `main_future` branch.
 
 ## 1. Status Summary
-* **Status**: **Configuration artifact integrated / parked; active charging mechanism pending/inactive.**
-* **Behavior Impact**: There is **no behavior change** in `main_future` because the underlying charging simulation mechanics (active dispatch, battery state tracking, and charger overlays) are currently inactive/absent in this branch.
-* **Safety Warning**: **Do not use this configuration as an active experiment factor** until the charging mechanism is fully implemented, verified, and validated.
+* **Status**: **Configuration artifact + explicit opt-in runtime bridge integrated; physical charging dispatch pending.**
+* **Behavior Impact**: Default `main_future` simulator behavior remains unchanged. Stage 3 charging accounting only runs when a caller explicitly installs `src/rmfs/app/charging_bridge.py` with `charging_enabled=True` feature flags.
+* **Safety Warning**: **Do not use this configuration as a paper-validated active experiment factor** until physical charger trips, battery physics, and long-run stability are implemented and validated.
 
 ---
 
@@ -24,8 +24,9 @@ The configuration and metadata are derived from Salsa's baseline branch:
 
 ## 3. Current Canonical Paths in `main_future`
 To fit the restructured repository layout, the files have been integrated into current-path aware locations:
-* **Parked Configuration**: [salsa_charging_config.json](file:///wsl.localhost/Ubuntu-22.04/home/dewan/Project%20Ta/Fresh%20Start%20Structure%20V1/Rika's%20Version/data/input/charging/salsa_charging_config.json)
+* **Canonical Configuration**: [salsa_charging_config.json](file:///wsl.localhost/Ubuntu-22.04/home/dewan/Project%20Ta/Fresh%20Start%20Structure%20V1/Rika's%20Version/data/input/charging/salsa_charging_config.json)
 * **Regeneration Script**: [build_charging_solution.py](file:///wsl.localhost/Ubuntu-22.04/home/dewan/Project%20Ta/Fresh%20Start%20Structure%20V1/Rika's%20Version/scripts/data/build_charging_solution.py)
+* **Stage 3 Runtime Bridge**: `src/rmfs/app/charging_bridge.py`
 * **Status and Documentation**: This file ([salsa_charging_pending.md](file:///wsl.localhost/Ubuntu-22.04/home/dewan/Project%20Ta/Fresh%20Start%20Structure%20V1/Rika's%20Version/docs/integration/salsa_charging_pending.md))
 
 ---
@@ -57,8 +58,18 @@ The 12 configured coordinates are:
 
 ---
 
-## 5. Code Touchpoints Required for Active Charging
-To activate this charging solution in the future, the following simulation engine files and mechanics must be implemented and verified:
+## 5. Stage 3 Bridge Scope
+The Stage 3 bridge can be explicitly enabled by validation fixtures or future
+callers. It loads the Salsa config, tracks charger availability, initializes
+instance-level robot battery/status fields on a provided universe object,
+detects low-battery robots using Salsa policy thresholds, assigns the nearest
+available charger deterministically, and exposes summary metrics.
+
+The bridge records assignment/status only. It does not move robots, alter
+NetLogo setup/tick behavior, or change path planning.
+
+## 6. Code Touchpoints Still Required for Physical Charging
+To activate full physical charging in the future, the following simulation engine files and mechanics must be implemented and verified:
 
 ### 1. `model/robot.py` (Battery State & Charging Policy)
 * **Thresholds**: Apply class attributes `BATTERY_LOW_PCT`, `BATTERY_CHARGED_PCT`, and `BATTERY_INTERRUPT_PCT`.
@@ -78,7 +89,8 @@ To activate this charging solution in the future, the following simulation engin
 
 ---
 
-## 6. Merge & Integration Status
+## 7. Merge & Integration Status
 * **Final Configuration**: Ported to `data/input/charging/salsa_charging_config.json` (identical layout and policy verified).
 * **Source Branch Docs**: Ported and adapted to current paths and layout.
-* **Active Mechanism**: Not enabled and not validated. It is explicitly labeled pending.
+* **Stage 3 Bridge**: Opt-in runtime accounting is available and covered by forced fixture smokes.
+* **Active Physical Mechanism**: Not enabled and not validated. It is explicitly labeled pending.

@@ -1,7 +1,7 @@
 # netlogo_api.py Responsibility Map
 
-Stage 1 note: no broad `src/rmfs/app/netlogo_api.py` refactor should occur in
-Stage 1. `setup()` and `tick()` remain the bridge entry points for now.
+Stage 3 note: no broad `src/rmfs/app/netlogo_api.py` refactor should occur.
+`setup()` and `tick()` remain the bridge entry points for now.
 
 This map documents current responsibilities so later extraction work can be
 planned behind wrappers and smoke tests instead of moving bridge code in place.
@@ -35,12 +35,19 @@ would therefore affect RTS rollout logging even if no RTS code is edited.
 ## Charging Hook Status
 
 Charging configuration and placement scaffolds exist under
-`src/rmfs/decisions/charging` and `data/input/charging`, but this bridge does
-not currently call charging config loaders or install Salsa runtime charging
-behavior. Stage 1 should not implement charging runtime integration.
+`src/rmfs/decisions/charging` and `data/input/charging`. Stage 3 adds a narrow
+runtime bridge at `src/rmfs/app/charging_bridge.py` that can be explicitly
+enabled by callers using `charging_enabled=True` feature flags. It loads the
+Salsa config, installs a charger registry and robot battery/status accounting
+on a provided universe object, detects low-battery robots, assigns available
+chargers deterministically, and emits summary metrics for validation.
 
-## Stage 1 Boundary
+`src/rmfs/app/netlogo_api.py` does not call this bridge from `setup()` or
+`tick()` in Stage 3. Default baseline runs therefore remain unchanged, and
+physical charger-trip/pathing behavior remains deferred.
 
-No broad `netlogo_api.py` refactor should occur in Stage 1. The bridge remains
+## Stage 3 Boundary
+
+No broad `netlogo_api.py` refactor should occur in Stage 3. The bridge remains
 the compatibility layer for NetLogo and local scripts, while extraction targets
 stay documented for a later stage with dedicated behavior checks.

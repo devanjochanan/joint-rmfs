@@ -39,6 +39,20 @@ We apply the following versioning convention for updates:
 
 ## 3. Historic Logs
 
+### 2026-06-18 Stage 3 - Targeted Salsa Charging Bridge and Runtime Hygiene Smokes
+* **Files Changed/Created/Deleted**:
+  * `[NEW] src/rmfs/app/charging_bridge.py`
+  * `[NEW] scripts/validation/salsa_charging_artificial_smoke.py`
+  * `[NEW] scripts/validation/salsa_charging_runtime_smoke.py`
+  * `[NEW] scripts/validation/runtime_root_hygiene_smoke.py`
+  * `[MODIFY] docs/architecture/netlogo_api_responsibility_map.md`
+  * `[MODIFY] docs/modules/salsa_charging.md`
+  * `[MODIFY] docs/integration/salsa_charging_pending.md`
+  * `[MODIFY] docs/current/current_state.md`
+* **Behavior Changes**: Default simulator behavior remains unchanged. Charging bridge accounting is opt-in and fixture/runtime-smoke scoped; physical charger trips are not implemented.
+* **Validation Run**: See Stage 3 task report for compile, operator validation, Stage 1 regression smokes, Salsa smokes, root-hygiene smoke, and bounded local-executor results.
+* **Residual Risks**: Physical charging dispatch, battery physics, and long-run energy performance remain future work.
+
 ### 2026-06-08 Phase 1 - Repository Audit & Inventory
 * **Files Changed/Created/Deleted**:
   * `[NEW] docs/architecture/file_inventory.md`
