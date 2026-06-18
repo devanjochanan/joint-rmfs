@@ -1264,7 +1264,13 @@ class Inventory(Universe):
                     "next_bin_avail": None,
                     "pre_assign": self.preassign_dict.get(order_id, None)
                 })
-        df = pd.DataFrame(df_dicts)
+        if not df_dicts:
+            df = pd.DataFrame(columns=[
+                "station_id", "order_id", "unpicked_skus", "pod_1", "pod_2", "pod_3",
+                "occupied_1", "occupied_2", "occupied_3", "next_bin_avail", "pre_assign"
+            ])
+        else:
+            df = pd.DataFrame(df_dicts)
         df = self.forcast_next_bin_avail(df)
         return df
 
@@ -1373,13 +1379,21 @@ class Inventory(Universe):
                     "next_bin_avail": None,
                     "pre_assign": self.preassign_dict.get(order_id, None)
                 })
-        df = pd.DataFrame(df_dicts)
+        if not df_dicts:
+            df = pd.DataFrame(columns=[
+                "station_id", "order_id", "unpicked_skus", "pod_1", "pod_2", "pod_3",
+                "occupied_1", "occupied_2", "occupied_3", "next_bin_avail", "pre_assign"
+            ])
+        else:
+            df = pd.DataFrame(df_dicts)
         df = self.forcast_next_bin_avail(df)
         df = self.pre_assign_order(df)
         print(df)
         return df
 
     def forcast_next_bin_avail(self, df):
+        if df.empty:
+            return df
         def parse_sku_qty_dict(value):
             if isinstance(value, dict):
                 return self._normalize_sku_qty_dict(value)
@@ -1435,6 +1449,8 @@ class Inventory(Universe):
         call choose_order with (station_id, pod_1, pod_2, pod_3),
         and store the result in 'pre_assign'.
         """
+        if df.empty:
+            return df
         print("PREASSIGN IS CALLED !!!!!!!")
         mask = (df['next_bin_avail'] == True) & (df['pre_assign'].isna())  # noqa: E712
         print(mask)
