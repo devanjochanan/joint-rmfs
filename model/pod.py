@@ -13,6 +13,9 @@ class Pod(Object):
         self.is_idle = True
         self.station = None
         self.need_replenishment = False
+        self.is_awaiting_replenishment = False
+        self.has_pending_replenishment_dispatch = False
+        self.must_replenish_before_pick = False
         self.mass = 0
         self.velocity = 0
         self.acceleration = 0
@@ -62,8 +65,23 @@ class Pod(Object):
 
     def replenish_all_skus(self):
         """Replenish all SKUs by setting each SKU's current quantity to its limit quantity."""
-        for sku in self.skus:
-            self.skus[sku]['current_qty'] = self.skus[sku]['limit_qty']
+        for sku, details in self.skus.items():
+            old_qty = details['current_qty']
+            new_qty = details['limit_qty']
+            details['current_qty'] = new_qty
+            self.mass += details['weight'] * max(0, new_qty - old_qty)
+
+    def replenish_specific_skus(self, sku_ids):
+        replenished = 0
+        for sku in sku_ids:
+            if sku not in self.skus:
+                continue
+            old_qty = self.skus[sku]['current_qty']
+            new_qty = self.skus[sku]['limit_qty']
+            self.skus[sku]['current_qty'] = new_qty
+            self.mass += self.skus[sku]['weight'] * max(0, new_qty - old_qty)
+            replenished += 1
+        return replenished
 
     def pick_sku(self, sku, qty):
         self.skus[sku]['current_qty'] -= qty

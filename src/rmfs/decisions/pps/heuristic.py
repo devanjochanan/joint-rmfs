@@ -21,7 +21,13 @@ def find_best_pod(
         pod_candidates.update(universe.pod_manager.sku_to_pods.get(sku, []))
 
     # Step 2: Filter only idle pods
-    pod_candidates = {pod for pod in pod_candidates if universe.pod_manager.is_idle(pod.pod_id)}
+    pod_candidates = {
+        pod
+        for pod in pod_candidates
+        if universe.pod_manager.is_idle(pod.pod_id)
+        and not getattr(pod, "is_awaiting_replenishment", False)
+        and not getattr(pod, "must_replenish_before_pick", False)
+    }
 
     print(f"[DEBUG] Checking candidates for mode={mode} skus={relevant_skus}")
     print(f"[DEBUG] pod_candidates={pod_candidates}")
@@ -60,7 +66,11 @@ def find_pod_with_the_highest_pile_on(universe: Inventory, sku_to_quantity: dict
     print(f"pod_candidates {pod_candidates}")
 
     def pile_on_score(pod: Pod) -> int:
-        if universe.pod_manager.is_idle(pod.pod_id):
+        if (
+            universe.pod_manager.is_idle(pod.pod_id)
+            and not getattr(pod, "is_awaiting_replenishment", False)
+            and not getattr(pod, "must_replenish_before_pick", False)
+        ):
             score = 0
             for sku, req_qty in sku_to_quantity.items():
                 if sku in pod.skus:
@@ -89,7 +99,13 @@ def find_pod_with_the_highest_demand(
     for sku in station_unfinished_skus:
         pod_candidates.update(universe.pod_manager.sku_to_pods.get(sku, []))
 
-    pod_candidates = {po for po in pod_candidates if universe.pod_manager.is_idle(po.pod_id)}
+    pod_candidates = {
+        po
+        for po in pod_candidates
+        if universe.pod_manager.is_idle(po.pod_id)
+        and not getattr(po, "is_awaiting_replenishment", False)
+        and not getattr(po, "must_replenish_before_pick", False)
+    }
     print(f"checking candidate for sku {station_unfinished_skus}")
     print(f"pod_candidates {pod_candidates}")
 
@@ -97,7 +113,11 @@ def find_pod_with_the_highest_demand(
         return None, -1
 
     def demand_score(pod: Pod) -> int:
-        if universe.pod_manager.is_idle(pod.pod_id):
+        if (
+            universe.pod_manager.is_idle(pod.pod_id)
+            and not getattr(pod, "is_awaiting_replenishment", False)
+            and not getattr(pod, "must_replenish_before_pick", False)
+        ):
             score = 0
             for sku, req_qty in sku_to_quantity.items():
                 if sku in pod.skus:

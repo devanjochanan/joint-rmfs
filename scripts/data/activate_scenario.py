@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-root",
         default=None,
-        help="Target root for items.csv and pods.csv. Defaults to data/input/base.",
+        help="Target root for scenario input files. Defaults to data/input/base.",
     )
     parser.add_argument(
         "--legacy-root",

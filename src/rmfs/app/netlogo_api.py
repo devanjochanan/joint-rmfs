@@ -163,6 +163,27 @@ def _str_path(name):
     return str(_path(name))
 
 
+def _maybe_activate_configured_scenario():
+    scenario_name = os.environ.get("RMFS_SCENARIO_NAME", "").strip()
+    if not scenario_name:
+        return None
+    metadata_path = get_run_context().runtime_root / "active_scenario.json"
+    metadata = _activate_scenario_inputs(
+        scenario_name=scenario_name,
+        target_root=str(get_run_context().input_root),
+        metadata_path=str(metadata_path),
+    )
+    if metadata is not None:
+        debug_print(
+            "[SCENARIO] "
+            f"{metadata['scenario_name']} "
+            f"items={metadata['items_rows']} "
+            f"pods={metadata['unique_pods']} "
+            f"input_root={get_run_context().input_root}"
+        )
+    return metadata
+
+
 _SIM_SEED = (
     int(os.environ["RMFS_SIM_SEED"])
     if os.environ.get("RMFS_SIM_SEED", "").strip()
@@ -691,26 +712,43 @@ def initRobots(universe: Inventory):
 
     num_robot = 20  # Number of robots
 
-    robots = []
-    x_range = (5, 43)
-    y_range = (0, 30)
+    layout_frame = pd.read_csv(_str_path("generated_pod_csv"), header=None)
+    row_count, col_count = layout_frame.shape
+    x_min = min(5, max(0, col_count - 1))
+    x_max = max(x_min, col_count - 6)
+    y_min = 0
+    y_max = max(y_min, row_count - 1)
 
-    # Initialize a set to keep track of used coordinates
-    used_coordinates = set()
+    occupied_coordinates = {
+        (int(obj.pos_x), int(obj.pos_y))
+        for obj in universe._objects
+        if getattr(obj, "object_type", None) in {"pod", "picker", "replenishment", "station"}
+    }
+    candidate_coordinates = []
+    if universe.graph is not None:
+        for node in universe.graph.graph.nodes:
+            x, y = map(int, str(node).split(","))
+            if (
+                x_min <= x <= x_max
+                and y_min <= y <= y_max
+                and (x, y) not in occupied_coordinates
+            ):
+                candidate_coordinates.append((x, y))
+    if len(candidate_coordinates) < num_robot:
+        raise ValueError(
+            f"Not enough valid graph nodes to place {num_robot} robots; only found {len(candidate_coordinates)}"
+        )
 
-    # Generate the robots with random unique x and y coordinates
-    while len(robots) < num_robot:
-        x = random.randint(x_range[0], x_range[1])
-        y = random.randint(y_range[0], y_range[1])
-        if (x, y) not in used_coordinates:
-            robot = {
-                'velocity': 0,
-                'heading': 0,
-                'x': x,
-                'y': y
-            }
-            robots.append(robot)
-            used_coordinates.add((x, y))
+    random.shuffle(candidate_coordinates)
+    robots = [
+        {
+            'velocity': 0,
+            'heading': 0,
+            'x': x,
+            'y': y,
+        }
+        for x, y in candidate_coordinates[:num_robot]
+    ]
 
     # Iterate through each robot in the list to initialize and add to the universe
     for r in robots:
@@ -841,8 +879,8 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
         # pass
     else:
         assign_order_df = orders_df.copy()
-        assign_order_df['assigned_station'] = None
-        assign_order_df['assigned_pod'] = None
+        assign_order_df['assigned_station'] = pd.Series([None] * len(assign_order_df), dtype="object")
+        assign_order_df['assigned_pod'] = pd.Series([None] * len(assign_order_df), dtype="object")
         assign_order_df['status'] = -3
         assign_order_df['order_processed'] = None
         assign_order_df['order_finished'] = None
@@ -1196,6 +1234,7 @@ def draw_storage_from_generated_file(universe: Inventory):
 
 def construct_station_path(data: DataFrame, start_x, start_y, station_type: str, short_path=True):
     station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
+    row_count, col_count = data.shape
 
     if station_type not in ['picking', 'replenishment']:
         raise ValueError("station_type must be either 'picking' or 'replenishment'")
@@ -1209,12 +1248,12 @@ def construct_station_path(data: DataFrame, start_x, start_y, station_type: str,
 
     # go to bottom
     y, x = start_y + 1, start_x
-    while data.iloc[y, x] in (14, 17, 24, 27):
+    while 0 <= y < row_count and 0 <= x < col_count and data.iloc[y, x] in (14, 17, 24, 27):
         station_path.insert(0, NetLogoCoordinate(x, y))
 
         if data.iloc[y, x] in (17, 27):
             x += x_increment
-            while data.iloc[y, x] in (13, 23):
+            while 0 <= y < row_count and 0 <= x < col_count and data.iloc[y, x] in (13, 23):
                 station_path.insert(0, NetLogoCoordinate(x, y))
                 x += x_increment
 
@@ -1308,6 +1347,7 @@ def setup():
     try:
         ctx = get_run_context()
         ctx.ensure_runtime_dirs()
+        _maybe_activate_configured_scenario()
         _apply_sim_seed()
         # Initiate DB
         from datetime import datetime

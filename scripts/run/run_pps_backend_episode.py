@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import pickle
 import sys
@@ -119,6 +120,12 @@ def parse_args() -> argparse.Namespace:
         default=10.0,
         help="Print a progress line every N real seconds. Use 0 to disable.",
     )
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default=None,
+        help="Optional scenario bundle name under joint-rmfs/data/input/scenarios.",
+    )
     return parser.parse_args()
 
 
@@ -134,6 +141,8 @@ def main() -> None:
         os.environ["PPS_RL_MODEL_PATH"] = args.model_path
     if args.seed is not None:
         os.environ["RMFS_SIM_SEED"] = str(args.seed)
+    if args.scenario:
+        os.environ["RMFS_SCENARIO_NAME"] = args.scenario
     profile_cfg = resolve_run_profile(
         args.profile,
         run_horizon_ticks=int(args.max_ticks),
@@ -199,6 +208,21 @@ def main() -> None:
     if not state_file.exists():
         raise SystemExit(f"Backend setup did not create {state_file}.")
 
+    scenario_meta = netlogo.get_run_context().runtime_root / "active_scenario.json"
+    if scenario_meta.exists():
+        try:
+            meta = json.loads(scenario_meta.read_text(encoding="utf-8"))
+            print(
+                "[INPUT] "
+                f"scenario={meta.get('scenario_name', '')} "
+                f"items_rows={meta.get('items_rows', '')} "
+                f"pods_rows={meta.get('pods_rows', '')} "
+                f"unique_pods={meta.get('unique_pods', '')} "
+                f"unique_pod_items={meta.get('unique_pod_items', '')}"
+            )
+        except Exception:
+            pass
+
     with open(state_file, "rb") as file:
         universe = pickle.load(file)
 
@@ -224,7 +248,7 @@ def main() -> None:
                     "progress: "
                     f"tick={universe._tick:.2f}/{args.max_ticks:g}, "
                     f"steps={backend_steps}, "
-                    f"throughput={netlogo._get_throughput(universe)}, "
+                    f"throughput={_get_throughput(universe)}, "
                     f"elapsed={now - run_start:.1f}s"
                 )
 
@@ -232,6 +256,8 @@ def main() -> None:
     total_elapsed = time.perf_counter() - setup_start
 
     print(f"Mode: {args.mode}")
+    if args.scenario:
+        print(f"Scenario: {args.scenario}")
     print(f"Seed: {args.seed if args.seed is not None else ''}")
     print(f"Run profile: {profile_cfg.profile}")
     print(f"Bootstrap orders: {profile_cfg.bootstrap_n_orders}")

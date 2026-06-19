@@ -1007,16 +1007,26 @@ class Robot(Object):
             self.job.pod.acceleration = 0
         try:
             self.set_move(self.destination, graph=self.warehouse.graph, need_neutralize_robot=False)
-        except Exception as e:
-            print(f"[ERROR] move pod {self.job.pod.pod_id} location {(self.job.pod.pos_x, self.job.pod.pos_y)} destination {self.destination}")
-            print(f"[ERROR] current robot {self.robotID} job {self.job.job_id}")
-            print(f"[ERROR] other ongoing robots")
-            for o in self.warehouse.get_movable_objects():
-                if isinstance(o, Robot):
-                    print(f" >>> robot {o.robotID} job {o.job.job_id} pod {o.job.pod.pod_id}")
-                    if o.job.pod.pod_id == self.job.pod.pod_id:
-                        print("[CRITICAL] double job for this pod")
-            raise e
+        except Exception as primary_error:
+            try:
+                self.set_move(self.destination, graph=self.warehouse.graph_pod, need_neutralize_robot=False)
+                print(
+                    f"[WARN] fallback to graph_pod for pickup route on pod {self.job.pod.pod_id} "
+                    f"from robot {self.robotName()}"
+                )
+            except Exception as e:
+                print(f"[ERROR] move pod {self.job.pod.pod_id} location {(self.job.pod.pos_x, self.job.pod.pos_y)} destination {self.destination}")
+                print(f"[ERROR] current robot {self.robotName()} job {self.job.job_id}")
+                print(f"[ERROR] other ongoing robots")
+                for o in self.warehouse.get_movable_objects():
+                    if isinstance(o, Robot):
+                        job_desc = "no-job"
+                        if o.job is not None:
+                            job_desc = f"job {o.job.job_id} pod {o.job.pod.pod_id}"
+                        print(f" >>> robot {o.robotName()} {job_desc}")
+                        if o.job is not None and o.job.pod.pod_id == self.job.pod.pod_id:
+                            print("[CRITICAL] double job for this pod")
+                raise e from primary_error
         self.current_state = "taking_pod"
         upsert_pod_travel(
             self.job.my_id,
