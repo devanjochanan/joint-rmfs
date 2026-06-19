@@ -10,6 +10,7 @@ This file records the repository state and refactor constraints at the time it w
 - The recovery phases (Phases 1-15), targeted active job-queue regret-k scheduler patch, and RTS-RL semantic recovery patch have been implemented locally and verified using static checks and smoke tests. No long simulation, training campaign, benchmark, or output-equivalence run was performed.
 
 ## Recorded Work
+- **Full-postT Scenario Bundle Bridge**: Added scenario-bundle support for `generated_pod.csv` and `raw_order.csv`, a sync script for pulling shared scenario inputs from `_full_postt_parallel_runs`, headless `--scenario` activation, non-RL portability fixes for machines without `torch`, layout/runtime compatibility fixes, and a partial replenishment parity port for `joint-rmfs`. See `docs/current/full_postt_joint_rmfs_handoff.md`.
 - **Phase 1**: Repository inventory docs were created.
 - **Phase 1.5**: Runtime/generated/local artifacts were removed from tracking and ignored.
 - **Phase 2**: Scaffold and ownership docs were created.
