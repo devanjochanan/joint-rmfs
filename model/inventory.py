@@ -143,6 +143,26 @@ class Inventory(Universe):
         self.pod_replenishment_threshold = float(
             os.environ.get("RMFS_POD_REPLENISHMENT_THRESHOLD", "0.4")
         )
+        self.replenishment_allow_urgent_qj_bypass = os.environ.get(
+            "RMFS_REPL_BYPASS_QJ_FOR_URGENT",
+            "0",
+        ).strip().lower() in {"1", "true", "yes", "y", "on"}
+        replenishment_qj_bypass_mode = os.environ.get(
+            "RMFS_REPL_BYPASS_QJ_MODE",
+            "",
+        ).strip().lower()
+        if replenishment_qj_bypass_mode in {"urgent_only", "urgent"}:
+            self.replenishment_qj_bypass_mode = "urgent_only"
+        elif replenishment_qj_bypass_mode in {"pending_request", "pending"}:
+            self.replenishment_qj_bypass_mode = "pending_request"
+        elif replenishment_qj_bypass_mode in {"off", "0", "false", "no", "n"}:
+            self.replenishment_qj_bypass_mode = "off"
+        else:
+            self.replenishment_qj_bypass_mode = (
+                "urgent_only"
+                if self.replenishment_allow_urgent_qj_bypass
+                else "off"
+            )
 
         self.priority_order = False
         self.robot_task_allocator = DEFAULT_ROBOT_TASK_ALLOCATOR
@@ -257,14 +277,24 @@ class Inventory(Universe):
             return 1.0
         return float(sum(fill_ratios) / len(fill_ratios))
 
-    def get_replenishment_skus_for_pod(self, pod: Pod) -> tuple[list[int], float]:
+    def get_replenishment_skus_for_pod(
+        self,
+        pod: Pod,
+        request=None,
+    ) -> tuple[list[int], float]:
         if pod is None or not pod.skus:
             return [], 1.0
         critical_skus = self.get_below_reorder_skus_for_pod(pod)
         if not critical_skus:
             return [], 1.0
         qj_score = self.get_pod_critical_fill_score(pod, critical_skus)
-        if qj_score >= self.pod_replenishment_threshold:
+        if (
+            qj_score >= self.pod_replenishment_threshold
+            and not self.should_bypass_replenishment_qj(
+                request=request,
+                current_tick=int(self._tick),
+            )
+        ):
             return [], qj_score
         return critical_skus, qj_score
 
@@ -282,6 +312,21 @@ class Inventory(Universe):
             return True
         wait_time = current_tick - int(request.get("created_tick", current_tick))
         return wait_time >= self.replenishment_dispatch_aging_ticks
+
+    def should_bypass_replenishment_qj(self, request=None, current_tick=None) -> bool:
+        if self.replenishment_qj_bypass_mode == "off":
+            return False
+        if request is None:
+            return False
+        current_tick = int(self._tick) if current_tick is None else int(current_tick)
+        if (
+            self.replenishment_qj_bypass_mode == "pending_request"
+            and request.get("skus_to_replenish")
+        ):
+            return True
+        if bool(request.get("guaranteed_on_release", False)):
+            return True
+        return self.should_guarantee_replenishment_request(request, current_tick)
 
     def enqueue_pending_replenishment_dispatch(
         self,
@@ -453,7 +498,10 @@ class Inventory(Universe):
             if not pod.is_idle:
                 continue
 
-            skus_to_replenish, _ = self.get_replenishment_skus_for_pod(pod)
+            skus_to_replenish, _ = self.get_replenishment_skus_for_pod(
+                pod,
+                request=request,
+            )
             if not skus_to_replenish and guaranteed_request:
                 requested_skus = [
                     int(sku)
