@@ -698,6 +698,7 @@ class Inventory(Universe):
         pod: Pod = self.pod_manager.get_pod_by_id(job.pod.pod_id)
         pod_info_records = self._fast_pod_info_records if self.fast_train else None
         pod_info_df = None if self.fast_train else pd.read_csv(self.pod_info_csv)
+        assign_order_df = pd.read_csv(self.assign_order_csv)
         sku_need_replenished = []
         for order_id, sku, quantity in job.orders:
             order: Order = self.order_manager.get_order_by_id(order_id)
@@ -711,10 +712,8 @@ class Inventory(Universe):
 
             # SKU Replenished Triggered
             if(replenished_status == True): sku_need_replenished.append(sku)
-            assign_order_df = pd.read_csv(self.assign_order_csv)
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'order_finished'] = int(self._tick)
-            assign_order_df.to_csv(self.assign_order_csv, index=False)
             new_row = {
                 "pod_id": pod.pod_id,
                 "item_id": sku,
@@ -743,6 +742,7 @@ class Inventory(Universe):
                     # raise AssertionError(f"WHAT? order {order} order_id {order.order_id} order_id {order_id}")
                 if not self.fast_train:
                     upsert_order_history(order_id, order_finish_time=self._tick, db_path=self.sqlite_db_path)
+        assign_order_df.to_csv(self.assign_order_csv, index=False)
         station = self.station_manager.get_station_by_id(job.station_id)
         station.remove_pod(pod.pod_id)
         
@@ -842,15 +842,14 @@ class Inventory(Universe):
             assign_order_df['assigned_pod'] = pd.Series([None] * len(assign_order_df), dtype="object")
             assign_order_df['status'] = -3
             assign_order_df.to_csv(self.assign_order_csv, index=False)
-        new_file_df = pd.read_csv(file_path)
                   
         current_second = self.next_process_tick
         previous_second = (self.next_process_tick - 1)
 
         # Filter orders that have arrived by the current second and have not been processed before
-        new_orders = new_file_df[(new_file_df['order_arrival']<= current_second) & 
-                               (new_file_df['order_arrival'] > previous_second) &
-                               (new_file_df['status'] == -3)]
+        new_orders = assign_order_df[(assign_order_df['order_arrival']<= current_second) & 
+                               (assign_order_df['order_arrival'] > previous_second) &
+                               (assign_order_df['status'] == -3)]
         grouped_orders = new_orders.groupby('order_id')
 
         for order_id, group in grouped_orders:
@@ -934,8 +933,6 @@ class Inventory(Universe):
             if order.process_start_time <= 0:
                 order.start_processing(int(self._tick))
         self.refresh_mandatory_replenishment_pods()
-        assign_order_df = pd.read_csv(self.assign_order_csv)
-        assign_order_df.to_csv(self.assign_order_csv, index=False)
         # Step 7: Process PPS logic (skip when RL controls PPS)
         if self.pps_rl:
             self.dispatch_pending_replenishment_requests(prioritize_aged_only=False)
