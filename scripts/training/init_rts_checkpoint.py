@@ -22,7 +22,7 @@ from src.rmfs.rl.rts.training.reward_normalizer import default_reward_normalizer
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Initialize a bootstrap RTS checkpoint.")
     parser.add_argument("--checkpoint-dir", required=True, help="Directory to save the checkpoint.")
-    parser.add_argument("--zone-ids", default="A,B", help="Comma-separated list of zone IDs.")
+    parser.add_argument("--zone-ids", default="auto", help="Comma-separated list of zone IDs, or 'auto' to use canonical zones from layout configuration.")
     parser.add_argument("--policy-checkpoint-id", default="bootstrap_000000", help="Policy checkpoint ID.")
     parser.add_argument("--hidden-sizes", default="64,64", help="Hidden sizes of the MLP row encoder.")
     parser.add_argument("--stock-hidden-sizes", default="32,32", help="Stock encoder hidden sizes.")
@@ -33,7 +33,17 @@ def main(argv=None):
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    zone_ids = tuple(z.strip() for z in args.zone_ids.split(",") if z.strip())
+    if args.zone_ids == "auto":
+        from model.layout import Layout
+        layout = Layout()
+        zone_ids = tuple(
+            f"rts_z_r{r:02d}_c{c:02d}"
+            for r in range(layout.pod_batch_vertical_max)
+            for c in range(layout.pod_batch_horizontal_max)
+        )
+    else:
+        zone_ids = tuple(z.strip() for z in args.zone_ids.split(",") if z.strip())
+
     if not zone_ids:
         parser.error("At least one zone ID is required.")
 
