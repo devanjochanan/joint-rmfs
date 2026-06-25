@@ -19,7 +19,7 @@ class Layout(object):
         self.total_pods_active = 420 # Number of pods
         self.total_charging_stations = 10
 
-    def generate(self):
+    def generate(self, output_path='generated_pod.csv'):
         order_picker_positions = self.calculate_station_positions(self.order_picker_total)
         order_replenishment_positions = self.calculate_station_positions(self.order_replenishment_total)
 
@@ -57,7 +57,7 @@ class Layout(object):
 
         self.adjust_pod_availability(data_matrix)
 
-        with open('generated_pod.csv', 'w', newline='') as csvfile:
+        with open(output_path, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerows(data_matrix)
 

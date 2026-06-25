@@ -1,5 +1,13 @@
 import sqlite3
 
+from src.rmfs.runtime_io.detail_db import (
+    commit,
+    connect,
+    debug_log,
+    execute,
+    is_detail_db_enabled,
+)
+
 TS = None
 
 def initialize_job_task_table(timestamp: str, db_path="warehouse.db"):
@@ -8,11 +16,13 @@ def initialize_job_task_table(timestamp: str, db_path="warehouse.db"):
     """
     global TS
     TS = timestamp
+    if not is_detail_db_enabled():
+        return
 
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute(f"""
+    execute(cursor, f"""
         CREATE TABLE IF NOT EXISTS job_task_{TS} (
             pod_id INTEGER,
             order_id INTEGER,
@@ -26,22 +36,25 @@ def initialize_job_task_table(timestamp: str, db_path="warehouse.db"):
         )
     """)
 
-    conn.commit()
+    commit(conn)
     conn.close()
-    print("job_task table initialized.")
+    debug_log("job_task table initialized.")
 
 def clear_job_task_table(db_path="warehouse.db"):
     """
     Delete all rows from the job_task table.
     """
-    conn = sqlite3.connect(db_path)
+    if not is_detail_db_enabled():
+        return
+
+    conn = connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute(f"DELETE FROM job_task_{TS}")
+    execute(cursor, f"DELETE FROM job_task_{TS}")
 
-    conn.commit()
+    commit(conn)
     conn.close()
-    print("All job tasks have been cleared.")
+    debug_log("All job tasks have been cleared.")
 
 def upsert_job_task(
         pod_id: int,
@@ -57,11 +70,14 @@ def upsert_job_task(
     Insert or update a job task based on (pod_id, order_id, sku, qty) as composite key.
     Only non-None fields will be updated on conflict.
     """
-    conn = sqlite3.connect(db_path)
+    if not is_detail_db_enabled():
+        return
+
+    conn = connect(db_path)
     cursor = conn.cursor()
 
     # Check if the entry exists
-    cursor.execute(f"""
+    execute(cursor, f"""
         SELECT * FROM job_task_{TS}
         WHERE pod_id = ? AND order_id = ? AND sku = ? AND qty = ?
     """, (pod_id, order_id, sku, qty))
@@ -91,17 +107,17 @@ def upsert_job_task(
                 WHERE pod_id = ? AND order_id = ? AND sku = ? AND qty = ?
             """
             values.extend([pod_id, order_id, sku, qty])
-            cursor.execute(query, tuple(values))
+            execute(cursor, query, tuple(values))
     else:
         # Insert new record
-        cursor.execute(f"""
+        execute(cursor, f"""
             INSERT INTO job_task_{TS} (pod_id, order_id, sku, qty, assigned_station, pod_assigned_time, status, finish_time)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (pod_id, order_id, sku, qty, assigned_station, pod_assigned_time, status, finish_time))
 
-    conn.commit()
+    commit(conn)
     conn.close()
-    print(f"Job task ({pod_id}, {order_id}, {sku}, {qty}) upserted.")
+    debug_log(f"Job task ({pod_id}, {order_id}, {sku}, {qty}) upserted.")
 
 def update_job_task(
         pod_id: int,
@@ -117,7 +133,10 @@ def update_job_task(
     Insert or update a job task based on (pod_id, order_id, sku, qty) as composite key.
     Only non-None fields will be updated on conflict.
     """
-    conn = sqlite3.connect(db_path)
+    if not is_detail_db_enabled():
+        return
+
+    conn = connect(db_path)
     cursor = conn.cursor()
 
     # Prepare dynamic update
@@ -143,11 +162,11 @@ def update_job_task(
             WHERE pod_id = ? AND order_id = ? AND sku = ? AND qty = ?
         """
         values.extend([pod_id, order_id, sku, qty])
-        cursor.execute(query, tuple(values))
+        execute(cursor, query, tuple(values))
     
-    conn.commit()
+    commit(conn)
     conn.close()
-    print(f"Job task ({pod_id}, {order_id}, {sku}, {qty}) updated.")
+    debug_log(f"Job task ({pod_id}, {order_id}, {sku}, {qty}) updated.")
 
 def get_job_task(pod_id: int = None, order_id: str = None, db_path: str = "warehouse.db"):
     """
@@ -156,7 +175,10 @@ def get_job_task(pod_id: int = None, order_id: str = None, db_path: str = "wareh
     - If neither is provided, returns all job tasks.
     Returns a list of dictionaries.
     """
-    conn = sqlite3.connect(db_path)
+    if not is_detail_db_enabled():
+        return []
+
+    conn = connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 

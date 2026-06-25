@@ -1,0 +1,10 @@
+{
+  "profile": "smoke",
+  "scenario": "base",
+  "seed": 123,
+  "ticks": 100,
+  "bootstrap_n_orders": 100,
+  "detail_db": false,
+  "debug_trace": false,
+  "keep_runtime_artifacts": false
+}

@@ -1,4 +1,5 @@
 from typing import Optional, List
+import builtins
 import csv
 import os
 import math
@@ -31,6 +32,26 @@ from .tools.order_history import upsert_order_history
 from .tools.job_task import upsert_job_task, update_job_task
 from .tools.pre_assign import initialize_pre_assign_table, clear_pre_assign_table, insert_pre_assign
 # from .live_advanced_table import start_gui
+# RTS decision seam (Phase 5B)
+from src.rmfs.decisions.task_allocation import (
+    DEFAULT_REGRET_K,
+    DEFAULT_ROBOT_TASK_ALLOCATOR,
+    TASK_ALLOCATOR_SCOPE,
+    select_active_job_queue_assignment,
+)
+from src.rmfs.decisions.rts import CurrentRTSPolicy
+from src.rmfs.rl.rts.outcome_tracker import NoopRTSRolloutRuntime
+from src.rmfs.rl.rts.runtime_install import install_rts_runtime
+from src.rmfs.rl.rts.runtime_registry import get_rts_runtime_config, get_rts_runtime_root
+from src.rmfs.runtime_io.logging import debug_print as _rmfs_debug_print
+
+
+def print(*args, **kwargs):  # noqa: A001
+    """Gate legacy model debug chatter while preserving warnings/errors."""
+    first = str(args[0]) if args else ""
+    if first.startswith(("[ERROR]", "[WARN]")):
+        return builtins.print(*args, **kwargs)
+    return _rmfs_debug_print(*args, **kwargs)
 
 # Show full column content
 pd.set_option('display.max_colwidth', None)
@@ -52,11 +73,13 @@ class Inventory(Universe):
     graph = None
     graph_pod = None
 
-    def __init__(self):
+    def __init__(self, runtime_paths=None, sqlite_db_path="warehouse.db"):
         self._tick = 0  #current counter
+        self.runtime_paths = runtime_paths or {}
+        self.sqlite_db_path = sqlite_db_path
         # self.ignored_types = ["pod", "station", "way-direction"]
         self.ignored_types = ["station", "way-direction"]
-        self.tick_to_second = 0.25
+        self.tick_to_second = 0.15
         self.fast_train = (
             os.environ.get("RMFS_FAST_TRAIN", "0").strip().lower()
             in {"1", "true", "yes", "on"}
@@ -110,8 +133,22 @@ class Inventory(Universe):
         self.pps_picked_quantity = 0
         self.pps_pod_visits = 0
         self.joint_rl = False     # When True, both POA and PPS are controlled by JointEnv
+        self.replenishment_count = 0
+        self.replenishment_trips = 0
+        self.global_critical_skus = set()
+        self.pending_replenishment_dispatches = []
+        self.replenishment_dispatch_aging_ticks = int(
+            os.environ.get("RMFS_REPLENISHMENT_AGING_TICKS", "300")
+        )
+        self.pod_replenishment_threshold = float(
+            os.environ.get("RMFS_POD_REPLENISHMENT_THRESHOLD", "0.4")
+        )
 
         self.priority_order = False
+        self.robot_task_allocator = DEFAULT_ROBOT_TASK_ALLOCATOR
+        self.regret_k = DEFAULT_REGRET_K
+        self.task_allocator_scope = TASK_ALLOCATOR_SCOPE
+        self.committed_next_reservations_enabled = False
 
         # Aisyahna's similarity-based batching parameters
         self.aisyahna_batch_interval = 5   # fire every t ticks
@@ -120,9 +157,28 @@ class Inventory(Universe):
 
         if self.poa_second and not self.fast_train:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            initialize_pre_assign_table(timestamp)
-            clear_pre_assign_table()
+            initialize_pre_assign_table(timestamp, db_path=self.sqlite_db_path)
+            clear_pre_assign_table(db_path=self.sqlite_db_path)
+        # RTS decision seam (Phase 5B): default policy preserves current behavior
+        self.rts_policy = CurrentRTSPolicy()
+        self.rts_rollout_runtime = NoopRTSRolloutRuntime()
+        install_rts_runtime(self, get_rts_runtime_config(), get_rts_runtime_root())
         super().__init__()
+
+    def runtime_path(self, key, default):
+        return self.runtime_paths.get(key, default)
+
+    @property
+    def assign_order_csv(self):
+        return self.runtime_path("assign_order_csv", "assign_order.csv")
+
+    @property
+    def pod_info_csv(self):
+        return self.runtime_path("pod_info_csv", "pod_info.csv")
+
+    @property
+    def generated_order_csv(self):
+        return self.runtime_path("generated_order_csv", "generated_order.csv")
 
     @staticmethod
     def _normalize_sku_qty_dict(sku_qty):
@@ -141,6 +197,297 @@ class Inventory(Universe):
                 qty_value = qty
             normalized[sku_key] = qty_value
         return normalized
+
+    def _job_ready_to_finish(self, robot: Robot) -> bool:
+        job = getattr(robot, "job", None)
+        if job is None or job.is_finished or robot.current_state != "station_processing":
+            return False
+
+        job_station = self.station_manager.get_station_by_id(job.station_id)
+        if job_station.is_picker_station():
+            return job.picking_delay <= 0 and not job.is_being_processed()
+        if job_station.is_replenishment_station():
+            return job.replenishment_delay <= 0 and not job.is_being_processed()
+        return False
+
+    def get_below_reorder_skus_for_pod(self, pod: Pod) -> list[int]:
+        if pod is None or not pod.skus:
+            return []
+
+        critical_skus = []
+        for sku_id in pod.skus.keys():
+            _, needs_replenishment = self.pod_manager.is_sku_need_replenished(sku_id)
+            if needs_replenishment:
+                self.global_critical_skus.add(sku_id)
+                critical_skus.append(sku_id)
+        return sorted(set(critical_skus))
+
+    def get_local_replenishment_skus_for_pod(self, pod: Pod) -> list[int]:
+        if pod is None or not pod.skus:
+            return []
+        local_skus = []
+        for sku_id, details in pod.skus.items():
+            limit_qty = details.get("limit_qty", 0)
+            threshold = details.get("threshold", 0)
+            if limit_qty <= 0:
+                continue
+            if float(details.get("current_qty", 0)) / float(limit_qty) <= float(threshold):
+                local_skus.append(sku_id)
+        return sorted(set(local_skus))
+
+    def get_pod_critical_fill_score(self, pod: Pod, critical_skus=None) -> float:
+        if pod is None or not pod.skus:
+            return 1.0
+        critical_skus = list(critical_skus or self.get_below_reorder_skus_for_pod(pod))
+        if not critical_skus:
+            return 1.0
+
+        fill_ratios = []
+        for sku_id in critical_skus:
+            details = pod.skus.get(sku_id)
+            if not details:
+                continue
+            limit_qty = details.get("limit_qty", 0)
+            if limit_qty <= 0:
+                continue
+            fill_ratios.append(
+                max(0.0, min(1.0, details.get("current_qty", 0) / limit_qty))
+            )
+        if not fill_ratios:
+            return 1.0
+        return float(sum(fill_ratios) / len(fill_ratios))
+
+    def get_replenishment_skus_for_pod(self, pod: Pod) -> tuple[list[int], float]:
+        if pod is None or not pod.skus:
+            return [], 1.0
+        critical_skus = self.get_below_reorder_skus_for_pod(pod)
+        if not critical_skus:
+            return [], 1.0
+        qj_score = self.get_pod_critical_fill_score(pod, critical_skus)
+        if qj_score >= self.pod_replenishment_threshold:
+            return [], qj_score
+        return critical_skus, qj_score
+
+    def get_pending_replenishment_dispatch(self, pod_id: int):
+        for request in self.pending_replenishment_dispatches:
+            if int(request["pod_id"]) == int(pod_id):
+                return request
+        return None
+
+    def should_guarantee_replenishment_request(self, request, current_tick=None) -> bool:
+        if request is None:
+            return False
+        current_tick = int(self._tick) if current_tick is None else int(current_tick)
+        if bool(request.get("guaranteed_on_release", False)):
+            return True
+        wait_time = current_tick - int(request.get("created_tick", current_tick))
+        return wait_time >= self.replenishment_dispatch_aging_ticks
+
+    def enqueue_pending_replenishment_dispatch(
+        self,
+        pod: Pod,
+        skus_to_replenish,
+        *,
+        guaranteed_on_release: bool = False,
+    ) -> bool:
+        if pod is None:
+            return False
+        normalized_skus = sorted({int(sku) for sku in skus_to_replenish if sku is not None})
+        if not normalized_skus:
+            return False
+        if getattr(pod, "is_awaiting_replenishment", False):
+            return False
+
+        existing = self.get_pending_replenishment_dispatch(pod.pod_id)
+        if existing is not None:
+            existing["skus_to_replenish"] = sorted(
+                set(existing.get("skus_to_replenish", [])).union(normalized_skus)
+            )
+            existing["guaranteed_on_release"] = (
+                bool(existing.get("guaranteed_on_release", False))
+                or guaranteed_on_release
+            )
+            pod.has_pending_replenishment_dispatch = True
+            if existing["guaranteed_on_release"]:
+                pod.must_replenish_before_pick = True
+            return False
+
+        self.pending_replenishment_dispatches.append(
+            {
+                "pod_id": int(pod.pod_id),
+                "skus_to_replenish": list(normalized_skus),
+                "created_tick": int(self._tick),
+                "guaranteed_on_release": bool(guaranteed_on_release),
+            }
+        )
+        pod.has_pending_replenishment_dispatch = True
+        if guaranteed_on_release:
+            pod.must_replenish_before_pick = True
+        return True
+
+    def remove_pending_replenishment_dispatch(self, pod_id: int) -> bool:
+        removed = False
+        remaining = []
+        for request in self.pending_replenishment_dispatches:
+            if int(request["pod_id"]) == int(pod_id):
+                removed = True
+                continue
+            remaining.append(request)
+        self.pending_replenishment_dispatches = remaining
+        pod = self.pod_manager.get_pod_by_id(pod_id)
+        if pod is not None:
+            pod.has_pending_replenishment_dispatch = False
+            pod.must_replenish_before_pick = False
+        return removed
+
+    def get_most_depleted_eligible_pod_for_sku(self, sku_id: int):
+        pods_with_sku = self.pod_manager.get_pods_by_sku(sku_id) or []
+        best_candidate = None
+        best_key = None
+        for pod in pods_with_sku:
+            if pod is None or getattr(pod, "is_awaiting_replenishment", False):
+                continue
+            skus_to_replenish, qj_score = self.get_replenishment_skus_for_pod(pod)
+            if sku_id not in skus_to_replenish:
+                continue
+            sku_details = pod.skus.get(sku_id, {})
+            limit_qty = sku_details.get("limit_qty", 0)
+            current_qty = sku_details.get("current_qty", 0)
+            fill_ratio = current_qty / limit_qty if limit_qty > 0 else 1.0
+            candidate_key = (
+                qj_score,
+                fill_ratio,
+                0 if pod.is_idle else 1,
+                int(pod.pod_id),
+            )
+            if best_key is None or candidate_key < best_key:
+                best_key = candidate_key
+                best_candidate = (pod, skus_to_replenish)
+        return best_candidate
+
+    def enqueue_best_replenishment_dispatch_for_sku(self, sku_id: int) -> bool:
+        candidate = self.get_most_depleted_eligible_pod_for_sku(sku_id)
+        if candidate is None:
+            return False
+        pod, skus_to_replenish = candidate
+        return self.enqueue_pending_replenishment_dispatch(
+            pod,
+            skus_to_replenish,
+            guaranteed_on_release=False,
+        )
+
+    def refresh_mandatory_replenishment_pods(self):
+        current_tick = int(self._tick)
+        for pod in self.pod_manager.get_all_pods():
+            if pod is None or getattr(pod, "is_awaiting_replenishment", False):
+                continue
+            pod.must_replenish_before_pick = False
+        for request in self.pending_replenishment_dispatches:
+            if not self.should_guarantee_replenishment_request(request, current_tick):
+                continue
+            pod = self.pod_manager.get_pod_by_id(int(request["pod_id"]))
+            if pod is not None and not getattr(pod, "is_awaiting_replenishment", False):
+                pod.must_replenish_before_pick = True
+
+    def send_pod_for_replenishment(
+        self,
+        pod: Pod,
+        station: Station,
+        skus_to_replenish,
+        robot: Robot | None = None,
+    ) -> bool:
+        if pod is None or station is None:
+            return False
+        if getattr(pod, "is_awaiting_replenishment", False):
+            return False
+        replenishment_skus = sorted({int(sku) for sku in skus_to_replenish if sku is not None})
+        if not replenishment_skus:
+            return False
+
+        new_job = RobotJob(pod.coordinate, station_id=station.station_id, pod=pod)
+        new_job.add_replenishment_task(pod, replenishment_skus)
+        station.add_pod(pod.pod_id)
+        pod.station = station
+        self.pod_manager.mark_pod_not_available(pod)
+        pod.is_awaiting_replenishment = True
+        pod.has_pending_replenishment_dispatch = False
+        pod.must_replenish_before_pick = False
+        self.remove_pending_replenishment_dispatch(pod.pod_id)
+
+        if robot is not None:
+            robot.assign_job_and_set_move_to_station(new_job)
+        else:
+            self.job_queue.append(new_job)
+        return True
+
+    def dispatch_pending_replenishment_requests(self, prioritize_aged_only: bool = False) -> int:
+        if not self.pending_replenishment_dispatches:
+            return 0
+
+        dispatched = 0
+        current_tick = int(self._tick)
+        requests = sorted(
+            list(self.pending_replenishment_dispatches),
+            key=lambda request: (
+                0 if self.should_guarantee_replenishment_request(request, current_tick) else 1,
+                -(current_tick - int(request.get("created_tick", current_tick))),
+                int(request.get("pod_id", 0)),
+            ),
+        )
+        for request in requests:
+            guaranteed_request = self.should_guarantee_replenishment_request(request, current_tick)
+            if prioritize_aged_only and not guaranteed_request:
+                continue
+
+            station = self.station_manager.find_available_replenish_station()
+            if station is None:
+                break
+
+            pod = self.pod_manager.get_pod_by_id(int(request["pod_id"]))
+            if pod is None:
+                self.remove_pending_replenishment_dispatch(int(request["pod_id"]))
+                continue
+            if getattr(pod, "is_awaiting_replenishment", False):
+                self.remove_pending_replenishment_dispatch(pod.pod_id)
+                continue
+            if not pod.is_idle:
+                continue
+
+            skus_to_replenish, _ = self.get_replenishment_skus_for_pod(pod)
+            if not skus_to_replenish and guaranteed_request:
+                requested_skus = [
+                    int(sku)
+                    for sku in request.get("skus_to_replenish", [])
+                    if sku in pod.skus
+                ]
+                skus_to_replenish = sorted(set(requested_skus)) or self.get_local_replenishment_skus_for_pod(pod)
+            if not skus_to_replenish:
+                self.remove_pending_replenishment_dispatch(pod.pod_id)
+                continue
+
+            if self.send_pod_for_replenishment(pod, station, skus_to_replenish):
+                dispatched += 1
+        return dispatched
+
+    def queue_post_pick_replenishment(self, pod: Pod, critical_skus=None) -> bool:
+        if pod is None:
+            return False
+
+        critical_set = {
+            int(sku)
+            for sku in (critical_skus or [])
+            if sku is not None
+        }
+        skus_to_replenish = set(self.get_local_replenishment_skus_for_pod(pod))
+        skus_to_replenish.update(critical_set)
+        if not skus_to_replenish:
+            return False
+
+        return self.enqueue_pending_replenishment_dispatch(
+            pod,
+            sorted(skus_to_replenish),
+            guaranteed_on_release=bool(critical_set),
+        )
 
     def addObject(self, object):
         if object.object_type == "robot":
@@ -181,32 +528,44 @@ class Inventory(Universe):
         print(f"Current job queue length: {len(self.job_queue)}")
 
         if len(self.job_queue) > 0:
-            job = self.job_queue[0]
+            idle_robots = [
+                o for o in self.get_movable_objects()
+                if o.object_type == "robot" and (o.job is None or o.job.is_finished) and o.current_state == 'idle'
+            ]
+            allocation = select_active_job_queue_assignment(
+                jobs=list(self.job_queue),
+                robots=idle_robots,
+                cost_fn=lambda job, robot: calculateDistance(
+                    robot.pos_x,
+                    robot.pos_y,
+                    job.pod_coordinate.x,
+                    job.pod_coordinate.y,
+                ),
+                robot_task_allocator=self.robot_task_allocator,
+                regret_k=self.regret_k,
+                job_id_fn=lambda job: f"{getattr(job.pod, 'pod_id', job.pod)}:{job.station_id}",
+                robot_id_fn=lambda robot: getattr(robot, "_id", None),
+            )
 
-            if job is not None:
-                current_distance = float("inf")
-                nearest_robot: Optional[Robot] = None
-
-                for o in self.get_movable_objects():
-                    if o.object_type == "robot" and (o.job is None or o.job.is_finished) and o.current_state == 'idle':
-                        dist = calculateDistance(o.pos_x, o.pos_y, job.pod_coordinate.x, job.pod_coordinate.y)
-                        if dist < current_distance:
-                            nearest_robot = o
-                            current_distance = dist
-
-                if nearest_robot is not None:
-                    self.job_queue.remove(job)  # Remove the selected job from the queue
-                    print(f"Assigning job {job.pod}-{job.station_id} to robot {nearest_robot._id}")
-                    nearest_robot.assign_job_and_set_move_to_take_pod(job)
-                    if not self.fast_train:
-                        for triplet in job.orders:
-                            upsert_job_task(
-                                pod_id=str(job.pod.pod_id),
-                                order_id=str(triplet[0]),
-                                sku=str(triplet[1]),
-                                qty=str(triplet[2]),
-                                status="otw",
-                            )
+            if allocation is not None:
+                job = allocation.job
+                assigned_robot = allocation.robot
+                del self.job_queue[allocation.queue_index]
+                print(
+                    f"Assigning job {job.pod}-{job.station_id} to robot {assigned_robot._id} "
+                    f"using {allocation.allocator}"
+                )
+                assigned_robot.assign_job_and_set_move_to_take_pod(job)
+                if not self.fast_train:
+                    for triplet in job.orders:
+                        upsert_job_task(
+                            pod_id=str(job.pod.pod_id),
+                            order_id=str(triplet[0]),
+                            sku=str(triplet[1]),
+                            qty=str(triplet[2]),
+                            status="otw",
+                            db_path=self.sqlite_db_path,
+                        )
             
 
         # Update object positions and collect metrics
@@ -229,8 +588,8 @@ class Inventory(Universe):
                     self.update_robot_job_for_new_orders(o.job)
 
                 # Handle job completion and replenishment
-                if o.job is not None and o.job.picking_delay == 0 and not o.job.is_finished:
-                    need_replenish_pod = self.finish_task_in_job(o.job)
+                if self._job_ready_to_finish(o):
+                    self.finish_task_in_job(o.job)
                     if not self.fast_train:
                         for triplet in o.job.orders:
                             update_job_task(
@@ -239,20 +598,9 @@ class Inventory(Universe):
                                 sku=str(triplet[1]),
                                 qty=str(triplet[2]),
                                 status="finish",
-                                finish_time=self._tick
+                                finish_time=self._tick,
+                                db_path=self.sqlite_db_path,
                             )
-                    if need_replenish_pod:
-                        # pod: Pod = self.pod_manager.get_pod_by_coordinate(o.job.pod_coordinate.x, o.job.pod_coordinate.y)
-                        pod: Pod = self.pod_manager.get_pod_by_id(o.job.pod.pod_id)
-                        latest_pod_location = get_pod_location(pod.pod_id)
-                        if latest_pod_location:
-                            pod.pos_x, pod.pos_y = latest_pod_location
-                        station_replenish = self.station_manager.find_available_replenish_station()
-                        if station_replenish is not None:
-                            station_replenish.add_pod(pod.pod_id)
-                            new_job = RobotJob(pod.coordinate, station_id=station_replenish.station_id, pod=pod)
-                            new_job.add_replenishment_task(pod)
-                            o.assign_job_and_set_move_to_station(new_job)
 
                 # Reset completed jobs
                 if o.current_state == 'idle' and o.job is not None:
@@ -297,14 +645,35 @@ class Inventory(Universe):
                 print(f"[ERROR] for pod {job.pod} location {job.pod.coordinate}")
                 raise e
     
+    def _get_order_by_id_flexible(self, order_id):
+        order = self.order_manager.get_order_by_id(order_id)
+        if order is not None:
+            return order
+        try:
+            return self.order_manager.get_order_by_id(int(order_id))
+        except (TypeError, ValueError):
+            return None
+
     def finish_picking_task(self, job: RobotJob):
         # pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
         pod: Pod = self.pod_manager.get_pod_by_id(job.pod.pod_id)
         pod_info_records = self._fast_pod_info_records if self.fast_train else None
-        pod_info_df = None if self.fast_train else pd.read_csv('pod_info.csv')
+        pod_info_df = None if self.fast_train else pd.read_csv(self.pod_info_csv)
         sku_need_replenished = []
         for order_id, sku, quantity in job.orders:
-            order: Order = self.order_manager.get_order_by_id(order_id)
+            order: Order = self._get_order_by_id_flexible(order_id)
+            if order is None:
+                print(
+                    f"[WARN] skipping stale picking task: job={job.my_id} "
+                    f"pod={pod.pod_id} order={order_id} sku={sku} qty={quantity}"
+                )
+                continue
+            if not order.has_sku(sku):
+                print(
+                    f"[WARN] skipping picking task with unknown SKU: job={job.my_id} "
+                    f"pod={pod.pod_id} order={order_id} sku={sku} qty={quantity}"
+                )
+                continue
             order.deliver_quantity(sku, quantity)
             print("order, sku, quantity :" ,order_id, sku, quantity)
 
@@ -315,11 +684,10 @@ class Inventory(Universe):
 
             # SKU Replenished Triggered
             if(replenished_status == True): sku_need_replenished.append(sku)
-
-            assign_order_df = pd.read_csv('assign_order.csv')
+            assign_order_df = pd.read_csv(self.assign_order_csv)
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
             assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'order_finished'] = int(self._tick)
-            assign_order_df.to_csv('assign_order.csv', index=False)
+            assign_order_df.to_csv(self.assign_order_csv, index=False)
             new_row = {
                 "pod_id": pod.pod_id,
                 "item_id": sku,
@@ -347,27 +715,51 @@ class Inventory(Universe):
                 # if not isinstance(order.order_id, int):
                     # raise AssertionError(f"WHAT? order {order} order_id {order.order_id} order_id {order_id}")
                 if not self.fast_train:
-                    upsert_order_history(order_id, order_finish_time=self._tick)
+                    upsert_order_history(order_id, order_finish_time=self._tick, db_path=self.sqlite_db_path)
         station = self.station_manager.get_station_by_id(job.station_id)
         station.remove_pod(pod.pod_id)
         
         if not self.fast_train:
-            pod_info_df.to_csv('pod_info.csv', index=False)
+            pod_info_df.to_csv(self.pod_info_csv, index=False)
         # Replenishment baseline
         # job.is_finished = True
         job.set_job_finish()
-        if len(sku_need_replenished) > 0:
-            return True
-        need_replenish_pod = pod.check_replenishment_needed()
-        print(f"reple ga yaaa {need_replenish_pod}")
-        # HACK
-        # return False
-        return need_replenish_pod
+        if sku_need_replenished:
+            self.global_critical_skus.update(sku_need_replenished)
+        self.queue_post_pick_replenishment(pod, sku_need_replenished)
+        return False
     
     def finish_replenishment_task(self, job: RobotJob):
         # pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
         pod: Pod = self.pod_manager.get_pod_by_id(job.pod.pod_id)
-        pod.replenish_all_skus()
+        replenishment_skus = list(getattr(job, "replenishment_skus", []) or [])
+        restored_quantities = {}
+        if replenishment_skus:
+            before_qty = {
+                sku_id: pod.skus[sku_id]['current_qty']
+                for sku_id in replenishment_skus
+                if sku_id in pod.skus
+            }
+            replenished_count = pod.replenish_specific_skus(replenishment_skus)
+            for sku_id, old_qty in before_qty.items():
+                new_qty = pod.skus[sku_id]['current_qty']
+                restored_qty = max(0, new_qty - old_qty)
+                if restored_qty > 0:
+                    restored_quantities[sku_id] = restored_qty
+                    self.pod_manager.increase_sku_data(sku_id, restored_qty)
+        else:
+            before_qty = {
+                sku_id: details['current_qty']
+                for sku_id, details in pod.skus.items()
+            }
+            pod.replenish_all_skus()
+            replenished_count = len(pod.skus)
+            for sku_id, old_qty in before_qty.items():
+                new_qty = pod.skus[sku_id]['current_qty']
+                restored_qty = max(0, new_qty - old_qty)
+                if restored_qty > 0:
+                    restored_quantities[sku_id] = restored_qty
+                    self.pod_manager.increase_sku_data(sku_id, restored_qty)
         new_row = {
                 "pod_id": pod.pod_id,
                 "item_id": -1,
@@ -380,14 +772,25 @@ class Inventory(Universe):
         if self.fast_train:
             self._fast_pod_info_records.append(new_row)
         else:
-            pod_info_df = pd.read_csv('pod_info.csv')
+            pod_info_df = pd.read_csv(self.pod_info_csv)
             new_row_df = pd.DataFrame([new_row])
             pod_info_df = pd.concat([pod_info_df, new_row_df], ignore_index=True)
-            pod_info_df.to_csv('pod_info.csv', index= False)
+            pod_info_df.to_csv(self.pod_info_csv, index= False)
         # job.is_finished = True
         job.set_job_finish()
         station = self.station_manager.get_station_by_id(job.station_id)
         station.remove_pod(pod.pod_id)
+        pod.is_awaiting_replenishment = False
+        pod.has_pending_replenishment_dispatch = False
+        pod.must_replenish_before_pick = False
+        self.replenishment_trips += 1
+        self.replenishment_count += replenished_count
+        for sku_id in restored_quantities:
+            _, still_below_reorder = self.pod_manager.is_sku_need_replenished(sku_id)
+            if still_below_reorder:
+                self.global_critical_skus.add(sku_id)
+            else:
+                self.global_critical_skus.discard(sku_id)
         return False
 
     def insert_finished_order_to_csv(self, order: Order):
@@ -401,17 +804,17 @@ class Inventory(Universe):
         self.write_to_csv("order-finished.csv", header, data)
 
     def find_new_orders(self):
-        file_path = 'assign_order.csv'
+        file_path = self.assign_order_csv
         if os.path.exists(file_path):
             assign_order_df = pd.read_csv(file_path)
             # pass
         else:
-            orders_df = pd.read_csv('generated_order.csv')
+            orders_df = pd.read_csv(self.generated_order_csv)
             assign_order_df = orders_df.copy()
-            assign_order_df['assigned_station'] = None
-            assign_order_df['assigned_pod'] = None
+            assign_order_df['assigned_station'] = pd.Series([None] * len(assign_order_df), dtype="object")
+            assign_order_df['assigned_pod'] = pd.Series([None] * len(assign_order_df), dtype="object")
             assign_order_df['status'] = -3
-            assign_order_df.to_csv('assign_order.csv', index=False)
+            assign_order_df.to_csv(self.assign_order_csv, index=False)
         new_file_df = pd.read_csv(file_path)
                   
         current_second = self.next_process_tick
@@ -434,7 +837,7 @@ class Inventory(Universe):
             self.order_manager.add_order(order)
             # DB
             if not self.fast_train:
-                upsert_order_history(order.order_id, arrival_time=self._tick)
+                upsert_order_history(order.order_id, arrival_time=self._tick, db_path=self.sqlite_db_path)
 
         return new_orders
 
@@ -451,7 +854,7 @@ class Inventory(Universe):
         # robot job init and order start-processing
         if self.joint_rl:
             # Still need to start processing timer for assigned orders
-            if os.path.exists('assign_order.csv'):
+            if os.path.exists(self.assign_order_csv):
                 for order in self.order_manager.unfinished_orders:
                     if order.station_id is None:
                         continue
@@ -503,10 +906,12 @@ class Inventory(Universe):
                 continue
             if order.process_start_time <= 0:
                 order.start_processing(int(self._tick))
-        assign_order_df = pd.read_csv('assign_order.csv')
-        assign_order_df.to_csv('assign_order.csv', index=False)
+        self.refresh_mandatory_replenishment_pods()
+        assign_order_df = pd.read_csv(self.assign_order_csv)
+        assign_order_df.to_csv(self.assign_order_csv, index=False)
         # Step 7: Process PPS logic (skip when RL controls PPS)
         if self.pps_rl:
+            self.dispatch_pending_replenishment_requests(prioritize_aged_only=False)
             return  # RL agent handles PPS externally via PPSEnv
         if self.pps_demand or self.pps_pileon:
             for station in filter(lambda s: s.station_type == 'picker' and len(s.incoming_pod) < 11, self.station_manager.stations):
@@ -525,7 +930,13 @@ class Inventory(Universe):
                     pod_assigned = False
                     for order_id, remaining_skus in priority_orders.items():
                         # raise AssertionError(f"we have priority {priority_orders}")
-                        idle_pods = {pod for pod in self.pod_manager.sku_to_pods.get(list(remaining_skus.keys())[0], []) if self.pod_manager.is_idle(pod.pod_id)}
+                        idle_pods = {
+                            pod
+                            for pod in self.pod_manager.sku_to_pods.get(list(remaining_skus.keys())[0], [])
+                            if self.pod_manager.is_idle(pod.pod_id)
+                            and not getattr(pod, "is_awaiting_replenishment", False)
+                            and not getattr(pod, "must_replenish_before_pick", False)
+                        }
                         # for pod_id in [k for k, v in self.pod_manager.pod_idle.items() if v]:
                         for pod in idle_pods:
                             pod_id = pod.pod_id
@@ -550,6 +961,7 @@ class Inventory(Universe):
                                         assigned_station=station.station_id,
                                         pod_assigned_time=self._tick,
                                         status="queue",
+                                        db_path=self.sqlite_db_path,
                                     )
                                 # write_record_to("record_record.csv", [f"{self._tick:.2f}", 'job_append', pod, pod.coordinate], ['Time', 'Event', 'Pod ID', 'Location'])
                                 pod_assigned = True
@@ -595,7 +1007,9 @@ class Inventory(Universe):
                             assigned_station=station.station_id,
                             pod_assigned_time=self._tick,
                             status="queue",
+                            db_path=self.sqlite_db_path,
                         )
+        self.dispatch_pending_replenishment_requests(prioritize_aged_only=False)
 
     # def process_orders(self):
     #     robots_location = []
@@ -764,42 +1178,11 @@ class Inventory(Universe):
         relevant_skus: list, 
         mode: str = "pile_on"  # or "demand"
     ):  # type: ignore
-
-        # Step 1: Collect pod candidates from relevant skus
-        pod_candidates: set[Pod] = set()
-        for sku in relevant_skus:
-            pod_candidates.update(self.pod_manager.sku_to_pods.get(sku, []))
-
-        # Step 2: Filter only idle pods
-        pod_candidates = {pod for pod in pod_candidates if self.pod_manager.is_idle(pod.pod_id)}
-
-        print(f"[DEBUG] Checking candidates for mode={mode} skus={relevant_skus}")
-        print(f"[DEBUG] pod_candidates={pod_candidates}")
-
-        if not pod_candidates:
-            return None, -1
-
-        # Step 3: Score function
-        def score_pod(pod: Pod) -> int:
-            score = 0
-            for sku, req_qty in sku_to_quantity.items():
-                if sku in pod.skus:
-                    current_total = pod.skus[sku]['current_qty']
-                    score += min(current_total, req_qty)
-            return score
-
-        # Step 4: Rank pods by score
-        ranked_pods = sorted(
-            [(pod, score_pod(pod)) for pod in pod_candidates],
-            key=lambda x: x[1],
-            reverse=True
-        )
-
-        print(f"[DEBUG] ranked_pods (mode={mode}) = {ranked_pods}")
-        return ranked_pods[0]
+        from src.rmfs.decisions.pps.heuristic import find_best_pod
+        return find_best_pod(self, sku_to_quantity, relevant_skus, mode)
 
     def add_picking_task_after_pps(self, station: Station, pod: Pod, sku_to_list_order_id_and_quantity: dict, sku_to_quantity: dict):
-        latest_pod_location = get_pod_location(pod.pod_id)
+        latest_pod_location = get_pod_location(pod.pod_id, db_path=self.sqlite_db_path)
         if latest_pod_location:
             pod.pos_x, pod.pos_y = latest_pod_location
         job = RobotJob(pod.coordinate, station_id=station.station_id, pod=pod)
@@ -818,13 +1201,19 @@ class Inventory(Universe):
                 for o_id, qty in sku_to_list_order_id_and_quantity[sku]:
                     if tmp <= 0:
                         break
-                    order = self.order_manager.get_order_by_id(o_id)
+                    order = self._get_order_by_id_flexible(o_id)
+                    if order is None:
+                        print(
+                            f"[WARN] skipping PPS task for missing order: "
+                            f"station={station.station_id} pod={pod.pod_id} order={o_id} sku={sku}"
+                        )
+                        continue
                     if order.station_id is None:
                         order.assign_station(station.station_id)
                     # order.commit_quantity
                     order.commit_quantity(sku, min(qty, tmp))
                     # job.add_picking_tas
-                    job.add_picking_task(o_id, sku, min(qty, tmp))
+                    job.add_picking_task(order.order_id, sku, min(qty, tmp))
                     tmp = tmp - min(qty, tmp)
                 
                 # pod.pick_sku
@@ -833,7 +1222,7 @@ class Inventory(Universe):
                 self.pod_manager.reduce_sku_data(sku, quantity_to_take)
                 # station.reduce_sku
                 station.reduce_sku_from_station(sku, quantity_to_take)
-
+ 
         station.add_pod(pod.pod_id)
         pod.station = station
         # print(f"[DEBUG] assign job pod {pod.id} coordinate {pod.coordinate}")
@@ -845,74 +1234,12 @@ class Inventory(Universe):
         return job
 
     def find_pod_with_the_highest_pile_on(self, sku_to_quantity: dict) -> (Pod, int): # type: ignore
-        # dict of order: {order_id_1: {sku1: X, sku2: Y}, order_id_2: {...}}    
-        sku_list = sku_to_quantity.keys()
-        pod_candidates: set[Pod] = set()
-        for sku in sku_list:
-            pod_candidates.update(self.pod_manager.sku_to_pods.get(sku, []))
-
-        print(f"checking candicate for sku {sku_list}")
-        print(f"pod_candidates {pod_candidates}")
-
-        def pile_on_score(pod: Pod):
-            # if pod.is_idle:
-            if self.pod_manager.is_idle(pod.pod_id):
-                # print(f"pod {pod} is idle")
-                score = 0
-                for sku, req_qty in sku_to_quantity.items():
-                    if sku in pod.skus:
-                        current_total = pod.skus[sku]['current_qty']
-                        score += min(current_total, req_qty)  # Only count up to what's needed
-            else:
-                # print(f"pod {pod} is NOT idle")
-                score = -1
-            return score
-
-        ranked_pods = sorted(
-            [(pod, pile_on_score(pod)) for pod in pod_candidates],
-            key=lambda x: x[1],
-            reverse=True
-        )
-        print("ranked_pods", ranked_pods)
-        return ranked_pods[0]
+        from src.rmfs.decisions.pps.heuristic import find_pod_with_the_highest_pile_on
+        return find_pod_with_the_highest_pile_on(self, sku_to_quantity)
     
     def find_pod_with_the_highest_demand(self, sku_to_quantity: dict, station_unfinished_skus: list) -> (Pod, int): # type: ignore
-        # dict of order: {order_id_1: {sku1: X, sku2: Y}, order_id_2: {...}}    
-        pod_candidates: set[Pod] = set()
-        for sku in station_unfinished_skus:
-            pod_candidates.update(self.pod_manager.sku_to_pods.get(sku, []))
-        # filter the pod status
-        # pod_candidates = {po for po in pod_candidates if po.is_idle}
-        pod_candidates = {po for po in pod_candidates if self.pod_manager.is_idle(po.pod_id)}
-        print(f"checking candidate for sku {station_unfinished_skus}")
-        print(f"pod_candidates {pod_candidates}")
-
-        # for early stage, if empty, then assign random ?
-        if not pod_candidates:
-            return None, -1
-            pod_candidates.update([po for po in self.pod_manager.pods if po.is_idle])
-
-        def demand_score(pod: Pod):
-            # if pod.is_idle:
-            if self.pod_manager.is_idle(pod.pod_id):
-                # print(f"pod {pod} is idle")
-                score = 0
-                for sku, req_qty in sku_to_quantity.items():
-                    if sku in pod.skus:
-                        current_total = pod.skus[sku]['current_qty']
-                        score += min(current_total, req_qty)  # Only count up to what's needed
-            else:
-                # print(f"pod {pod} is NOT idle")
-                score = -1
-            return score
-
-        ranked_pods = sorted(
-            [(pod, demand_score(pod)) for pod in pod_candidates],
-            key=lambda x: x[1],
-            reverse=True
-        )
-        print("ranked_pods", ranked_pods)
-        return ranked_pods[0]
+        from src.rmfs.decisions.pps.heuristic import find_pod_with_the_highest_demand
+        return find_pod_with_the_highest_demand(self, sku_to_quantity, station_unfinished_skus)
 
     def write_to_csv(self, filename, header, data):
         if self.fast_train:
@@ -1146,7 +1473,9 @@ class Inventory(Universe):
         return final_selection
         
     def put_order_to_picking_station(self, final_selection):
-        assign_order_df = pd.read_csv('assign_order.csv')
+        assign_order_df = pd.read_csv(self.assign_order_csv)
+        assign_order_df['assigned_station'] = assign_order_df['assigned_station'].astype("object")
+        assign_order_df['assigned_pod'] = assign_order_df['assigned_pod'].astype("object")
 
         for picker_name, order_ids in final_selection.items():
             for order_id in order_ids:
@@ -1158,9 +1487,14 @@ class Inventory(Universe):
                 assign_order_df.loc[assign_order_df['order_id'] == order.order_id, 'status'] = -1
                 # DB
                 if not self.fast_train:
-                    upsert_order_history(order_id, assigned_station=picker_name, order_assigned_time=self._tick)
+                    upsert_order_history(
+                        order_id,
+                        assigned_station=picker_name,
+                        order_assigned_time=self._tick,
+                        db_path=self.sqlite_db_path,
+                    )
             
-        assign_order_df.to_csv('assign_order.csv', index=False)
+        assign_order_df.to_csv(self.assign_order_csv, index=False)
 
     @staticmethod
     def _calculate_two_coordinates(p1, p2):
@@ -1292,7 +1626,13 @@ class Inventory(Universe):
                     "next_bin_avail": None,
                     "pre_assign": self.preassign_dict.get(order_id, None)
                 })
-        df = pd.DataFrame(df_dicts)
+        if not df_dicts:
+            df = pd.DataFrame(columns=[
+                "station_id", "order_id", "unpicked_skus", "pod_1", "pod_2", "pod_3",
+                "occupied_1", "occupied_2", "occupied_3", "next_bin_avail", "pre_assign"
+            ])
+        else:
+            df = pd.DataFrame(df_dicts)
         df = self.forcast_next_bin_avail(df)
         return df
 
@@ -1401,13 +1741,21 @@ class Inventory(Universe):
                     "next_bin_avail": None,
                     "pre_assign": self.preassign_dict.get(order_id, None)
                 })
-        df = pd.DataFrame(df_dicts)
+        if not df_dicts:
+            df = pd.DataFrame(columns=[
+                "station_id", "order_id", "unpicked_skus", "pod_1", "pod_2", "pod_3",
+                "occupied_1", "occupied_2", "occupied_3", "next_bin_avail", "pre_assign"
+            ])
+        else:
+            df = pd.DataFrame(df_dicts)
         df = self.forcast_next_bin_avail(df)
         df = self.pre_assign_order(df)
         print(df)
         return df
 
     def forcast_next_bin_avail(self, df):
+        if df.empty:
+            return df
         def parse_sku_qty_dict(value):
             if isinstance(value, dict):
                 return self._normalize_sku_qty_dict(value)
@@ -1463,6 +1811,8 @@ class Inventory(Universe):
         call choose_order with (station_id, pod_1, pod_2, pod_3),
         and store the result in 'pre_assign'.
         """
+        if df.empty:
+            return df
         print("PREASSIGN IS CALLED !!!!!!!")
         mask = (df['next_bin_avail'] == True) & (df['pre_assign'].isna())  # noqa: E712
         print(mask)
@@ -1754,7 +2104,8 @@ class Inventory(Universe):
                             idx,
                             val,
                             best_picker,
-                            best_value
+                            best_value,
+                            db_path=self.sqlite_db_path,
                         )
                     self.preassign_per_station[best_picker].append(idx)
                     next_bin_counts[best_picker] -= 1

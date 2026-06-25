@@ -1,0 +1,10 @@
+{
+  "profile": "ablation",
+  "scenario": "base",
+  "seed": 123,
+  "ticks": 100000,
+  "bootstrap_n_orders": 10000,
+  "detail_db": false,
+  "debug_trace": false,
+  "keep_runtime_artifacts": false
+}

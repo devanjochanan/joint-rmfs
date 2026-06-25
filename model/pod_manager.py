@@ -52,8 +52,16 @@ class PodManager:
             self.skus_data[sku]['current_global_qty'] -= quantity
             self.skus_data[sku]['global_inv_level'] = self.skus_data[sku]['current_global_qty'] / self.skus_data[sku]['max_global_qty']
 
+    def increase_sku_data(self, sku, quantity):
+        if sku in self.skus_data:
+            self.skus_data[sku]['current_global_qty'] += quantity
+            self.skus_data[sku]['global_inv_level'] = self.skus_data[sku]['current_global_qty'] / self.skus_data[sku]['max_global_qty']
+
     def get_all_skus_data(self):
         return self.skus_data
+
+    def get_all_pods(self):
+        return self.pods
     
     def is_sku_need_replenished(self, sku_id):
         print(f"sku_id {sku_id} level {self.skus_data[sku_id]['global_inv_level']}")
@@ -92,7 +100,12 @@ class PodManager:
         if sku in self.sku_to_pods:
             for pod in self.sku_to_pods[sku]:
                 # if pod.is_idle is True and pod.skus[sku]['current_qty'] > 0:
-                if self.is_idle(pod.pod_id) is True and pod.skus[sku]['current_qty'] > 0:
+                if (
+                    self.is_idle(pod.pod_id) is True
+                    and not getattr(pod, "is_awaiting_replenishment", False)
+                    and not getattr(pod, "must_replenish_before_pick", False)
+                    and pod.skus[sku]['current_qty'] > 0
+                ):
                     return pod
     #emily PPS
     # def get_available_pod_similarity(self, sku: str, skus_in_station, station_coordinate, robots_coordinate): # use in Emily's pod picking

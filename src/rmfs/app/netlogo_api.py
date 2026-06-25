@@ -16,6 +16,7 @@ import traceback
 from collections import defaultdict
 from typing import List
 import random
+import secrets
 import warnings
 
 import networkx as nx
@@ -26,21 +27,56 @@ import numpy as np
 from pandas import DataFrame
 from sklearn.cluster import KMeans
 
+from src.rmfs.runtime_io import RunContext
+from src.rmfs.runtime_io.detail_db import configure_detail_db, is_detail_db_configured
+from src.rmfs.runtime_io.logging import debug_print
+from src.rmfs.runtime_io.run_profiles import resolve_run_profile
+from src.rmfs.runtime_io.timing import timed
+from src.rmfs.runtime_io.scenario_bundle import (
+    activate_scenario_inputs as _activate_scenario_inputs,
+    list_available_scenarios as _list_available_scenarios,
+)
+from src.rmfs.runtime_io.layout_randomization import slot_index_to_pod_id
+from src.rmfs.decisions.pps import (
+    DEFAULT_PPS_MODEL_PATH,
+    pps_model_candidates,
+    configure_pps_rl_strategy,
+    runtime_set_pps_mode,
+    get_pps_mode,
+    load_pps_rl_model,
+    build_pps_rl_sku_index,
+    PPS_RL_NUM_STATIONS,
+    PPS_RL_TOP_K_SKUS,
+    PPS_RL_MAX_PODS,
+    PPS_RL_NUM_TRAFFIC_ZONES,
+    PPS_RL_MAX_ZONE_ROBOT_COUNT,
+    PPS_RL_TRAFFIC_ZONES,
+    PPS_RL_POD_FEATURE_DIM,
+    PPS_RL_MODEL_PATH,
+)
 from engine.netlogo_coordinate import NetLogoCoordinate
 from engine.object import Object
 from model.intersection import Intersection
 from model.inventory import Inventory
 from model.order import Order
-from model.order_generator import *
+from src.rmfs.order_generation import config_orders, generate_orders_from_raw_bootstrap, PodGenerator
 from model.pod import Pod
 from model.pod_manager import PodManager
 from model.robot import Robot
 from model.station import Station
 from model.layout import Layout
-from model.pod_generator import PodGenerator
 # DB
-from model.tools.pod_location import clear_pod_locations, initialize_pod_location_table, upsert_pod_location
-from model.tools.pod_travel import clear_pod_travel, initialize_pod_travel_table
+from model.tools.pod_location import (
+    clear_pod_locations,
+    configure_default_db_path as configure_default_pod_location_db_path,
+    initialize_pod_location_table,
+    upsert_pod_location,
+)
+from model.tools.pod_travel import (
+    clear_pod_travel,
+    configure_default_db_path as configure_default_pod_travel_db_path,
+    initialize_pod_travel_table,
+)
 from model.tools.job_task import clear_job_task_table, initialize_job_task_table, upsert_job_task
 from model.tools.order_history import clear_order_history, initialize_order_history_table
 
@@ -71,285 +107,209 @@ __all__ = [
     "add_all_direction_paths",
     "assign_skus_to_pods",
     "assign_skus_to_pods_from_file",
+    "activate_scenario_inputs",
+    "list_available_scenarios",
     # Public API (called by simulation.nlogo / profile_netlogo.py)
     "setup",
     "tick",
     "console_tick",
     "setup_py",
+    "get_run_context",
+    "configure_run_context",
+    "reset_run_context",
     "set_pps_mode",
     "set_sim_seed",
+    "get_sim_seed",
+    "set_order_cycle_time",
+    "get_order_cycle_time",
 ]
 
 ACTIVATE_NEAREST = True
+_RUN_CONTEXT = RunContext.default()
 
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-PPS_RL_NUM_STATIONS = 3
-PPS_RL_TOP_K_SKUS = 500
-PPS_RL_MAX_PODS = 60
-PPS_RL_NUM_TRAFFIC_ZONES = 5
-PPS_RL_MAX_ZONE_ROBOT_COUNT = 100.0
-PPS_RL_TRAFFIC_ZONES = (
-    ((5, 43), (0, 5)),
-    ((5, 43), (6, 11)),
-    ((5, 43), (12, 18)),
-    ((5, 43), (19, 24)),
-    ((5, 43), (25, 30)),
-)
-PPS_RL_POD_FEATURE_DIM = (
-    PPS_RL_TOP_K_SKUS
-    + PPS_RL_NUM_STATIONS
-    + PPS_RL_NUM_STATIONS
-    + PPS_RL_NUM_TRAFFIC_ZONES
-)
-PPS_RL_MODEL_PATH = os.environ.get(
-    "PPS_RL_MODEL_PATH",
-    os.path.join(_REPO_ROOT, "docs", "training_pps", "saved_models", "pps_rl_best.zip"),
-)
+def activate_scenario_inputs(scenario_name=None, target_root=None, dry_run=False):
+    return _activate_scenario_inputs(
+        scenario_name=scenario_name,
+        target_root=target_root,
+        dry_run=dry_run,
+    )
 
-_PPS_RL_MODEL = None
-_PPS_RL_LOAD_ATTEMPTED = False
-_PPS_RL_ACTIVE_LOGGED = False
-_PPS_MODE = os.environ.get("PPS_MODE", "ppo").strip().lower()
+
+def list_available_scenarios():
+    return _list_available_scenarios()
+
+
+def get_run_context():
+    return _RUN_CONTEXT
+
+
+def configure_run_context(context=None, runtime_root=None):
+    global _RUN_CONTEXT
+    if context is not None and runtime_root is not None:
+        raise ValueError("Pass either context or runtime_root, not both.")
+    if context is None:
+        context = RunContext.isolated(runtime_root) if runtime_root is not None else RunContext.default()
+    context.ensure_runtime_dirs()
+    _RUN_CONTEXT = context
+    return _RUN_CONTEXT
+
+
+def reset_run_context():
+    return configure_run_context(RunContext.default())
+
+
+def _path(name):
+    return getattr(get_run_context(), name)
+
+
+def _str_path(name):
+    return str(_path(name))
+
+
+def _maybe_activate_configured_scenario():
+    scenario_name = os.environ.get("RMFS_SCENARIO_NAME", "").strip()
+    if not scenario_name:
+        return None
+    metadata_path = get_run_context().runtime_root / "active_scenario.json"
+    metadata = _activate_scenario_inputs(
+        scenario_name=scenario_name,
+        target_root=str(get_run_context().input_root),
+        metadata_path=str(metadata_path),
+    )
+    if metadata is not None:
+        debug_print(
+            "[SCENARIO] "
+            f"{metadata['scenario_name']} "
+            f"items={metadata['items_rows']} "
+            f"pods={metadata['unique_pods']} "
+            f"input_root={get_run_context().input_root}"
+        )
+    return metadata
+
+
 _SIM_SEED = (
     int(os.environ["RMFS_SIM_SEED"])
     if os.environ.get("RMFS_SIM_SEED", "").strip()
     else None
 )
+_SIM_SEED_EXPLICIT = _SIM_SEED is not None
+_ORDER_CYCLE_TIME = int(os.environ.get("RMFS_ORDER_CYCLE_TIME", "500"))
 
 
 def set_sim_seed(seed):
-    """Set the Python backend random seed before setup() for reproducible runs."""
-    global _SIM_SEED
+    """Set a reproducible seed, or use 0/None to request a fresh setup seed."""
+    global _SIM_SEED, _SIM_SEED_EXPLICIT
 
-    _SIM_SEED = int(seed)
+    resolved = 0 if seed is None else int(seed)
+    if resolved == 0:
+        _SIM_SEED = None
+        _SIM_SEED_EXPLICIT = False
+        os.environ.pop("RMFS_SIM_SEED", None)
+        print("[SIM_SEED] Automatic random seed enabled for the next setup.")
+        return None
+    if resolved < 0:
+        raise ValueError("Simulation seed must be zero or a positive integer.")
+
+    _SIM_SEED = resolved
+    _SIM_SEED_EXPLICIT = True
+    os.environ["RMFS_SIM_SEED"] = str(_SIM_SEED)
     random.seed(_SIM_SEED)
     np.random.seed(_SIM_SEED)
     print(f"[SIM_SEED] Current simulation seed: {_SIM_SEED}")
     return _SIM_SEED
 
 
-def _apply_sim_seed():
-    if _SIM_SEED is not None:
-        random.seed(_SIM_SEED)
-        np.random.seed(_SIM_SEED)
+def get_sim_seed():
+    return _SIM_SEED
 
 
-def _pps_rl_enabled():
-    value = os.environ.get("PPS_RL_ENABLED", "1").strip().lower()
-    return _PPS_MODE == "ppo" and value not in {"0", "false", "no", "off"}
+def _prepare_setup_seed():
+    """Choose a fresh seed for unseeded runs and apply it to all RNGs."""
+    global _SIM_SEED
+
+    if not _SIM_SEED_EXPLICIT:
+        _SIM_SEED = secrets.randbelow(2_147_483_646) + 1
+    os.environ["RMFS_SIM_SEED"] = str(_SIM_SEED)
+    random.seed(_SIM_SEED)
+    np.random.seed(_SIM_SEED)
+    print(f"[SIM_SEED] Setup seed: {_SIM_SEED}")
+    return _SIM_SEED
 
 
-def _normalize_pps_mode(mode):
-    mode = str(mode).strip().lower().replace("-", "_").replace(" ", "_")
-    if mode in {"ppo", "rl", "pps_rl", "ppo_pps"}:
-        return "ppo"
-    if mode in {"random", "random_pps", "untrained", "untrained_ppo", "untrained_ppo_pps"}:
-        return "random"
-    if mode in {"rika", "rika_pps", "heuristic", "pile_on", "pileon", "baseline"}:
-        return "heuristic"
-    if mode in {"demand", "demand_pps"}:
-        return "demand"
-    return "ppo"
+def set_order_cycle_time(value):
+    """Set the shared order arrival rate in orders per simulated hour."""
+    global _ORDER_CYCLE_TIME
+
+    resolved = int(value)
+    if resolved <= 0:
+        raise ValueError("order_cycle_time must be a positive orders-per-hour value.")
+    _ORDER_CYCLE_TIME = resolved
+    os.environ["RMFS_ORDER_CYCLE_TIME"] = str(resolved)
+    print(f"[ORDER_CYCLE] Current order rate: {resolved} orders/hour")
+    return _ORDER_CYCLE_TIME
 
 
-def _pps_rl_model_candidates():
-    paths = [PPS_RL_MODEL_PATH]
-    if not PPS_RL_MODEL_PATH.endswith(".zip"):
-        paths.append(PPS_RL_MODEL_PATH + ".zip")
-    return paths
+def get_order_cycle_time():
+    env_value = os.environ.get("RMFS_ORDER_CYCLE_TIME", "").strip()
+    return int(env_value) if env_value else _ORDER_CYCLE_TIME
 
 
-def _ensure_numpy_pickle_compat():
-    """Allow NumPy 2.x SB3 archives to load in older NumPy 1.x environments."""
-    try:
-        import importlib
-        import sys
-        import numpy.core as numpy_core
-    except ImportError:
-        return
-
-    sys.modules.setdefault("numpy._core", numpy_core)
-    for submodule in (
-        "multiarray",
-        "umath",
-        "numeric",
-        "fromnumeric",
-        "_multiarray_umath",
-        "_methods",
-        "overrides",
-    ):
-        try:
-            module = importlib.import_module(f"numpy.core.{submodule}")
-        except Exception:
-            continue
-        sys.modules.setdefault(f"numpy._core.{submodule}", module)
+def _env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _pps_rl_model_matches_current_observation(model):
-    spaces = getattr(getattr(model, "observation_space", None), "spaces", None)
-    if not spaces:
-        return False
+def _env_int(name, default=None):
+    value = os.environ.get(name)
+    if value is None or str(value).strip() == "":
+        return default
+    return int(value)
 
-    required = {
-        "pod_features",
-        "station_features",
-        "num_candidates",
-        "zone_robot_counts",
-    }
-    if not required.issubset(spaces.keys()):
-        return False
 
-    return (
-        spaces["pod_features"].shape == (PPS_RL_MAX_PODS, PPS_RL_POD_FEATURE_DIM)
-        and spaces["station_features"].shape == (
-            PPS_RL_NUM_STATIONS,
-            PPS_RL_TOP_K_SKUS,
-        )
-        and spaces["num_candidates"].shape == (1,)
-        and spaces["zone_robot_counts"].shape == (PPS_RL_NUM_TRAFFIC_ZONES,)
+def _current_run_profile():
+    profile = os.environ.get("RMFS_RUN_PROFILE", "gui")
+    return resolve_run_profile(
+        profile,
+        run_horizon_ticks=_env_int("RMFS_RUN_HORIZON_TICKS"),
+        bootstrap_n_orders=_env_int("RMFS_BOOTSTRAP_N_ORDERS"),
+        demand_horizon_ticks=_env_int("RMFS_DEMAND_HORIZON_TICKS"),
+        demand_buffer_ticks=_env_int("RMFS_DEMAND_BUFFER_TICKS"),
+        order_generation_mode=os.environ.get("RMFS_ORDER_GENERATION_MODE"),
+        full_raw_order_replay=_env_bool("RMFS_FULL_RAW_ORDER_REPLAY", False),
+        detail_db=_env_bool("RMFS_DETAIL_DB", True) if os.environ.get("RMFS_DETAIL_DB") is not None else None,
+        pod_location_mode=os.environ.get("RMFS_POD_LOCATION_MODE"),
+        pod_location_seed=_env_int("RMFS_POD_LOCATION_SEED"),
+        seed=_SIM_SEED,
     )
 
 
-def _load_pps_rl_model():
-    global _PPS_RL_MODEL, _PPS_RL_LOAD_ATTEMPTED
-
-    if _PPS_RL_MODEL is not None:
-        return _PPS_RL_MODEL
-    if _PPS_RL_LOAD_ATTEMPTED or not _pps_rl_enabled():
-        return None
-
-    _PPS_RL_LOAD_ATTEMPTED = True
-    model_path = next((path for path in _pps_rl_model_candidates() if os.path.exists(path)), None)
-    if model_path is None:
-        print(f"[PPS_RL] Model not found at {PPS_RL_MODEL_PATH}. Using heuristic PPS.")
-        return None
-
-    try:
-        from stable_baselines3 import PPO
-        _ensure_numpy_pickle_compat()
-        model = PPO.load(model_path, device="cpu")
-        if not _pps_rl_model_matches_current_observation(model):
-            print(
-                "[PPS_RL] Loaded model uses the old observation shape. "
-                "Retrain PPO after the traffic-zone feature update."
-            )
-            return None
-        _PPS_RL_MODEL = model
-        print(f"[PPS_RL] Loaded PPO model from {model_path}")
-        return _PPS_RL_MODEL
-    except Exception:
-        print("[PPS_RL] Failed to load PPO model. Using heuristic PPS.")
-        traceback.print_exc()
-        return None
-
-
-def _build_pps_rl_sku_index(universe):
-    sku_ids = []
-    for csv_file, column in (("items.csv", "item_id"), ("skus_data.csv", "item_id")):
-        if not os.path.exists(csv_file):
-            continue
-        try:
-            df = pd.read_csv(csv_file, usecols=[column])
-            sku_ids = sorted(df[column].dropna().astype(int).unique().tolist())
-            if sku_ids:
-                break
-        except Exception:
-            sku_ids = []
-
-    if not sku_ids:
-        sku_set = set()
-        for pod in universe.pod_manager.pods:
-            for sku in pod.skus.keys():
-                try:
-                    sku_set.add(int(sku))
-                except (TypeError, ValueError):
-                    sku_set.add(sku)
-        sku_ids = sorted(sku_set)
-
-    return {sku: i for i, sku in enumerate(sku_ids[:PPS_RL_TOP_K_SKUS])}
-
-
-def _configure_pps_rl_strategy(universe):
-    """Enable PPO PPS when the model is available; otherwise keep heuristic PPS."""
-    global _PPS_RL_ACTIVE_LOGGED
-
-    if _PPS_MODE == "heuristic":
-        universe.pps_rl = False
-        universe.pps_rl_random = False
-        universe.pps_pileon = True
-        universe.pps_demand = False
-        return False
-
-    if _PPS_MODE == "demand":
-        universe.pps_rl = False
-        universe.pps_rl_random = False
-        universe.pps_pileon = False
-        universe.pps_demand = True
-        return False
-
-    if _PPS_MODE == "random":
-        universe.pps_pileon = False
-        universe.pps_demand = False
-        universe.pps_rl = True
-        universe.pps_rl_random = True
-        if not hasattr(universe, "pps_picked_quantity"):
-            universe.pps_picked_quantity = 0
-        if not hasattr(universe, "pps_pod_visits"):
-            universe.pps_pod_visits = 0
-        if not _PPS_RL_ACTIVE_LOGGED:
-            print("[PPS_RANDOM] NetLogo simulation is using random PPO-style PPS.")
-            _PPS_RL_ACTIVE_LOGGED = True
-        return True
-
-    if _load_pps_rl_model() is None:
-        universe.pps_rl = False
-        universe.pps_rl_random = False
-        universe.pps_pileon = True
-        universe.pps_demand = False
-        return False
-
-    universe.pps_pileon = False
-    universe.pps_demand = False
-    universe.pps_rl = True
-    universe.pps_rl_random = False
-
-    if not hasattr(universe, "pps_rl_sku_index"):
-        universe.pps_rl_sku_index = _build_pps_rl_sku_index(universe)
-    if not hasattr(universe, "pps_picked_quantity"):
-        universe.pps_picked_quantity = 0
-    if not hasattr(universe, "pps_pod_visits"):
-        universe.pps_pod_visits = 0
-
-    if not _PPS_RL_ACTIVE_LOGGED:
-        print("[PPS_RL] NetLogo simulation is using PPO for pick-pod selection.")
-        _PPS_RL_ACTIVE_LOGGED = True
-    return True
+def _apply_runtime_config(universe):
+    allocator = os.environ.get("RMFS_ROBOT_TASK_ALLOCATOR")
+    if allocator:
+        universe.robot_task_allocator = allocator
+    regret_k = _env_int("RMFS_REGRET_K")
+    if regret_k is not None:
+        universe.regret_k = regret_k
+    scope = os.environ.get("RMFS_TASK_ALLOCATOR_SCOPE")
+    if scope:
+        universe.task_allocator_scope = scope
+    universe.committed_next_reservations_enabled = _env_bool(
+        "RMFS_COMMITTED_NEXT_RESERVATIONS",
+        getattr(universe, "committed_next_reservations_enabled", False),
+    )
 
 
 def set_pps_mode(mode):
     """Switch PPS mode: 'ppo', 'random', 'heuristic'/'rika', or 'demand'."""
-    global _PPS_MODE, _PPS_RL_LOAD_ATTEMPTED, _PPS_RL_ACTIVE_LOGGED
-
-    _PPS_MODE = _normalize_pps_mode(mode)
-    if _PPS_MODE == "ppo" and _PPS_RL_MODEL is None:
-        _PPS_RL_LOAD_ATTEMPTED = False
-    _PPS_RL_ACTIVE_LOGGED = False
-
-    if os.path.exists("netlogo.state"):
-        try:
-            with open("netlogo.state", "rb") as file:
-                universe = pickle.load(file)
-            for obj in universe._objects:
-                obj.setUniverse(universe)
-            _configure_pps_rl_strategy(universe)
-            with open("netlogo.state", "wb") as file:
-                pickle.dump(universe, file)
-        except Exception:
-            traceback.print_exc()
-
-    print(f"[PPS_MODE] Current PPS mode: {_PPS_MODE}")
-    return _PPS_MODE
+    return runtime_set_pps_mode(
+        mode,
+        state_file_path=_str_path("state_file"),
+        items_csv=_str_path("items_csv"),
+        skus_data_csv=_str_path("skus_data_csv"),
+    )
 
 
 def _pps_rl_station_demands(universe, use_committed=True):
@@ -581,7 +541,7 @@ def _apply_pps_rl_policy(universe):
     if not _pps_rl_decision_needed(universe):
         return 0
 
-    if getattr(universe, "pps_rl_random", False) or _PPS_MODE == "random":
+    if getattr(universe, "pps_rl_random", False) or get_pps_mode() == "random":
         actions = np.random.randint(
             0,
             PPS_RL_NUM_STATIONS + 1,
@@ -590,7 +550,7 @@ def _apply_pps_rl_policy(universe):
         )
         return _execute_pps_rl_actions(universe, actions)
 
-    model = _load_pps_rl_model()
+    model = load_pps_rl_model()
     if model is None:
         return 0
 
@@ -638,6 +598,7 @@ class DirectedGraph:
     def __init__(self):
         """Initialize an instance with a directed graph."""
         self.graph = nx.DiGraph()
+        self._undirected_graph_cache = None
 
     @staticmethod
     def node_valid(node):
@@ -660,6 +621,7 @@ class DirectedGraph:
         """
         if self.node_valid(node):
             self.graph.add_node(node)
+            self._undirected_graph_cache = None
 
     def add_edge(self, start, end, weight):
         """Add an edge between two nodes with a weight if both nodes are valid.
@@ -671,6 +633,7 @@ class DirectedGraph:
         """
         if self.node_valid(start) and self.node_valid(end):
             self.graph.add_edge(start, end, weight=weight)
+            self._undirected_graph_cache = None
 
     @staticmethod
     def get_heading(p1: NetLogoCoordinate, p2: NetLogoCoordinate):
@@ -685,6 +648,19 @@ class DirectedGraph:
             else:
                 return 90
 
+    def _undirected_fallback_path(self, G, start, end):
+        """Return an emergency route when directed routing cannot connect nodes."""
+        try:
+            if G is self.graph:
+                if self._undirected_graph_cache is None:
+                    self._undirected_graph_cache = self.graph.to_undirected()
+                fallback_graph = self._undirected_graph_cache
+            else:
+                fallback_graph = G.to_undirected()
+            return nx.shortest_path(fallback_graph, source=start, target=end, weight='weight')
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+
     def dijkstra_modified(self, start, end, penalties, zone_boundary, avoid=None):
         """Find the shortest path between two nodes using Dijkstra's algorithm, avoiding specified nodes.
 
@@ -696,8 +672,8 @@ class DirectedGraph:
         Returns:
             list or None: The path from start to end if one exists, otherwise None.
         """
-        # Create a copy of the graph so we can modify it without affecting the original
-        G = self.graph.copy()
+        # Avoid copying the graph in the hot path. Copy only when avoid penalties are needed.
+        G = self.graph.copy() if avoid else self.graph
 
         # Increase the weight of the edges leading to and from the nodes to avoid
         if avoid:
@@ -724,8 +700,11 @@ class DirectedGraph:
             # Use Dijkstra's algorithm to find the shortest path
             path = nx.shortest_path(G, source=start, target=end, weight='weight', method='bellman-ford')
             return path
-        except nx.NetworkXNoPath:
-            return None
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            fallback_path = self._undirected_fallback_path(G, start, end)
+            if fallback_path is not None:
+                debug_print(f"[WARN] directed route unavailable from {start} to {end}; using undirected fallback.")
+            return fallback_path
 
     def dijkstra(self, start, end, avoid=None):
         """Find the shortest path between two nodes using Dijkstra's algorithm, avoiding specified nodes.
@@ -738,8 +717,8 @@ class DirectedGraph:
         Returns:
             list or None: The path from start to end if one exists, otherwise None.
         """
-        # Create a copy of the graph so we can modify it without affecting the original
-        G = self.graph.copy()
+        # Avoid copying the graph in the hot path. Copy only when avoid penalties are needed.
+        G = self.graph.copy() if avoid else self.graph
 
         # Increase the weight of the edges leading to and from the nodes to avoid
         if avoid:
@@ -755,8 +734,11 @@ class DirectedGraph:
             # Use Dijkstra's algorithm to find the shortest path
             path = nx.shortest_path(G, source=start, target=end, weight='weight', method='bellman-ford')
             return path
-        except nx.NetworkXNoPath:
-            return None
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            fallback_path = self._undirected_fallback_path(G, start, end)
+            if fallback_path is not None:
+                debug_print(f"[WARN] directed route unavailable from {start} to {end}; using undirected fallback.")
+            return fallback_path
 
 
 intersections: List[Intersection] = []
@@ -799,26 +781,43 @@ def initRobots(universe: Inventory):
 
     num_robot = 20  # Number of robots
 
-    robots = []
-    x_range = (5, 43)
-    y_range = (0, 30)
+    layout_frame = pd.read_csv(_str_path("generated_pod_csv"), header=None)
+    row_count, col_count = layout_frame.shape
+    x_min = min(5, max(0, col_count - 1))
+    x_max = max(x_min, col_count - 6)
+    y_min = 0
+    y_max = max(y_min, row_count - 1)
 
-    # Initialize a set to keep track of used coordinates
-    used_coordinates = set()
+    occupied_coordinates = {
+        (int(obj.pos_x), int(obj.pos_y))
+        for obj in universe._objects
+        if getattr(obj, "object_type", None) in {"pod", "picker", "replenishment", "station"}
+    }
+    candidate_coordinates = []
+    if universe.graph is not None:
+        for node in universe.graph.graph.nodes:
+            x, y = map(int, str(node).split(","))
+            if (
+                x_min <= x <= x_max
+                and y_min <= y <= y_max
+                and (x, y) not in occupied_coordinates
+            ):
+                candidate_coordinates.append((x, y))
+    if len(candidate_coordinates) < num_robot:
+        raise ValueError(
+            f"Not enough valid graph nodes to place {num_robot} robots; only found {len(candidate_coordinates)}"
+        )
 
-    # Generate the robots with random unique x and y coordinates
-    while len(robots) < num_robot:
-        x = random.randint(x_range[0], x_range[1])
-        y = random.randint(y_range[0], y_range[1])
-        if (x, y) not in used_coordinates:
-            robot = {
-                'velocity': 0,
-                'heading': 0,
-                'x': x,
-                'y': y
-            }
-            robots.append(robot)
-            used_coordinates.add((x, y))
+    random.shuffle(candidate_coordinates)
+    robots = [
+        {
+            'velocity': 0,
+            'heading': 0,
+            'x': x,
+            'y': y,
+        }
+        for x, y in candidate_coordinates[:num_robot]
+    ]
 
     # Iterate through each robot in the list to initialize and add to the universe
     for r in robots:
@@ -840,55 +839,38 @@ def initRobots(universe: Inventory):
 
 def draw_layout(universe):
     # Check if generated_pod.csv exists in the current directory
-    if os.path.exists('generated_pod.csv'):
+    if _path("generated_pod_csv").exists():
         print("Generated pod already exist, delete generated_pod.csv if you want to change")
         draw_layout_from_generated_file(universe)
     else:
         layout = Layout()
         # This one to generate new configuration
-        layout.generate()
+        layout.generate(output_path=_str_path("generated_pod_csv"))
         draw_layout_from_generated_file(universe)
 
 
 def draw_layout_from_generated_file(universe: Inventory):
     draw_storage_from_generated_file(universe)
 
-    # Config Orders
+    # Build the shared shuffled historical-order stream with cycle-rate arrivals.
     assign_skus_to_pods(universe.pod_manager)
+    run_profile = _current_run_profile()
     config_orders(
-        initial_order=100,
-        total_requested_item=500,  # Number of SKU in warehouse
-        # total_requested_item=1000,
-        items_orders_class_configuration={"A": 0.5, "B": 0.3, "C": 0.2}, # data 13
-        # items_orders_class_configuration={"A": 0.6, "B": 0.2, "C": 0.2}, # data 10 , 11 , 12
-        # items_orders_class_configuration={"A": 0.7, "B": 0.2, "C": 0.1},  # data 1 - 8 Item class configuration in warehouse
-        # items_orders_class_configuration={"A": 0.3, "B": 0.3, "C": 0.5}, # original
-        quantity_range=[1, 12],  # Quantity range of number of SKU in each order
-        order_cycle_time=500,  # Number of order per hour
-        order_period_time=9,  # the total hours
-        order_start_arrival_time=0,  # Start time of order arrival
-        date=1,
-        sim_ver=1,
-        dev_mode=False)
-    # Config Backlog Orders
-    config_orders(
-        initial_order=100,  # Initial order in backlog
-        total_requested_item=500,  # Number of SKU in warehouse
-        # total_requested_item=1000,
-        # items_orders_class_configuration={"A": 0.7, "B": 0.2, "C": 0.1},  # data 1 -8 # Item class configuration in warehouse
-        items_orders_class_configuration={"A": 0.5, "B": 0.3, "C": 0.2}, # data 13
-        # items_orders_class_configuration={"A": 0.6, "B": 0.2, "C": 0.2}, #data 10 , 11 , 12
-        # items_orders_class_configuration={"A": 0.3, "B": 0.3, "C": 0.5}, # original
-        quantity_range=[1, 12],  # Quantity range of number of SKU in each order
-        order_cycle_time=500,  # Number of order per hour
-        order_period_time=9,
-        order_start_arrival_time=0,
-        date=1,
-        sim_ver=2,
-        dev_mode=True)
+        seed=_SIM_SEED,
+        source_path=_str_path("raw_order_csv"),
+        target_dir=str(get_run_context().runtime_root),
+        items_csv_path=_str_path("items_csv"),
+        n_orders=run_profile.bootstrap_n_orders,
+        run_horizon_ticks=run_profile.run_horizon_ticks,
+        demand_horizon_ticks=run_profile.demand_horizon_ticks,
+        demand_buffer_ticks=run_profile.demand_buffer_ticks,
+        order_cycle_time=get_order_cycle_time(),
+        order_generation_mode=run_profile.order_generation_mode,
+        full_raw_order_replay=run_profile.full_raw_order_replay,
+        shuffle_full_order_sequence=True,
+        profile=run_profile.profile,
+    )
     initRobots(universe)
-    # Assign backlog clustering
-    assign_backlog_orders(universe)
 
     pod = list(universe.pod_manager.coordinate_to_pods.values())[0]
     destinations = [
@@ -960,20 +942,20 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
     temp = float('inf')
     new_order = None
 
-    orders_df = pd.read_csv('generated_order.csv')
+    orders_df = pd.read_csv(_str_path("generated_order_csv"))
 
-    file_path = 'assign_order.csv'
+    file_path = _str_path("assign_order_csv")
     if os.path.exists(file_path):
         assign_order_df = pd.read_csv(file_path)
         # pass
     else:
         assign_order_df = orders_df.copy()
-        assign_order_df['assigned_station'] = None
-        assign_order_df['assigned_pod'] = None
+        assign_order_df['assigned_station'] = pd.Series([None] * len(assign_order_df), dtype="object")
+        assign_order_df['assigned_pod'] = pd.Series([None] * len(assign_order_df), dtype="object")
         assign_order_df['status'] = -3
         assign_order_df['order_processed'] = None
         assign_order_df['order_finished'] = None
-        assign_order_df.to_csv('assign_order.csv', index=False)
+        assign_order_df.to_csv(_str_path("assign_order_csv"), index=False)
 
     unique_orders = set()
     order_sku_map = {}
@@ -992,7 +974,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'status'] = -1
             assign_order_df.loc[assign_order_df['order_id'] == new_order.order_id, 'order_processed'] = int(
                 universe.tick_to_second)
-            assign_order_df.to_csv('assign_order.csv', index=False)
+            assign_order_df.to_csv(_str_path("assign_order_csv"), index=False)
             new_order.assign_station(station_id)
             station = universe.station_manager.get_station_by_id(station_id)
             universe.order_manager.add_order(new_order)
@@ -1013,7 +995,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
 
 def assign_backlog_orders(universe: Inventory):
     # open file order
-    order_path = "generated_order.csv"
+    order_path = _str_path("generated_order_csv")
     data_order_df = pd.read_csv(order_path)
 
     # filter order_id < 0
@@ -1052,12 +1034,24 @@ def draw_storage_from_generated_file(universe: Inventory):
     pods_horizontal_length = 5
     pods_vertical_length = 2
     pod_counter = 0
+    pod_slot_counter = 0
+    pod_location_mode = os.environ.get("RMFS_POD_LOCATION_MODE", "fixed").strip().lower()
+    randomized_pod_ids = {}
+    if pod_location_mode == "randomize_slots":
+        seed_text = os.environ.get("RMFS_POD_LOCATION_SEED", "").strip()
+        randomization_seed = int(seed_text) if seed_text else (_SIM_SEED if _SIM_SEED is not None else 0)
+        randomized_pod_ids = slot_index_to_pod_id(
+            _str_path("generated_pod_csv"),
+            seed=randomization_seed,
+            mode=pod_location_mode,
+        )
+        debug_print(f"[POD_LOCATION] randomize_slots enabled with seed {randomization_seed}")
     graph = DirectedGraph()
     graph_pod = DirectedGraph()
     graph_pod.key = 'pod'
     universe.graph = graph
     universe.graph_pod = graph_pod
-    data = pd.read_csv("generated_pod.csv", header=None)
+    data = pd.read_csv(_str_path("generated_pod_csv"), header=None)
     total_rows = len(data)
     total_cols = 0
     for y, row in data.iterrows():
@@ -1093,14 +1087,16 @@ def draw_storage_from_generated_file(universe: Inventory):
                     if ACTIVATE_NEAREST:
                         universe.storage_manager.createStorage(x, y)
                 elif value == 1:
-                    obj = Pod(pod_counter)
+                    pod_id = randomized_pod_ids.get(pod_slot_counter, pod_counter)
+                    obj = Pod(pod_id)
                     if ACTIVATE_NEAREST:
                         storage = universe.storage_manager.createStorage(x, y)
                     pod_counter += 1
+                    pod_slot_counter += 1
                     # obj.coordinate = NetLogoCoordinate(x, y)
                     obj.pos_x = x
                     obj.pos_y = y
-                    upsert_pod_location(obj.pod_id, obj.pos_x, obj.pos_y)
+                    upsert_pod_location(obj.pod_id, obj.pos_x, obj.pos_y, db_path=_str_path("sqlite_db"))
                     
                     if ACTIVATE_NEAREST:
                         universe.storage_manager.addPodToStorage(obj, storage)
@@ -1309,6 +1305,7 @@ def draw_storage_from_generated_file(universe: Inventory):
 
 def construct_station_path(data: DataFrame, start_x, start_y, station_type: str, short_path=True):
     station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
+    row_count, col_count = data.shape
 
     if station_type not in ['picking', 'replenishment']:
         raise ValueError("station_type must be either 'picking' or 'replenishment'")
@@ -1322,12 +1319,12 @@ def construct_station_path(data: DataFrame, start_x, start_y, station_type: str,
 
     # go to bottom
     y, x = start_y + 1, start_x
-    while data.iloc[y, x] in (14, 17, 24, 27):
+    while 0 <= y < row_count and 0 <= x < col_count and data.iloc[y, x] in (14, 17, 24, 27):
         station_path.insert(0, NetLogoCoordinate(x, y))
 
         if data.iloc[y, x] in (17, 27):
             x += x_increment
-            while data.iloc[y, x] in (13, 23):
+            while 0 <= y < row_count and 0 <= x < col_count and data.iloc[y, x] in (13, 23):
                 station_path.insert(0, NetLogoCoordinate(x, y))
                 x += x_increment
 
@@ -1352,7 +1349,7 @@ def add_all_direction_paths(graph, obj_key, weight):
 
 def assign_skus_to_pods(pod_manager):
     # Check if pods.csv exists in the current directory
-    if os.path.exists('pods.csv'):
+    if _path("pods_csv").exists():
         assign_skus_to_pods_from_file(pod_manager)
     else:
         # Fungsi generate pods.csv
@@ -1377,7 +1374,7 @@ def assign_skus_to_pods(pod_manager):
 
 def assign_skus_to_pods_from_file(pod_manager: PodManager):
 
-    with open('pods.csv', mode='r', newline='') as file:
+    with open(_str_path("pods_csv"), mode='r', newline='') as file:
         reader = csv.DictReader(file)
         for row in reader:
             pod_id = int(row['pod_id'])
@@ -1396,7 +1393,7 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             # Add SKU Data of level
             pod_manager.add_sku_data(sku, current_qty, limit_qty, global_threshold_inv_level)
 
-    csv_file = 'skus_data.csv'
+    csv_file = _str_path("skus_data_csv")
     if os.path.exists(csv_file):
         os.remove(csv_file)
     skus_data = pod_manager.get_all_skus_data()
@@ -1408,55 +1405,84 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
             writer.writerow([key, value['current_global_qty'], value['max_global_qty'], value['global_inv_level']])
 
     pod_info = pd.DataFrame(columns=["pod_id", "item_id", "qty", "order_id", "processed_time", "task_type"])
-    pod_info.to_csv("pod_info.csv", index=False)
+    pod_info.to_csv(_str_path("pod_info_csv"), index=False)
 
     print(f"Data has been saved to {csv_file}")
     df = pd.read_csv(csv_file)
     df_sorted = df.sort_values(by='item_id')
-    sorted_csv_file = 'sorted_skus_data.csv'
+    sorted_csv_file = _str_path("sorted_skus_data_csv")
     df_sorted.to_csv(sorted_csv_file, index=False)
 
 
 def setup():
     try:
-        _apply_sim_seed()
+        ctx = get_run_context()
+        ctx.ensure_runtime_dirs()
+        _maybe_activate_configured_scenario()
+        _prepare_setup_seed()
         # Initiate DB
         from datetime import datetime
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        db_path = _str_path("sqlite_db")
+        if not is_detail_db_configured():
+            detail_env = os.environ.get("RMFS_DETAIL_DB")
+            if detail_env is None:
+                detail_enabled = (
+                    os.environ.get("RMFS_FAST_TRAIN", "0").strip().lower()
+                    not in {"1", "true", "yes", "on"}
+                )
+            else:
+                detail_enabled = detail_env.strip().lower() in {"1", "true", "yes", "on"}
+            configure_detail_db(enabled=detail_enabled, db_path=db_path)
+        configure_default_pod_location_db_path(db_path)
+        configure_default_pod_travel_db_path(db_path)
 
-        initialize_job_task_table(timestamp)
-        initialize_order_history_table(timestamp)
-        initialize_pod_location_table(timestamp)
-        initialize_pod_travel_table(timestamp)
+        initialize_job_task_table(timestamp, db_path=db_path)
+        initialize_order_history_table(timestamp, db_path=db_path)
+        initialize_pod_location_table(timestamp, db_path=db_path)
+        initialize_pod_travel_table(timestamp, db_path=db_path)
 
-        clear_job_task_table()
-        clear_order_history()
-        clear_pod_locations()
-        clear_pod_travel()
+        clear_job_task_table(db_path=db_path)
+        clear_order_history(db_path=db_path)
+        clear_pod_locations(db_path=db_path)
+        clear_pod_travel(db_path=db_path)
         # Initialize the simulation universe
-        assignment_path = "assign_order.csv"
+        assignment_path = _str_path("assign_order_csv")
         if os.path.exists(assignment_path):
             os.remove(assignment_path)
 
-        pod_info = "pod_info.csv"
+        pod_info = _str_path("pod_info_csv")
         if os.path.exists(pod_info):
             os.remove(pod_info)
-        universe = Inventory()
+
+        # The order stream is regenerated on every setup so bootstrap seeds take
+        # effect immediately and no stale synthetic files are reused.
+        for generated_attr in (
+            "generated_order_csv",
+            "generated_database_order_csv",
+            "generated_order_meta_json",
+        ):
+            generated_path = _str_path(generated_attr)
+            if os.path.exists(generated_path):
+                os.remove(generated_path)
+        universe = Inventory(runtime_paths=ctx.inventory_paths(), sqlite_db_path=db_path)
+        _apply_runtime_config(universe)
 
         # Populate the universe with objects and connections
         draw_layout(universe)
 
         # Set simulation parameters
         universe.tick_to_second = 0.15
-        _configure_pps_rl_strategy(universe)
+        configure_pps_rl_strategy(universe, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
 
         # Generate initial results
         next_result = universe.generateResult()
 
         # Save the universe state for future ticks
-        with open('netlogo.state', 'wb') as config_dictionary_file:
-            pickle.dump(universe, config_dictionary_file)
+        with timed("pickle_dump"):
+            with open(_str_path("state_file"), 'wb') as config_dictionary_file:
+                pickle.dump(universe, config_dictionary_file)
 
         # Return only the first element (object positions) as NetLogo setup doesn't need station info
         return next_result[0]
@@ -1470,13 +1496,14 @@ def setup():
 def tick():
     try:
         # Load the simulation state
-        with open('netlogo.state', 'rb') as file:
-            universe: Inventory = pickle.load(file)
+        with timed("pickle_load"):
+            with open(_str_path("state_file"), 'rb') as file:
+                universe: Inventory = pickle.load(file)
 
         # Update each object with the current universe context
         for _n in universe._objects:
             _n.setUniverse(universe)
-        _configure_pps_rl_strategy(universe)
+        configure_pps_rl_strategy(universe, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
 
         # Perform a simulation tick
         next_result = universe.tick()
@@ -1485,8 +1512,9 @@ def tick():
             return IndexError
 
         # Save updated state
-        with open('netlogo.state', 'wb') as config_dictionary_file:
-            pickle.dump(universe, config_dictionary_file)
+        with timed("pickle_dump"):
+            with open(_str_path("state_file"), 'wb') as config_dictionary_file:
+                pickle.dump(universe, config_dictionary_file)
 
         # Return all required information for NetLogo
         # next_result[0] contains object positions
@@ -1504,13 +1532,14 @@ def tick():
 def console_tick():
     try:
         # Load the simulation state
-        with open('netlogo.state', 'rb') as file:
-            universe: Inventory = pickle.load(file)
+        with timed("pickle_load"):
+            with open(_str_path("state_file"), 'rb') as file:
+                universe: Inventory = pickle.load(file)
 
         # Update each object with the current universe context
         for _n in universe._objects:
             _n.setUniverse(universe)
-        _configure_pps_rl_strategy(universe)
+        configure_pps_rl_strategy(universe, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
         while True:
             # Perform a simulation tick
             next_result = universe.tick()
@@ -1519,8 +1548,9 @@ def console_tick():
                 return IndexError
 
         # Save updated state
-        with open('netlogo.state', 'wb') as config_dictionary_file:
-            pickle.dump(universe, config_dictionary_file)
+        with timed("pickle_dump"):
+            with open(_str_path("state_file"), 'wb') as config_dictionary_file:
+                pickle.dump(universe, config_dictionary_file)
 
         # Return all required information for NetLogo
         # next_result[0] contains object positions
