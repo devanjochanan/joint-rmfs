@@ -354,14 +354,17 @@ def generate_orders_from_raw_bootstrap(
     if source_unique_orders <= 0:
         raise ValueError("Bootstrap source contains no valid unique orders.")
 
+    if resolved_mode == "shuffled_historical_cycle":
+        resolved_shuffle_full_sequence = True
+
     if resolved_shuffle_full_sequence:
         if resolved_order_cycle_time is None:
             raise ValueError(
-                "order_cycle_time is required when shuffle_full_order_sequence=True."
+                "order_cycle_time is required when resolved_mode == 'shuffled_historical_cycle' or shuffle_full_order_sequence=True."
             )
         resolved_n_orders = source_unique_orders
         resolved_full_raw_replay = False
-        resolved_mode = "shuffled_full_cycle"
+        resolved_mode = "shuffled_historical_cycle"
     elif resolved_n_orders is None and not resolved_full_raw_replay:
         resolved_full_raw_replay = True
         resolved_mode = "legacy_compat"
@@ -425,8 +428,8 @@ def generate_orders_from_raw_bootstrap(
         "items_csv_path": str(Path(items_csv_path)) if items_csv_path else None,
         "target_dir": str(output_dir),
         "seed": int(resolved_seed),
-        "n_orders": int(resolved_n_orders),
-        "bootstrap_n_orders": int(resolved_n_orders),
+        "n_orders": None if resolved_mode == "shuffled_historical_cycle" else int(resolved_n_orders),
+        "bootstrap_n_orders": None if resolved_mode == "shuffled_historical_cycle" else int(resolved_n_orders),
         "run_horizon_ticks": policy.run_horizon_ticks,
         "demand_horizon_ticks": policy.demand_horizon_ticks,
         "demand_buffer_ticks": policy.demand_buffer_ticks,

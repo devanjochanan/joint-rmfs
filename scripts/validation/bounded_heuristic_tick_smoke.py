@@ -49,10 +49,9 @@ def main() -> int:
     env_keys = {
         "RMFS_RUN_PROFILE": "smoke",
         "RMFS_RUN_HORIZON_TICKS": "3",
-        "RMFS_BOOTSTRAP_N_ORDERS": "100",
         "RMFS_DEMAND_HORIZON_TICKS": "1003",
         "RMFS_DEMAND_BUFFER_TICKS": "1000",
-        "RMFS_ORDER_GENERATION_MODE": "controlled_count",
+        "RMFS_ORDER_GENERATION_MODE": "shuffled_historical_cycle",
         "RMFS_FULL_RAW_ORDER_REPLAY": "0",
         "RMFS_DETAIL_DB": "0",
         "RMFS_FAST_TRAIN": "1",

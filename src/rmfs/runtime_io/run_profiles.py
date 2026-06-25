@@ -48,10 +48,10 @@ _PROFILES = {
     "smoke": RunProfile(
         profile="smoke",
         run_horizon_ticks=100,
-        bootstrap_n_orders=100,
+        bootstrap_n_orders=None,
         demand_horizon_ticks=1_100,
         demand_buffer_ticks=1_000,
-        order_generation_mode="controlled_count",
+        order_generation_mode="shuffled_historical_cycle",
         full_raw_order_replay=False,
         detail_db=False,
         debug_trace=False,
@@ -61,10 +61,10 @@ _PROFILES = {
     "training": RunProfile(
         profile="training",
         run_horizon_ticks=5_000,
-        bootstrap_n_orders=1_000,
+        bootstrap_n_orders=None,
         demand_horizon_ticks=6_000,
         demand_buffer_ticks=1_000,
-        order_generation_mode="controlled_count",
+        order_generation_mode="shuffled_historical_cycle",
         full_raw_order_replay=False,
         detail_db=False,
         debug_trace=False,
@@ -74,10 +74,10 @@ _PROFILES = {
     "ablation": RunProfile(
         profile="ablation",
         run_horizon_ticks=100_000,
-        bootstrap_n_orders=10_000,
+        bootstrap_n_orders=None,
         demand_horizon_ticks=105_000,
         demand_buffer_ticks=5_000,
-        order_generation_mode="controlled_count",
+        order_generation_mode="shuffled_historical_cycle",
         full_raw_order_replay=False,
         detail_db=False,
         debug_trace=False,
@@ -87,10 +87,10 @@ _PROFILES = {
     "debug": RunProfile(
         profile="debug",
         run_horizon_ticks=100,
-        bootstrap_n_orders=100,
+        bootstrap_n_orders=None,
         demand_horizon_ticks=1_100,
         demand_buffer_ticks=1_000,
-        order_generation_mode="controlled_count",
+        order_generation_mode="shuffled_historical_cycle",
         full_raw_order_replay=False,
         detail_db=True,
         debug_trace=True,
@@ -103,7 +103,7 @@ _PROFILES = {
         bootstrap_n_orders=None,
         demand_horizon_ticks=None,
         demand_buffer_ticks=0,
-        order_generation_mode="legacy_compat",
+        order_generation_mode="shuffled_historical_cycle",
         full_raw_order_replay=False,
         detail_db=True,
         debug_trace=False,
@@ -143,13 +143,23 @@ def resolve_run_profile(
     if demand_horizon is None:
         demand_horizon = None if horizon is None else int(horizon) + int(buffer_ticks)
     pod_seed = pod_location_seed if pod_location_seed is not None else seed
+
+    # Authoritative mode selection
+    mode = resolved.order_generation_mode if order_generation_mode is None else order_generation_mode
+
+    # Enforce bootstrap_n_orders is None if the mode is shuffled_historical_cycle
+    if mode == "shuffled_historical_cycle":
+        n_orders_val = None
+    else:
+        n_orders_val = resolved.bootstrap_n_orders if bootstrap_n_orders is None else int(bootstrap_n_orders)
+
     return replace(
         resolved,
         run_horizon_ticks=horizon,
-        bootstrap_n_orders=resolved.bootstrap_n_orders if bootstrap_n_orders is None else int(bootstrap_n_orders),
+        bootstrap_n_orders=n_orders_val,
         demand_horizon_ticks=demand_horizon,
         demand_buffer_ticks=buffer_ticks,
-        order_generation_mode=resolved.order_generation_mode if order_generation_mode is None else order_generation_mode,
+        order_generation_mode=mode,
         full_raw_order_replay=resolved.full_raw_order_replay if full_raw_order_replay is None else bool(full_raw_order_replay),
         detail_db=resolved.detail_db if detail_db is None else bool(detail_db),
         debug_trace=resolved.debug_trace if debug_trace is None else bool(debug_trace),

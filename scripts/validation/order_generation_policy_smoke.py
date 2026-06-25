@@ -30,7 +30,7 @@ def main() -> int:
     base = REPO_ROOT / "data" / "input" / "base"
     protected = [base / "items.csv", base / "pods.csv", base / "generated_pod.csv", base / "raw_order.csv"]
     before = {path: sha256(path) for path in protected}
-    smoke_profile = resolve_run_profile("smoke", run_horizon_ticks=100, bootstrap_n_orders=25, seed=123)
+    smoke_profile = resolve_run_profile("smoke", run_horizon_ticks=100, bootstrap_n_orders=25, order_generation_mode="controlled_count", seed=123)
     ablation_profile = resolve_run_profile("ablation")
     if ablation_profile.run_horizon_ticks != 100_000:
         raise SystemExit("ablation profile should default to 100000 ticks")

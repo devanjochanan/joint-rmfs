@@ -867,7 +867,6 @@ def draw_layout_from_generated_file(universe: Inventory):
         order_cycle_time=get_order_cycle_time(),
         order_generation_mode=run_profile.order_generation_mode,
         full_raw_order_replay=run_profile.full_raw_order_replay,
-        shuffle_full_order_sequence=True,
         profile=run_profile.profile,
     )
     initRobots(universe)
