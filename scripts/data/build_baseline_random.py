@@ -18,7 +18,7 @@ from __future__ import annotations
 import sys, json, csv, random, argparse
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]   # scripts/data/<file> -> repo root
 sys.path.insert(0, str(ROOT))
 
 # Baseline policy (Monch et al. 2018; Zou et al. 2018): 20% low / 90% upper;

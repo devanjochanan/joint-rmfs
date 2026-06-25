@@ -67,6 +67,17 @@ class Robot(Object):
     e_frot = 0
     e_lift = 0
     e_lu = 0
+
+    # ── Battery spec (commercial AGV; see paper Energy Model) — PATCH A1 ──
+    BATTERY_CAPACITY_J = 6_480_000.0     # 1.8 kWh
+    BASE_DRAIN_RATE_PER_S = 90.0         # electronics drain, J/s
+    CHARGE_POWER_W = 397.6               # 28 A x 14.2 V
+    INITIAL_BATTERY_FRAC = 1.0           # start-of-shift SoC fraction
+    # ── Charging policy (config-driven; netlogo overwrites these at setup) ──
+    BATTERY_LOW_PCT = 20.0               # go charge below this %
+    BATTERY_CHARGED_PCT = 90.0           # stop charging above this %
+    BATTERY_INTERRUPT_PCT = 50.0         # interrupt threshold %
+    CORRECTED_ENERGY_MODEL = False
     
     
     
@@ -87,11 +98,78 @@ class Robot(Object):
         self.current_intersection_start_time = None
         self.current_intersection_finish_time = None
         self.warehouse = universe
-        self.return_fix = False 
+        # ── Battery + charging state — PATCH A2 ──
+        self.battery_level_j = self.BATTERY_CAPACITY_J * self.INITIAL_BATTERY_FRAC
+        self.is_charging = False
+        self._claimed_charger = None
+        self.return_fix = False
         self.return_nearest = True 
         # self.zone_boundary =[]
         # self.zone: Optional[Zone] = None
         super().__init__()
+
+    # ── Battery + charging methods — PATCH A3/A4 ──────────────────────────
+    @property
+    def battery_pct(self):
+        return (self.battery_level_j / self.BATTERY_CAPACITY_J) * 100.0
+
+    def _apply_drive_by_charging(self):
+        charger_cells = getattr(self.universe, 'charger_cells', set())
+        grid_pos = (round(self.pos_x), round(self.pos_y))
+        if grid_pos in charger_cells:
+            charge_j = self.CHARGE_POWER_W * self.universe.tick_to_second
+            self.battery_level_j = min(self.BATTERY_CAPACITY_J,
+                                       self.battery_level_j + charge_j)
+            self.is_charging = True
+        else:
+            self.is_charging = False
+
+    def _start_charging_trip(self):
+        active = getattr(self.universe, 'active_charger_cells', None) or set()
+        charger_cells = active if active else getattr(self.universe, 'charger_cells', set())
+        if not charger_cells:
+            return False
+        occupied = getattr(self.universe, 'occupied_chargers', {})
+        available = charger_cells - set(occupied.keys())
+        if not available:
+            return False
+        min_dist = float('inf'); nearest = None
+        for (cx, cy) in available:
+            d = (cx - self.pos_x) ** 2 + (cy - self.pos_y) ** 2   # squared dist (no math import needed)
+            if d < min_dist:
+                min_dist = d; nearest = (cx, cy)
+        if nearest is None:
+            return False
+        dest = NetLogoCoordinate(nearest[0], nearest[1])
+        try:
+            self.set_move(dest, graph=self.universe.graph)
+            self.current_state = "going_to_charge"
+            occupied[nearest] = self.id            # claim the charger
+            self._claimed_charger = nearest
+            return True
+        except Exception:
+            return False
+
+    def _should_interrupt_charging(self):
+        if self.battery_pct <= self.BATTERY_INTERRUPT_PCT:
+            return False
+        if not len(getattr(self.universe, 'job_queue', [])):
+            return False
+        for o in self.universe.get_movable_objects():
+            if (getattr(o, 'object_type', None) == 'robot' and o is not self
+                    and o.current_state == 'idle'
+                    and getattr(o, 'battery_level_j', 0) > 0):
+                return False
+        return True
+
+    def _release_charger(self):
+        cell = getattr(self, '_claimed_charger', None)
+        if cell is None:
+            return
+        occupied = getattr(self.universe, 'occupied_chargers', {})
+        if occupied.get(cell) == self.id:
+            del occupied[cell]
+        self._claimed_charger = None
 
     @staticmethod
     def _checkMovementDirection(p1, p2):
@@ -263,6 +341,8 @@ class Robot(Object):
             'delivering_pod': 3,
             'returning_pod': 2,
             'taking_pod': 1,
+            'going_to_charge': 0,
+            'dead': 0,
             'idle': 0
         }
         is_replenish = False
@@ -374,6 +454,13 @@ class Robot(Object):
             station.coordinate, 0.1)
 
     def movementPlan(self):
+        # ── PATCH A: arrived at charger -> charge until 90% (or interrupt) ──
+        if self.current_state == "going_to_charge" and not self.route_stop_points:
+            if (self.battery_pct >= self.BATTERY_CHARGED_PCT
+                    or self._should_interrupt_charging()):
+                self._release_charger()
+                self.current_state = "idle"
+            return  # stay put; _apply_drive_by_charging adds charge each tick
         if self.picking_item_in_pod():
             # print(f"robot {self.id} picking_item_in_pod")
             # print(f"robot job {self.job} and is_being_process {self.is_being_process_on_station()}")
@@ -774,13 +861,64 @@ class Robot(Object):
 
     def move(self):
         self.changeColorByState()
+
+        # ── PATCH A5: charging lifecycle — OPT-IN (universe.charging_enabled) ──
+        # When charging is disabled (team default), none of this runs and the
+        # robot behaves exactly as before (no battery drain, no charging).
+        if getattr(self.universe, "charging_enabled", False):
+            if self._charging_pre_move():
+                return   # robot is dead/parked this tick -> skip movement
+
         try:
             self.movementPlan()
         except Exception as e:
             print(f"Error in robot {self.id} with robotjob {self.job}")
             raise e
 
+        if getattr(self.universe, "charging_enabled", False):
+            self._apply_drive_by_charging()   # drive-by charge, every tick
+
         self.latest_tick += 1
+
+    def _charging_pre_move(self):
+        """Battery drain + charge triggers (run only when charging enabled).
+        Returns True if the robot is dead/parked this tick so move() skips
+        the movement step."""
+        # Dead-robot handling: battery fully drained -> park in place.
+        if self.battery_level_j <= 0.0 and self.current_state != "dead":
+            self._release_charger()
+            self.velocity = 0; self.acceleration = 0
+            self.route_stop_points = []
+            self.current_state = "dead"
+            self.universe.landscape.setObject(
+                self.robotName(), self.pos_x, self.pos_y,
+                self.velocity, self.acceleration, self.heading,
+                self.current_state, self.load_mass)
+            return True
+        if self.current_state == "dead":
+            return True
+        # Base operational drain (skipped while plugged in / charging).
+        if not self.is_charging:
+            self.battery_level_j = max(0.0, self.battery_level_j
+                                       - self.BASE_DRAIN_RATE_PER_S * self.universe.tick_to_second)
+        # Trigger: idle + low battery -> go to nearest charger.
+        if (self.current_state == "idle"
+                and (self.job is None or getattr(self.job, "is_finished", True))
+                and self.battery_pct < self.BATTERY_LOW_PCT
+                and not getattr(self.universe, "disable_active_charging", False)):
+            self._start_charging_trip()
+        # Preemptive: abort taking_pod if low (return job to queue first).
+        elif (self.current_state == "taking_pod"
+                and self.battery_pct < self.BATTERY_LOW_PCT
+                and not self.is_charging
+                and not getattr(self.universe, "disable_active_charging", False)):
+            if self.job is not None and not getattr(self.job, "is_finished", False):
+                self.warehouse.job_queue.append(self.job)
+            self.job = None; self.route_stop_points = []
+            self.velocity = 0; self.acceleration = 0
+            self.current_state = "idle"
+            self._start_charging_trip()
+        return False
 
     def drawNextPosition(self):
         initial_velocity = self.velocity
@@ -788,6 +926,9 @@ class Robot(Object):
 
         energy = self.calculateEnergy(initial_velocity, initial_acceleration)
         self.energy_consumption += energy
+        # ── PATCH A6: drain battery by motion energy this tick (opt-in) ──
+        if getattr(self.universe, "charging_enabled", False):
+            self.battery_level_j = max(0.0, self.battery_level_j - energy)
 
         if self.velocity != 0:
             distance_delta = self.velocity * self.universe.tick_to_second
