@@ -1551,7 +1551,7 @@ def tick():
         # Perform a simulation tick
         next_result = universe.tick()
         _apply_pps_rl_policy(universe)
-        if universe._tick > 28800:
+        if universe._tick > 100000:   # full horizon = 100k sim-sec (27 sim-hr); was 28800
             return IndexError
 
         # Save updated state
@@ -1587,7 +1587,7 @@ def console_tick():
             # Perform a simulation tick
             next_result = universe.tick()
             _apply_pps_rl_policy(universe)
-            if universe._tick > 28800:
+            if universe._tick > 100000:   # full horizon = 100k sim-sec (27 sim-hr); was 28800
                 return IndexError
 
         # Save updated state
