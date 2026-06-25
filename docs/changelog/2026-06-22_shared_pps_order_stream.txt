@@ -1,0 +1,17 @@
+SHARED PPS ORDER STREAM UPDATE
+Date: 2026-06-22
+
+- NetLogo GUI, the headless PPS backend runner, and PPS RL training now call
+  the same order generator.
+- Each run or episode randomly permutes all valid historical orders from
+  data/input/base/raw_order.csv while preserving each order's SKU quantities.
+- Interarrival gaps are random and controlled by order_cycle_time, interpreted
+  as orders per simulated hour. The default is 500.
+- Added an order_cycle_time input to simulation.nlogo.
+- Added --order-cycle-time to run_pps_backend_episode.py.
+- A zero or omitted GUI/backend seed creates and reports a fresh random seed;
+  a positive seed reproduces the order sequence and arrival times.
+- PPS training passes its changing episode seed directly to the shared
+  generator, avoiding stale cached seeds and duplicate order generation.
+- generated_order_meta.json records the seed, cycle rate, arrival mode, and
+  shuffled-full-sequence setting for auditability.

@@ -16,6 +16,7 @@ import traceback
 from collections import defaultdict
 from typing import List
 import random
+import secrets
 import warnings
 
 import networkx as nx
@@ -118,6 +119,9 @@ __all__ = [
     "reset_run_context",
     "set_pps_mode",
     "set_sim_seed",
+    "get_sim_seed",
+    "set_order_cycle_time",
+    "get_order_cycle_time",
 ]
 
 ACTIVATE_NEAREST = True
@@ -189,23 +193,66 @@ _SIM_SEED = (
     if os.environ.get("RMFS_SIM_SEED", "").strip()
     else None
 )
+_SIM_SEED_EXPLICIT = _SIM_SEED is not None
+_ORDER_CYCLE_TIME = int(os.environ.get("RMFS_ORDER_CYCLE_TIME", "500"))
 
 
 def set_sim_seed(seed):
-    """Set the Python backend random seed before setup() for reproducible runs."""
-    global _SIM_SEED
+    """Set a reproducible seed, or use 0/None to request a fresh setup seed."""
+    global _SIM_SEED, _SIM_SEED_EXPLICIT
 
-    _SIM_SEED = int(seed)
+    resolved = 0 if seed is None else int(seed)
+    if resolved == 0:
+        _SIM_SEED = None
+        _SIM_SEED_EXPLICIT = False
+        os.environ.pop("RMFS_SIM_SEED", None)
+        print("[SIM_SEED] Automatic random seed enabled for the next setup.")
+        return None
+    if resolved < 0:
+        raise ValueError("Simulation seed must be zero or a positive integer.")
+
+    _SIM_SEED = resolved
+    _SIM_SEED_EXPLICIT = True
+    os.environ["RMFS_SIM_SEED"] = str(_SIM_SEED)
     random.seed(_SIM_SEED)
     np.random.seed(_SIM_SEED)
     print(f"[SIM_SEED] Current simulation seed: {_SIM_SEED}")
     return _SIM_SEED
 
 
-def _apply_sim_seed():
-    if _SIM_SEED is not None:
-        random.seed(_SIM_SEED)
-        np.random.seed(_SIM_SEED)
+def get_sim_seed():
+    return _SIM_SEED
+
+
+def _prepare_setup_seed():
+    """Choose a fresh seed for unseeded runs and apply it to all RNGs."""
+    global _SIM_SEED
+
+    if not _SIM_SEED_EXPLICIT:
+        _SIM_SEED = secrets.randbelow(2_147_483_646) + 1
+    os.environ["RMFS_SIM_SEED"] = str(_SIM_SEED)
+    random.seed(_SIM_SEED)
+    np.random.seed(_SIM_SEED)
+    print(f"[SIM_SEED] Setup seed: {_SIM_SEED}")
+    return _SIM_SEED
+
+
+def set_order_cycle_time(value):
+    """Set the shared order arrival rate in orders per simulated hour."""
+    global _ORDER_CYCLE_TIME
+
+    resolved = int(value)
+    if resolved <= 0:
+        raise ValueError("order_cycle_time must be a positive orders-per-hour value.")
+    _ORDER_CYCLE_TIME = resolved
+    os.environ["RMFS_ORDER_CYCLE_TIME"] = str(resolved)
+    print(f"[ORDER_CYCLE] Current order rate: {resolved} orders/hour")
+    return _ORDER_CYCLE_TIME
+
+
+def get_order_cycle_time():
+    env_value = os.environ.get("RMFS_ORDER_CYCLE_TIME", "").strip()
+    return int(env_value) if env_value else _ORDER_CYCLE_TIME
 
 
 def _env_bool(name, default=False):
@@ -551,6 +598,7 @@ class DirectedGraph:
     def __init__(self):
         """Initialize an instance with a directed graph."""
         self.graph = nx.DiGraph()
+        self._undirected_graph_cache = None
 
     @staticmethod
     def node_valid(node):
@@ -573,6 +621,7 @@ class DirectedGraph:
         """
         if self.node_valid(node):
             self.graph.add_node(node)
+            self._undirected_graph_cache = None
 
     def add_edge(self, start, end, weight):
         """Add an edge between two nodes with a weight if both nodes are valid.
@@ -584,6 +633,7 @@ class DirectedGraph:
         """
         if self.node_valid(start) and self.node_valid(end):
             self.graph.add_edge(start, end, weight=weight)
+            self._undirected_graph_cache = None
 
     @staticmethod
     def get_heading(p1: NetLogoCoordinate, p2: NetLogoCoordinate):
@@ -598,6 +648,19 @@ class DirectedGraph:
             else:
                 return 90
 
+    def _undirected_fallback_path(self, G, start, end):
+        """Return an emergency route when directed routing cannot connect nodes."""
+        try:
+            if G is self.graph:
+                if self._undirected_graph_cache is None:
+                    self._undirected_graph_cache = self.graph.to_undirected()
+                fallback_graph = self._undirected_graph_cache
+            else:
+                fallback_graph = G.to_undirected()
+            return nx.shortest_path(fallback_graph, source=start, target=end, weight='weight')
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+
     def dijkstra_modified(self, start, end, penalties, zone_boundary, avoid=None):
         """Find the shortest path between two nodes using Dijkstra's algorithm, avoiding specified nodes.
 
@@ -609,8 +672,8 @@ class DirectedGraph:
         Returns:
             list or None: The path from start to end if one exists, otherwise None.
         """
-        # Create a copy of the graph so we can modify it without affecting the original
-        G = self.graph.copy()
+        # Avoid copying the graph in the hot path. Copy only when avoid penalties are needed.
+        G = self.graph.copy() if avoid else self.graph
 
         # Increase the weight of the edges leading to and from the nodes to avoid
         if avoid:
@@ -637,8 +700,11 @@ class DirectedGraph:
             # Use Dijkstra's algorithm to find the shortest path
             path = nx.shortest_path(G, source=start, target=end, weight='weight', method='bellman-ford')
             return path
-        except nx.NetworkXNoPath:
-            return None
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            fallback_path = self._undirected_fallback_path(G, start, end)
+            if fallback_path is not None:
+                debug_print(f"[WARN] directed route unavailable from {start} to {end}; using undirected fallback.")
+            return fallback_path
 
     def dijkstra(self, start, end, avoid=None):
         """Find the shortest path between two nodes using Dijkstra's algorithm, avoiding specified nodes.
@@ -651,8 +717,8 @@ class DirectedGraph:
         Returns:
             list or None: The path from start to end if one exists, otherwise None.
         """
-        # Create a copy of the graph so we can modify it without affecting the original
-        G = self.graph.copy()
+        # Avoid copying the graph in the hot path. Copy only when avoid penalties are needed.
+        G = self.graph.copy() if avoid else self.graph
 
         # Increase the weight of the edges leading to and from the nodes to avoid
         if avoid:
@@ -668,8 +734,11 @@ class DirectedGraph:
             # Use Dijkstra's algorithm to find the shortest path
             path = nx.shortest_path(G, source=start, target=end, weight='weight', method='bellman-ford')
             return path
-        except nx.NetworkXNoPath:
-            return None
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            fallback_path = self._undirected_fallback_path(G, start, end)
+            if fallback_path is not None:
+                debug_print(f"[WARN] directed route unavailable from {start} to {end}; using undirected fallback.")
+            return fallback_path
 
 
 intersections: List[Intersection] = []
@@ -783,7 +852,7 @@ def draw_layout(universe):
 def draw_layout_from_generated_file(universe: Inventory):
     draw_storage_from_generated_file(universe)
 
-    # Build one bootstrap-resampled order stream from raw_order.csv.
+    # Build the shared shuffled historical-order stream with cycle-rate arrivals.
     assign_skus_to_pods(universe.pod_manager)
     run_profile = _current_run_profile()
     config_orders(
@@ -795,8 +864,10 @@ def draw_layout_from_generated_file(universe: Inventory):
         run_horizon_ticks=run_profile.run_horizon_ticks,
         demand_horizon_ticks=run_profile.demand_horizon_ticks,
         demand_buffer_ticks=run_profile.demand_buffer_ticks,
+        order_cycle_time=get_order_cycle_time(),
         order_generation_mode=run_profile.order_generation_mode,
         full_raw_order_replay=run_profile.full_raw_order_replay,
+        shuffle_full_order_sequence=True,
         profile=run_profile.profile,
     )
     initRobots(universe)
@@ -1348,7 +1419,7 @@ def setup():
         ctx = get_run_context()
         ctx.ensure_runtime_dirs()
         _maybe_activate_configured_scenario()
-        _apply_sim_seed()
+        _prepare_setup_seed()
         # Initiate DB
         from datetime import datetime
 

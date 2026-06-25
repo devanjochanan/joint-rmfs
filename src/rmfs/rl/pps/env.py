@@ -69,6 +69,7 @@ ALPHA_OCT = 1.0            # weight for order-completion-time penalty in reward
 POD_VISIT_PENALTY = 0.0    # kept for CLI compatibility; inactive in reward
 MAX_PODS_OBS = 60          # max pods we observe at once (padded if fewer)
 SIM_TICK_TO_SECOND = 0.15  # keep PPSEnv timing aligned with NetLogo
+DEFAULT_ORDER_CYCLE_TIME = 500  # orders per simulated hour
 RANDOMIZE_POD_SKUS_EACH_EPISODE = (
     os.environ.get("PPS_RANDOMIZE_PODS_EACH_EPISODE", "0").strip().lower()
     not in {"0", "false", "no", "off"}
@@ -421,35 +422,22 @@ class PPSEnv(gym.Env):
         clear_pod_travel(db_path=db_path)
         clear_pre_assign_table(db_path=db_path)
 
-        # Regenerate one explicit, bounded order stream per episode.
-        from src.rmfs.order_generation import config_orders
-        for path in (ctx.generated_order_csv, ctx.generated_database_order_csv, ctx.generated_backlog_csv):
+        # netlogo.draw_layout() owns the shared order generator for training,
+        # backend runs, and GUI runs. Remove stale run-local outputs first.
+        order_cycle_time = int(
+            os.environ.get("RMFS_ORDER_CYCLE_TIME", DEFAULT_ORDER_CYCLE_TIME)
+        )
+        if order_cycle_time <= 0:
+            raise ValueError("RMFS_ORDER_CYCLE_TIME must be positive.")
+        profile_env["RMFS_ORDER_CYCLE_TIME"] = str(order_cycle_time)
+        for path in (
+            ctx.generated_order_csv,
+            ctx.generated_database_order_csv,
+            ctx.generated_backlog_csv,
+            ctx.generated_order_meta_json,
+        ):
             if path.exists():
                 path.unlink()
-        with _temporary_env(profile_env):
-            config_orders(
-                initial_order=100,
-                total_requested_item=500,
-                items_orders_class_configuration={"A": 0.5, "B": 0.3, "C": 0.2},
-                quantity_range=[1, 12],
-                order_cycle_time=500,
-                order_period_time=9,
-                order_start_arrival_time=0,
-                date=1,
-                sim_ver=2,
-                dev_mode=True,
-                seed=episode_seed,
-                n_orders=run_profile.bootstrap_n_orders,
-                source_path=str(ctx.raw_order_csv),
-                target_dir=str(ctx.runtime_root),
-                items_csv_path=str(ctx.items_csv),
-                run_horizon_ticks=run_profile.run_horizon_ticks,
-                demand_horizon_ticks=run_profile.demand_horizon_ticks,
-                demand_buffer_ticks=run_profile.demand_buffer_ticks,
-                order_generation_mode=run_profile.order_generation_mode,
-                full_raw_order_replay=run_profile.full_raw_order_replay,
-                profile=run_profile.profile,
-            )
 
         # Keep pod-SKU allocation fixed by default. Set
         # PPS_RANDOMIZE_PODS_EACH_EPISODE=1 to regenerate pods.csv/skus_data.csv
@@ -506,6 +494,11 @@ class PPSEnv(gym.Env):
         warehouse.pps_rl = True
 
         with _temporary_env(profile_env):
+            # Keep the shared generator synchronized with this episode. The
+            # NetLogo API caches these controls because GUI calls cross the
+            # Python extension boundary.
+            netlogo.set_sim_seed(episode_seed)
+            netlogo.set_order_cycle_time(order_cycle_time)
             netlogo.draw_layout(warehouse)
         warehouse.generateResult()
 

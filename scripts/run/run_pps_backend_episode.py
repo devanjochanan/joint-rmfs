@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
         help="Stop when the backend simulation clock reaches this value.",
     )
     parser.add_argument(
+        "--order-cycle-time",
+        type=int,
+        default=500,
+        help="Order arrivals per simulated hour for the shared shuffled order stream.",
+    )
+    parser.add_argument(
         "--model-path",
         type=str,
         default=None,
@@ -61,7 +67,7 @@ def parse_args() -> argparse.Namespace:
         "--seed",
         type=int,
         default=None,
-        help="Optional simulation seed to apply before backend setup.",
+        help="Optional reproducible simulation seed. Omit it for a fresh random seed.",
     )
     parser.add_argument(
         "--bootstrap-n-orders",
@@ -131,6 +137,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.order_cycle_time <= 0:
+        raise SystemExit("--order-cycle-time must be a positive orders-per-hour value.")
+    os.environ["RMFS_ORDER_CYCLE_TIME"] = str(args.order_cycle_time)
 
     if args.normal_io:
         os.environ.pop("RMFS_FAST_TRAIN", None)
@@ -189,10 +198,11 @@ def main() -> None:
 
     setup_start = time.perf_counter()
     with maybe_silence_logs():
-        if args.seed is not None:
-            netlogo.set_sim_seed(args.seed)
+        netlogo.set_order_cycle_time(args.order_cycle_time)
+        netlogo.set_sim_seed(args.seed if args.seed is not None else 0)
         netlogo.set_pps_mode(args.mode)
         setup_result = netlogo.setup()
+        actual_seed = netlogo.get_sim_seed()
 
     if (
         isinstance(setup_result, str)
@@ -258,9 +268,10 @@ def main() -> None:
     print(f"Mode: {args.mode}")
     if args.scenario:
         print(f"Scenario: {args.scenario}")
-    print(f"Seed: {args.seed if args.seed is not None else ''}")
+    print(f"Seed: {actual_seed}")
     print(f"Run profile: {profile_cfg.profile}")
-    print(f"Bootstrap orders: {profile_cfg.bootstrap_n_orders}")
+    print("Order stream: full GUI history, shuffled")
+    print(f"Order cycle rate: {args.order_cycle_time} orders/hour")
     print(f"Demand horizon ticks: {profile_cfg.demand_horizon_ticks}")
     print(f"Pod location mode: {profile_cfg.pod_location_mode}")
     print(f"Fast training I/O: {'off' if args.normal_io else 'on'}")

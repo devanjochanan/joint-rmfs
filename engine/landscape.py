@@ -3,17 +3,21 @@ from datetime import datetime
 class Landscape:
     dimension = 0
     total_objects = 0
-    _map = []
-    _objects = {}
 
     def __init__(self, dimension):
         self.dimension = dimension
+        self.total_objects = 0
+        self._objects = {}
+        self._map = []
         self.current_date_string = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         for i in range(self.dimension+1):
             one_row = []
             for j in range(self.dimension+1):
                 one_row.append([])
             self._map.append(one_row)
+
+    def _in_bounds(self, x, y):
+        return 0 <= x <= self.dimension and 0 <= y <= self.dimension
     
     def get_robot_object(self):
         return self._objects
@@ -37,7 +41,10 @@ class Landscape:
             'load_mass': load_mass,
         }
 
-        self._map[round(x)][round(y)].append(self._objects[label])
+        new_x = round(x)
+        new_y = round(y)
+        if self._in_bounds(new_x, new_y):
+            self._map[new_x][new_y].append(self._objects[label])
 
     def setObject(self, label, x, y, speed, acceleration, heading, state, load_mass):
         if label not in self._objects:
@@ -45,18 +52,22 @@ class Landscape:
         
         old_x = round(self._objects[label]['x'])
         old_y = round(self._objects[label]['y'])
+        new_x = round(x)
+        new_y = round(y)
         
         # check if x or y has changed
-        if round(x) != old_x or round(y) != old_y:
+        if new_x != old_x or new_y != old_y:
             # remove from old position
-            to_iter = self._map[old_x][old_y] 
-            for index, e in enumerate(to_iter):
-                if e['label'] == label:
-                    del to_iter[index]
-                    break
+            if self._in_bounds(old_x, old_y):
+                to_iter = self._map[old_x][old_y]
+                for index, e in enumerate(to_iter):
+                    if e['label'] == label:
+                        del to_iter[index]
+                        break
 
-            # add to new position
-            self._map[round(x)][round(y)].append(self._objects[label])
+            # add to new position only if it is inside the tracked map
+            if self._in_bounds(new_x, new_y):
+                self._map[new_x][new_y].append(self._objects[label])
 
         movement = 'vertical'
         if heading == 270 or heading == 90:
@@ -90,6 +101,8 @@ class Landscape:
             i += 1
 
         for p in points_to_check:
+            if not self._in_bounds(p[0], p[1]):
+                continue
             s = self._map[p[0]][p[1]]
             if len(s) > 0:
                 for obj in s:
@@ -98,7 +111,11 @@ class Landscape:
         return result
 
     def get_neighbor_object(self, x, y):
-        s = self._map[round(x)][round(y)]
+        map_x = round(x)
+        map_y = round(y)
+        if not self._in_bounds(map_x, map_y):
+            return None
+        s = self._map[map_x][map_y]
         if len(s) > 0:
             for obj in s:
                 return self._objects[obj['label']]

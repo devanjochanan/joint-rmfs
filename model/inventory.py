@@ -645,6 +645,15 @@ class Inventory(Universe):
                 print(f"[ERROR] for pod {job.pod} location {job.pod.coordinate}")
                 raise e
     
+    def _get_order_by_id_flexible(self, order_id):
+        order = self.order_manager.get_order_by_id(order_id)
+        if order is not None:
+            return order
+        try:
+            return self.order_manager.get_order_by_id(int(order_id))
+        except (TypeError, ValueError):
+            return None
+
     def finish_picking_task(self, job: RobotJob):
         # pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
         pod: Pod = self.pod_manager.get_pod_by_id(job.pod.pod_id)
@@ -652,7 +661,19 @@ class Inventory(Universe):
         pod_info_df = None if self.fast_train else pd.read_csv(self.pod_info_csv)
         sku_need_replenished = []
         for order_id, sku, quantity in job.orders:
-            order: Order = self.order_manager.get_order_by_id(order_id)
+            order: Order = self._get_order_by_id_flexible(order_id)
+            if order is None:
+                print(
+                    f"[WARN] skipping stale picking task: job={job.my_id} "
+                    f"pod={pod.pod_id} order={order_id} sku={sku} qty={quantity}"
+                )
+                continue
+            if not order.has_sku(sku):
+                print(
+                    f"[WARN] skipping picking task with unknown SKU: job={job.my_id} "
+                    f"pod={pod.pod_id} order={order_id} sku={sku} qty={quantity}"
+                )
+                continue
             order.deliver_quantity(sku, quantity)
             print("order, sku, quantity :" ,order_id, sku, quantity)
 
@@ -1180,13 +1201,19 @@ class Inventory(Universe):
                 for o_id, qty in sku_to_list_order_id_and_quantity[sku]:
                     if tmp <= 0:
                         break
-                    order = self.order_manager.get_order_by_id(o_id)
+                    order = self._get_order_by_id_flexible(o_id)
+                    if order is None:
+                        print(
+                            f"[WARN] skipping PPS task for missing order: "
+                            f"station={station.station_id} pod={pod.pod_id} order={o_id} sku={sku}"
+                        )
+                        continue
                     if order.station_id is None:
                         order.assign_station(station.station_id)
                     # order.commit_quantity
                     order.commit_quantity(sku, min(qty, tmp))
                     # job.add_picking_tas
-                    job.add_picking_task(o_id, sku, min(qty, tmp))
+                    job.add_picking_task(order.order_id, sku, min(qty, tmp))
                     tmp = tmp - min(qty, tmp)
                 
                 # pod.pick_sku

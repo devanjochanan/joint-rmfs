@@ -1,0 +1,15 @@
+PPS RL TRAINING ORDER STREAM UPDATE
+Date: 2026-06-20
+
+- NetLogo GUI order generation remains unchanged: chronological full replay
+  from the canonical raw_order.csv source.
+- PPS RL training now uses the same complete valid historical order pool.
+- Each training episode shuffles every source order exactly once using the
+  episode seed; SKU composition and quantity remain unchanged.
+- Training arrival times now use random exponential spacing controlled by
+  order_cycle_time, interpreted as orders per simulated hour.
+- Added --order-cycle-time to train_pps_rl.py (default: 500).
+- generated_order_meta.json now records shuffled-full mode, order cycle rate,
+  rate unit, seed, and arrival mode.
+- Verified same-seed reproducibility, different-seed variation, 14,992 unique
+  source orders, and exactly 500 arrivals in every full simulated hour.

@@ -664,7 +664,8 @@ def train(
     print(f"  Entropy coef             : {ent_coef}")
     print(f"  Training seed            : {training_seed}")
     print(f"  Run profile              : {profile_cfg.profile}")
-    print(f"  Bootstrap orders         : {profile_cfg.bootstrap_n_orders}")
+    print(f"  Order stream             : full GUI history, shuffled each episode")
+    print(f"  Order cycle rate         : {int(os.environ.get('RMFS_ORDER_CYCLE_TIME', '500'))} orders/hour")
     print(f"  Demand horizon ticks     : {profile_cfg.demand_horizon_ticks}")
     print(f"  Pod location mode        : {profile_cfg.pod_location_mode}")
     print(f"  First episode seed       : {session_base_seed}")
@@ -858,6 +859,8 @@ if __name__ == "__main__":
                         help="Override generated demand horizon")
     parser.add_argument("--demand-buffer-ticks", type=int, default=None,
                         help="Override generated demand buffer beyond run horizon")
+    parser.add_argument("--order-cycle-time", type=int, default=500,
+                        help="PPS training order rate in orders per simulated hour")
     parser.add_argument("--pod-location-mode", choices=("fixed", "randomize_slots"), default=None,
                         help="Override profile pod-location mode")
     parser.add_argument("--pod-location-seed", type=int, default=None,
@@ -874,6 +877,9 @@ if __name__ == "__main__":
                         help="Enable detail SQLite DB writes during PPS training/eval.")
 
     args = parser.parse_args()
+    if args.order_cycle_time <= 0:
+        parser.error("--order-cycle-time must be a positive orders-per-hour value")
+    os.environ["RMFS_ORDER_CYCLE_TIME"] = str(args.order_cycle_time)
     os.environ["RMFS_DETAIL_DB"] = "1" if args.detail_db else "0"
 
     # Override paths if --save-path provided
