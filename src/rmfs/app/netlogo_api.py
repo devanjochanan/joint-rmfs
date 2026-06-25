@@ -16,6 +16,7 @@ import traceback
 from collections import defaultdict
 from typing import List
 import random
+import secrets
 import warnings
 
 import networkx as nx
@@ -118,6 +119,9 @@ __all__ = [
     "reset_run_context",
     "set_pps_mode",
     "set_sim_seed",
+    "get_sim_seed",
+    "set_order_cycle_time",
+    "get_order_cycle_time",
 ]
 
 ACTIVATE_NEAREST = True
@@ -163,28 +167,92 @@ def _str_path(name):
     return str(_path(name))
 
 
+def _maybe_activate_configured_scenario():
+    scenario_name = os.environ.get("RMFS_SCENARIO_NAME", "").strip()
+    if not scenario_name:
+        return None
+    metadata_path = get_run_context().runtime_root / "active_scenario.json"
+    metadata = _activate_scenario_inputs(
+        scenario_name=scenario_name,
+        target_root=str(get_run_context().input_root),
+        metadata_path=str(metadata_path),
+    )
+    if metadata is not None:
+        debug_print(
+            "[SCENARIO] "
+            f"{metadata['scenario_name']} "
+            f"items={metadata['items_rows']} "
+            f"pods={metadata['unique_pods']} "
+            f"input_root={get_run_context().input_root}"
+        )
+    return metadata
+
+
 _SIM_SEED = (
     int(os.environ["RMFS_SIM_SEED"])
     if os.environ.get("RMFS_SIM_SEED", "").strip()
     else None
 )
+_SIM_SEED_EXPLICIT = _SIM_SEED is not None
+_ORDER_CYCLE_TIME = int(os.environ.get("RMFS_ORDER_CYCLE_TIME", "500"))
 
 
 def set_sim_seed(seed):
-    """Set the Python backend random seed before setup() for reproducible runs."""
-    global _SIM_SEED
+    """Set a reproducible seed, or use 0/None to request a fresh setup seed."""
+    global _SIM_SEED, _SIM_SEED_EXPLICIT
 
-    _SIM_SEED = int(seed)
+    resolved = 0 if seed is None else int(seed)
+    if resolved == 0:
+        _SIM_SEED = None
+        _SIM_SEED_EXPLICIT = False
+        os.environ.pop("RMFS_SIM_SEED", None)
+        print("[SIM_SEED] Automatic random seed enabled for the next setup.")
+        return None
+    if resolved < 0:
+        raise ValueError("Simulation seed must be zero or a positive integer.")
+
+    _SIM_SEED = resolved
+    _SIM_SEED_EXPLICIT = True
+    os.environ["RMFS_SIM_SEED"] = str(_SIM_SEED)
     random.seed(_SIM_SEED)
     np.random.seed(_SIM_SEED)
     print(f"[SIM_SEED] Current simulation seed: {_SIM_SEED}")
     return _SIM_SEED
 
 
-def _apply_sim_seed():
-    if _SIM_SEED is not None:
-        random.seed(_SIM_SEED)
-        np.random.seed(_SIM_SEED)
+def get_sim_seed():
+    return _SIM_SEED
+
+
+def _prepare_setup_seed():
+    """Choose a fresh seed for unseeded runs and apply it to all RNGs."""
+    global _SIM_SEED
+
+    if not _SIM_SEED_EXPLICIT:
+        _SIM_SEED = secrets.randbelow(2_147_483_646) + 1
+    os.environ["RMFS_SIM_SEED"] = str(_SIM_SEED)
+    random.seed(_SIM_SEED)
+    np.random.seed(_SIM_SEED)
+    print(f"[SIM_SEED] Setup seed: {_SIM_SEED}")
+    return _SIM_SEED
+
+
+def set_order_cycle_time(value):
+    """Set the shared order arrival rate in orders per simulated hour."""
+    global _ORDER_CYCLE_TIME
+
+    resolved = int(value)
+    if resolved <= 0:
+        raise ValueError("order_cycle_time must be a positive orders-per-hour value.")
+    _ORDER_CYCLE_TIME = resolved
+    os.environ["RMFS_ORDER_CYCLE_TIME"] = str(resolved)
+    print(f"[ORDER_CYCLE] Current order rate: {resolved} orders/hour")
+    return _ORDER_CYCLE_TIME
+
+
+def get_order_cycle_time():
+    env_value = os.environ.get("RMFS_ORDER_CYCLE_TIME", "").strip()
+    return int(env_value) if env_value else _ORDER_CYCLE_TIME
 
 
 def _env_bool(name, default=False):
@@ -530,6 +598,7 @@ class DirectedGraph:
     def __init__(self):
         """Initialize an instance with a directed graph."""
         self.graph = nx.DiGraph()
+        self._undirected_graph_cache = None
 
     @staticmethod
     def node_valid(node):
@@ -552,6 +621,7 @@ class DirectedGraph:
         """
         if self.node_valid(node):
             self.graph.add_node(node)
+            self._undirected_graph_cache = None
 
     def add_edge(self, start, end, weight):
         """Add an edge between two nodes with a weight if both nodes are valid.
@@ -563,6 +633,7 @@ class DirectedGraph:
         """
         if self.node_valid(start) and self.node_valid(end):
             self.graph.add_edge(start, end, weight=weight)
+            self._undirected_graph_cache = None
 
     @staticmethod
     def get_heading(p1: NetLogoCoordinate, p2: NetLogoCoordinate):
@@ -577,6 +648,19 @@ class DirectedGraph:
             else:
                 return 90
 
+    def _undirected_fallback_path(self, G, start, end):
+        """Return an emergency route when directed routing cannot connect nodes."""
+        try:
+            if G is self.graph:
+                if self._undirected_graph_cache is None:
+                    self._undirected_graph_cache = self.graph.to_undirected()
+                fallback_graph = self._undirected_graph_cache
+            else:
+                fallback_graph = G.to_undirected()
+            return nx.shortest_path(fallback_graph, source=start, target=end, weight='weight')
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+
     def dijkstra_modified(self, start, end, penalties, zone_boundary, avoid=None):
         """Find the shortest path between two nodes using Dijkstra's algorithm, avoiding specified nodes.
 
@@ -588,8 +672,8 @@ class DirectedGraph:
         Returns:
             list or None: The path from start to end if one exists, otherwise None.
         """
-        # Create a copy of the graph so we can modify it without affecting the original
-        G = self.graph.copy()
+        # Avoid copying the graph in the hot path. Copy only when avoid penalties are needed.
+        G = self.graph.copy() if avoid else self.graph
 
         # Increase the weight of the edges leading to and from the nodes to avoid
         if avoid:
@@ -616,8 +700,11 @@ class DirectedGraph:
             # Use Dijkstra's algorithm to find the shortest path
             path = nx.shortest_path(G, source=start, target=end, weight='weight', method='bellman-ford')
             return path
-        except nx.NetworkXNoPath:
-            return None
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            fallback_path = self._undirected_fallback_path(G, start, end)
+            if fallback_path is not None:
+                debug_print(f"[WARN] directed route unavailable from {start} to {end}; using undirected fallback.")
+            return fallback_path
 
     def dijkstra(self, start, end, avoid=None):
         """Find the shortest path between two nodes using Dijkstra's algorithm, avoiding specified nodes.
@@ -630,8 +717,8 @@ class DirectedGraph:
         Returns:
             list or None: The path from start to end if one exists, otherwise None.
         """
-        # Create a copy of the graph so we can modify it without affecting the original
-        G = self.graph.copy()
+        # Avoid copying the graph in the hot path. Copy only when avoid penalties are needed.
+        G = self.graph.copy() if avoid else self.graph
 
         # Increase the weight of the edges leading to and from the nodes to avoid
         if avoid:
@@ -647,8 +734,11 @@ class DirectedGraph:
             # Use Dijkstra's algorithm to find the shortest path
             path = nx.shortest_path(G, source=start, target=end, weight='weight', method='bellman-ford')
             return path
-        except nx.NetworkXNoPath:
-            return None
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            fallback_path = self._undirected_fallback_path(G, start, end)
+            if fallback_path is not None:
+                debug_print(f"[WARN] directed route unavailable from {start} to {end}; using undirected fallback.")
+            return fallback_path
 
 
 intersections: List[Intersection] = []
@@ -691,26 +781,43 @@ def initRobots(universe: Inventory):
 
     num_robot = 20  # Number of robots
 
-    robots = []
-    x_range = (5, 43)
-    y_range = (0, 30)
+    layout_frame = pd.read_csv(_str_path("generated_pod_csv"), header=None)
+    row_count, col_count = layout_frame.shape
+    x_min = min(5, max(0, col_count - 1))
+    x_max = max(x_min, col_count - 6)
+    y_min = 0
+    y_max = max(y_min, row_count - 1)
 
-    # Initialize a set to keep track of used coordinates
-    used_coordinates = set()
+    occupied_coordinates = {
+        (int(obj.pos_x), int(obj.pos_y))
+        for obj in universe._objects
+        if getattr(obj, "object_type", None) in {"pod", "picker", "replenishment", "station"}
+    }
+    candidate_coordinates = []
+    if universe.graph is not None:
+        for node in universe.graph.graph.nodes:
+            x, y = map(int, str(node).split(","))
+            if (
+                x_min <= x <= x_max
+                and y_min <= y <= y_max
+                and (x, y) not in occupied_coordinates
+            ):
+                candidate_coordinates.append((x, y))
+    if len(candidate_coordinates) < num_robot:
+        raise ValueError(
+            f"Not enough valid graph nodes to place {num_robot} robots; only found {len(candidate_coordinates)}"
+        )
 
-    # Generate the robots with random unique x and y coordinates
-    while len(robots) < num_robot:
-        x = random.randint(x_range[0], x_range[1])
-        y = random.randint(y_range[0], y_range[1])
-        if (x, y) not in used_coordinates:
-            robot = {
-                'velocity': 0,
-                'heading': 0,
-                'x': x,
-                'y': y
-            }
-            robots.append(robot)
-            used_coordinates.add((x, y))
+    random.shuffle(candidate_coordinates)
+    robots = [
+        {
+            'velocity': 0,
+            'heading': 0,
+            'x': x,
+            'y': y,
+        }
+        for x, y in candidate_coordinates[:num_robot]
+    ]
 
     # Iterate through each robot in the list to initialize and add to the universe
     for r in robots:
@@ -745,7 +852,7 @@ def draw_layout(universe):
 def draw_layout_from_generated_file(universe: Inventory):
     draw_storage_from_generated_file(universe)
 
-    # Build one bootstrap-resampled order stream from raw_order.csv.
+    # Build the shared shuffled historical-order stream with cycle-rate arrivals.
     assign_skus_to_pods(universe.pod_manager)
     run_profile = _current_run_profile()
     config_orders(
@@ -757,8 +864,10 @@ def draw_layout_from_generated_file(universe: Inventory):
         run_horizon_ticks=run_profile.run_horizon_ticks,
         demand_horizon_ticks=run_profile.demand_horizon_ticks,
         demand_buffer_ticks=run_profile.demand_buffer_ticks,
+        order_cycle_time=get_order_cycle_time(),
         order_generation_mode=run_profile.order_generation_mode,
         full_raw_order_replay=run_profile.full_raw_order_replay,
+        shuffle_full_order_sequence=True,
         profile=run_profile.profile,
     )
     initRobots(universe)
@@ -841,8 +950,8 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
         # pass
     else:
         assign_order_df = orders_df.copy()
-        assign_order_df['assigned_station'] = None
-        assign_order_df['assigned_pod'] = None
+        assign_order_df['assigned_station'] = pd.Series([None] * len(assign_order_df), dtype="object")
+        assign_order_df['assigned_pod'] = pd.Series([None] * len(assign_order_df), dtype="object")
         assign_order_df['status'] = -3
         assign_order_df['order_processed'] = None
         assign_order_df['order_finished'] = None
@@ -1196,6 +1305,7 @@ def draw_storage_from_generated_file(universe: Inventory):
 
 def construct_station_path(data: DataFrame, start_x, start_y, station_type: str, short_path=True):
     station_path: List[NetLogoCoordinate] = [NetLogoCoordinate(start_x, start_y)]
+    row_count, col_count = data.shape
 
     if station_type not in ['picking', 'replenishment']:
         raise ValueError("station_type must be either 'picking' or 'replenishment'")
@@ -1209,12 +1319,12 @@ def construct_station_path(data: DataFrame, start_x, start_y, station_type: str,
 
     # go to bottom
     y, x = start_y + 1, start_x
-    while data.iloc[y, x] in (14, 17, 24, 27):
+    while 0 <= y < row_count and 0 <= x < col_count and data.iloc[y, x] in (14, 17, 24, 27):
         station_path.insert(0, NetLogoCoordinate(x, y))
 
         if data.iloc[y, x] in (17, 27):
             x += x_increment
-            while data.iloc[y, x] in (13, 23):
+            while 0 <= y < row_count and 0 <= x < col_count and data.iloc[y, x] in (13, 23):
                 station_path.insert(0, NetLogoCoordinate(x, y))
                 x += x_increment
 
@@ -1308,7 +1418,8 @@ def setup():
     try:
         ctx = get_run_context()
         ctx.ensure_runtime_dirs()
-        _apply_sim_seed()
+        _maybe_activate_configured_scenario()
+        _prepare_setup_seed()
         # Initiate DB
         from datetime import datetime
 

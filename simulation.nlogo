@@ -29,15 +29,19 @@ globals [
 
 to setup
   let requested_seed sim_seed
+  let requested_order_cycle_time order_cycle_time
   ca
   set sim_seed requested_seed
+  set order_cycle_time requested_order_cycle_time
+  if order_cycle_time <= 0 [ set order_cycle_time 500 ]
   let result ""
   py:setup py:python3
-  if sim_seed != 0 [
-    (py:run
-      "import netlogo"
-      (word "netlogo.set_sim_seed(" sim_seed ")"))
-  ]
+  (py:run
+    "import netlogo"
+    (word "netlogo.set_sim_seed(" sim_seed ")"))
+  (py:run
+    "import netlogo"
+    (word "netlogo.set_order_cycle_time(" order_cycle_time ")"))
   if pps_mode = 0 [ set pps_mode "PPO PPS" ]
   ifelse pps_mode = "Rika PPS" [
     (py:run
@@ -454,6 +458,17 @@ pps_mode
 17
 1
 14
+
+INPUTBOX
+1275
+60
+1440
+120
+order_cycle_time
+500.0
+1
+0
+Number
 
 @#$#@#$#@
 ## WHAT IS IT?

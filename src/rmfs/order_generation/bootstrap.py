@@ -199,6 +199,40 @@ def _bootstrap_arrivals(
     return sampled_arrivals + start_time
 
 
+def _cycle_rate_arrivals(
+    sample_size,
+    rng,
+    order_cycle_time,
+    order_start_arrival_time,
+):
+    """Generate random arrivals at an exact configured orders-per-hour rate."""
+    start_time = int(order_start_arrival_time)
+    orders_per_hour = int(order_cycle_time)
+    if orders_per_hour <= 0:
+        raise ValueError("order_cycle_time must be a positive orders-per-hour value.")
+    if sample_size <= 0:
+        return np.asarray([], dtype=np.int64)
+
+    cycle_arrivals = []
+    for cycle_index, offset in enumerate(range(0, sample_size, orders_per_hour)):
+        cycle_count = min(orders_per_hour, sample_size - offset)
+        mean_gap_seconds = 3600.0 / orders_per_hour
+        random_gaps = rng.exponential(mean_gap_seconds, size=cycle_count)
+        cumulative = np.cumsum(random_gaps, dtype=np.float64)
+
+        # Keep exactly order_cycle_time orders in each full hour while
+        # retaining random exponential spacing inside that hour.
+        target_span = (3600.0 * cycle_count / orders_per_hour) - 1.0
+        if cumulative[-1] > 0 and target_span > 0:
+            cumulative = (cumulative / cumulative[-1]) * target_span
+
+        arrivals = np.rint(cumulative).astype(np.int64)
+        arrivals += start_time + cycle_index * 3600
+        cycle_arrivals.append(arrivals)
+
+    return np.concatenate(cycle_arrivals)
+
+
 def _build_generated_orders(sampled_order_ids, raw_orders, sampled_arrivals):
     order_lines = []
     sequence_id = 0
@@ -264,6 +298,8 @@ def generate_orders_from_raw_bootstrap(
     run_horizon_ticks=None,
     demand_horizon_ticks=None,
     demand_buffer_ticks=None,
+    order_cycle_time=None,
+    shuffle_full_order_sequence=False,
     order_generation_mode=None,
     full_raw_order_replay=None,
     profile=None,
@@ -299,6 +335,12 @@ def generate_orders_from_raw_bootstrap(
         else int(order_start_arrival_time)
     )
     resolved_source_path = _bootstrap_source_path(source_path)
+    resolved_order_cycle_time = (
+        int(order_cycle_time)
+        if order_cycle_time is not None
+        else _env_optional_int("RMFS_ORDER_CYCLE_TIME")
+    )
+    resolved_shuffle_full_sequence = bool(shuffle_full_order_sequence)
 
     rng = np.random.default_rng(resolved_seed)
 
@@ -312,7 +354,15 @@ def generate_orders_from_raw_bootstrap(
     if source_unique_orders <= 0:
         raise ValueError("Bootstrap source contains no valid unique orders.")
 
-    if resolved_n_orders is None and not resolved_full_raw_replay:
+    if resolved_shuffle_full_sequence:
+        if resolved_order_cycle_time is None:
+            raise ValueError(
+                "order_cycle_time is required when shuffle_full_order_sequence=True."
+            )
+        resolved_n_orders = source_unique_orders
+        resolved_full_raw_replay = False
+        resolved_mode = "shuffled_full_cycle"
+    elif resolved_n_orders is None and not resolved_full_raw_replay:
         resolved_full_raw_replay = True
         resolved_mode = "legacy_compat"
         print(
@@ -325,7 +375,16 @@ def generate_orders_from_raw_bootstrap(
     if int(resolved_n_orders) <= 0:
         raise ValueError("Bootstrap n_orders must be positive.")
 
-    if resolved_full_raw_replay:
+    if resolved_shuffle_full_sequence:
+        sampled_order_ids = rng.permutation(source_order_ids)
+        sampled_arrivals = _cycle_rate_arrivals(
+            sample_size=source_unique_orders,
+            rng=rng,
+            order_cycle_time=resolved_order_cycle_time,
+            order_start_arrival_time=resolved_start_arrival,
+        )
+        resolved_arrival_mode = "cycle_exponential"
+    elif resolved_full_raw_replay:
         sampled_order_ids = source_order_ids
         sampled_arrivals = order_table["arrival_seconds"].to_numpy(dtype=np.int64) + int(resolved_start_arrival)
     else:
@@ -372,6 +431,9 @@ def generate_orders_from_raw_bootstrap(
         "demand_horizon_ticks": policy.demand_horizon_ticks,
         "demand_buffer_ticks": policy.demand_buffer_ticks,
         "full_raw_order_replay": bool(resolved_full_raw_replay),
+        "shuffle_full_order_sequence": bool(resolved_shuffle_full_sequence),
+        "order_cycle_time": resolved_order_cycle_time,
+        "order_cycle_time_unit": "orders_per_hour" if resolved_order_cycle_time is not None else None,
         "arrival_mode": resolved_arrival_mode,
         "order_start_arrival_time": int(resolved_start_arrival),
         "source_unique_orders": int(source_unique_orders),
@@ -423,10 +485,12 @@ def config_orders(
     demand_buffer_ticks=None,
     order_generation_mode=None,
     full_raw_order_replay=None,
+    shuffle_full_order_sequence=False,
     profile=None,
 ):
-    # Legacy synthetic parameters are intentionally ignored. joint-rmfs now
-    # always prepares its order stream from bootstrap resampling of raw_order.csv.
+    # SKU composition always comes from complete historical orders in raw_order.csv.
+    # PPS training may additionally shuffle the full sequence and use order_cycle_time
+    # as an orders-per-hour arrival-rate control.
     return generate_orders_from_raw_bootstrap(
         seed=seed,
         n_orders=n_orders,
@@ -438,6 +502,8 @@ def config_orders(
         run_horizon_ticks=run_horizon_ticks,
         demand_horizon_ticks=demand_horizon_ticks,
         demand_buffer_ticks=demand_buffer_ticks,
+        order_cycle_time=order_cycle_time,
+        shuffle_full_order_sequence=shuffle_full_order_sequence,
         order_generation_mode=order_generation_mode,
         full_raw_order_replay=full_raw_order_replay,
         profile=profile,

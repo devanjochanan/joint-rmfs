@@ -15,6 +15,7 @@ from .pod import Pod
 from .tools.write_record import write_record_to
 from .tools.pod_location import upsert_pod_location
 from .tools.pod_travel import upsert_pod_travel
+from src.rmfs.runtime_io.logging import debug_print
 
 if TYPE_CHECKING:
     from model.inventory import Inventory
@@ -928,7 +929,7 @@ class Robot(Object):
             print(f"[DEBUG] {vars(nearest_storage)}")
 
             self.destination = decision.destination
-            print(f"[DEBUG] destination: {self.destination}")
+            debug_print(f"[DEBUG] destination: {self.destination}")
             self.job.pod_return_coordinate = self.destination
             self.job.writePodReturnReport(
                 calculateManhattanDistance(
@@ -990,7 +991,7 @@ class Robot(Object):
 
         # self.w1 = NetLogoCoordinate(self.job.pod.pos_x, self.job.pod.pos_y)
         # self.destination = NetLogoCoordinate(self.job.pod.pos_x, self.job.pod.pos_y)
-        print(f"[DEBUG] destination: {self.destination}")
+        debug_print(f"[DEBUG] destination: {self.destination}")
 
         if self.close_enough(self.destination):
             # self.job.pod.pos_x = self.pos_x
@@ -1005,18 +1006,29 @@ class Robot(Object):
             self.job.pod.pos_y = self.pos_y
             self.job.pod.velocity = 0
             self.job.pod.acceleration = 0
+            self.destination = NetLogoCoordinate(round(self.pos_x), round(self.pos_y))
         try:
             self.set_move(self.destination, graph=self.warehouse.graph, need_neutralize_robot=False)
-        except Exception as e:
-            print(f"[ERROR] move pod {self.job.pod.pod_id} location {(self.job.pod.pos_x, self.job.pod.pos_y)} destination {self.destination}")
-            print(f"[ERROR] current robot {self.robotID} job {self.job.job_id}")
-            print(f"[ERROR] other ongoing robots")
-            for o in self.warehouse.get_movable_objects():
-                if isinstance(o, Robot):
-                    print(f" >>> robot {o.robotID} job {o.job.job_id} pod {o.job.pod.pod_id}")
-                    if o.job.pod.pod_id == self.job.pod.pod_id:
-                        print("[CRITICAL] double job for this pod")
-            raise e
+        except Exception as primary_error:
+            try:
+                self.set_move(self.destination, graph=self.warehouse.graph_pod, need_neutralize_robot=False)
+                debug_print(
+                    f"[WARN] fallback to graph_pod for pickup route on pod {self.job.pod.pod_id} "
+                    f"from robot {self.robotName()}"
+                )
+            except Exception as e:
+                print(f"[ERROR] move pod {self.job.pod.pod_id} location {(self.job.pod.pos_x, self.job.pod.pos_y)} destination {self.destination}")
+                print(f"[ERROR] current robot {self.robotName()} job {self.job.job_id}")
+                print(f"[ERROR] other ongoing robots")
+                for o in self.warehouse.get_movable_objects():
+                    if isinstance(o, Robot):
+                        job_desc = "no-job"
+                        if o.job is not None:
+                            job_desc = f"job {o.job.job_id} pod {o.job.pod.pod_id}"
+                        print(f" >>> robot {o.robotName()} {job_desc}")
+                        if o.job is not None and o.job.pod.pod_id == self.job.pod.pod_id:
+                            print("[CRITICAL] double job for this pod")
+                raise e from primary_error
         self.current_state = "taking_pod"
         upsert_pod_travel(
             self.job.my_id,
@@ -1034,7 +1046,7 @@ class Robot(Object):
 
     def set_move(self, dest: NetLogoCoordinate, graph, need_neutralize_robot: bool = False, avoid_side: bool = False):
         start = self.coordinate_to_string_key(round(self.pos_x), round(self.pos_y))
-        end = self.coordinate_to_string_key(dest.x, dest.y)
+        end = self.coordinate_to_string_key(round(dest.x), round(dest.y))
         # print(f"[DEBUG] set move start: {start} end: {end}")
         if need_neutralize_robot:
             self.neutralizeRobotState()
@@ -1057,6 +1069,11 @@ class Robot(Object):
         else:
             # print(f"[DEBUG] universe.zoning == False")
             node_routes = graph.dijkstra(start, end, nodes_to_avoid) # This one is baseline
+        if node_routes is None:
+            graph_name = getattr(graph, "key", "") or "warehouse"
+            raise ValueError(
+                f"No route found in {graph_name} graph from {start} to {end}"
+            )
         try:
             self.setPath(self._transformRouteToList(node_routes))
         except Exception as e:

@@ -1,6 +1,5 @@
 from typing import List, Optional
 
-from engine.deep_q_network import DeepQNetwork
 from engine.util import *
 from model.intersection import Intersection
 
@@ -90,6 +89,12 @@ class IntersectionManager:
 
     @staticmethod
     def create_new_model(intersection: Intersection, state):
+        try:
+            from engine.deep_q_network import DeepQNetwork
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Intersection RL requested but torch/DeepQNetwork dependencies are unavailable."
+            ) from exc
         state_size = len(state)
         return DeepQNetwork(state_size=state_size,
                             action_size=3,

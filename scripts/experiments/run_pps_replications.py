@@ -39,6 +39,7 @@ from src.rmfs.app.netlogo_api import (
     _get_pod_visits,
     _get_picked_quantity,
     _get_pile_on_rate,
+    get_run_context,
 )
 from src.rmfs.decisions.pps import configure_pps_rl_strategy
 
@@ -49,6 +50,7 @@ SCENARIO_INPUT_FILES = (
     "generated_order.csv",
     "generated_backlog.csv",
     "generated_database_order.csv",
+    "generated_order_meta.json",
     "generated_pod.csv",
     "pods.csv",
     "items.csv",
@@ -61,7 +63,7 @@ REGENERATED_SCENARIO_FILES = (
     "generated_order.csv",
     "generated_backlog.csv",
     "generated_database_order.csv",
-    "pods.csv",
+    "generated_order_meta.json",
 )
 
 RUNTIME_FILES = (
@@ -219,26 +221,51 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
 
 
+def active_path(name: str) -> Path:
+    ctx = get_run_context()
+    paths = {
+        "generated_order.csv": ctx.generated_order_csv,
+        "generated_backlog.csv": ctx.generated_backlog_csv,
+        "generated_database_order.csv": ctx.generated_database_order_csv,
+        "generated_order_meta.json": ctx.generated_order_meta_json,
+        "generated_pod.csv": ctx.generated_pod_csv,
+        "pods.csv": ctx.pods_csv,
+        "items.csv": ctx.items_csv,
+        "items_dictionary.csv": ctx.items_dictionary_csv,
+        "items_slots_configuration.csv": ctx.items_slots_configuration_csv,
+        "pods_dictionary.csv": ctx.pods_dictionary_csv,
+        "assign_order.csv": ctx.assign_order_csv,
+        "pod_info.csv": ctx.pod_info_csv,
+        "netlogo.state": ctx.state_file,
+        "skus_data.csv": ctx.skus_data_csv,
+        "sorted_skus_data.csv": ctx.sorted_skus_data_csv,
+    }
+    return paths.get(name, Path(name))
+
+
 def remove_existing(files: Iterable[str]) -> None:
     for name in files:
-        path = Path(name)
+        path = active_path(name)
         if path.exists():
             path.unlink()
 
 
-def copy_existing(files: Iterable[str], source: Path, destination: Path) -> None:
+def copy_current_inputs(files: Iterable[str], destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     for name in files:
-        src = source / name
+        src = active_path(name)
         if src.exists():
             shutil.copy2(src, destination / name)
 
 
 def restore_scenario_inputs(scenario_dir: Path) -> None:
-    remove_existing((*SCENARIO_INPUT_FILES, *RUNTIME_FILES))
+    restore_files = set(REGENERATED_SCENARIO_FILES)
+    remove_existing((*restore_files, *RUNTIME_FILES))
     for src in scenario_dir.iterdir():
-        if src.is_file() and src.name in SCENARIO_INPUT_FILES:
-            shutil.copy2(src, Path(src.name))
+        if src.is_file() and src.name in restore_files:
+            dst = active_path(src.name)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
 
 
 def silence_backend(show_log: bool) -> ExitStack:
@@ -255,6 +282,10 @@ def setup_backend(netlogo, mode: str, seed: int, show_log: bool) -> float:
     remove_existing(RUNTIME_FILES)
     start = time.perf_counter()
     with silence_backend(show_log):
+        if hasattr(netlogo, "set_sim_seed"):
+            netlogo.set_sim_seed(seed)
+        if os.environ.get("RMFS_POD_LOCATION_MODE", "").strip().lower() == "randomize_slots":
+            os.environ["RMFS_POD_LOCATION_SEED"] = str(seed)
         netlogo.set_pps_mode(mode)
         result = netlogo.setup()
     if isinstance(result, str) and result.startswith("An error occurred"):
@@ -263,7 +294,7 @@ def setup_backend(netlogo, mode: str, seed: int, show_log: bool) -> float:
             "that may be locking assign_order.csv, pod_info.csv, or warehouse.db. "
             "Rerun with --show-log for the traceback."
         )
-    if not Path("netlogo.state").exists():
+    if not active_path("netlogo.state").exists():
         raise RuntimeError("Backend setup did not create netlogo.state.")
     return time.perf_counter() - start
 
@@ -271,7 +302,7 @@ def setup_backend(netlogo, mode: str, seed: int, show_log: bool) -> float:
 def generate_scenario(netlogo, replication: int, seed: int, scenario_dir: Path, show_log: bool) -> None:
     remove_existing((*REGENERATED_SCENARIO_FILES, *RUNTIME_FILES))
     setup_backend(netlogo, mode="rika", seed=seed, show_log=show_log)
-    copy_existing(SCENARIO_INPUT_FILES, Path.cwd(), scenario_dir)
+    copy_current_inputs(SCENARIO_INPUT_FILES, scenario_dir)
     metadata = {
         "replication": replication,
         "seed": seed,
@@ -291,7 +322,7 @@ def run_policy(netlogo, args: argparse.Namespace, replication: int, seed: int, m
     restore_scenario_inputs(scenario_dir)
     setup_seconds = setup_backend(netlogo, mode=mode, seed=seed, show_log=args.show_log)
 
-    with open("netlogo.state", "rb") as file:
+    with active_path("netlogo.state").open("rb") as file:
         universe = pickle.load(file)
 
     for obj in universe._objects:

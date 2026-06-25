@@ -2,7 +2,12 @@
 
 from .config import RTSTrainingConfig
 from .rollout_dataset import RTSRolloutDataset, RTSTrainingStep, RTSPaddedTrainingBatch
-from .ppo import RTSPPORolloutBatch, PPOUpdateResult
+
+try:
+    from .ppo import RTSPPORolloutBatch, PPOUpdateResult
+except ModuleNotFoundError:
+    RTSPPORolloutBatch = None
+    PPOUpdateResult = None
 
 __all__ = [
     "RTSTrainingConfig",

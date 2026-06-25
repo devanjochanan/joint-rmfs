@@ -8,6 +8,8 @@ class Order:
         self.station_id = None
         self.skus = {}
         self.status = -3
+        self.is_in_queue = False
+        self.on_hold = False
 
 
     def assign_station(self, station_id):
@@ -27,6 +29,13 @@ class Order:
 
     def commit_quantity(self, sku, quantity):
         self.skus[sku]['quantity_committed'] += quantity
+
+    def release_committed_quantity(self, sku, quantity):
+        if sku not in self.skus or quantity <= 0:
+            return 0
+        releasable_quantity = min(quantity, self.skus[sku]['quantity_committed'])
+        self.skus[sku]['quantity_committed'] -= releasable_quantity
+        return releasable_quantity
 
     def deliver_quantity(self, sku, quantity):
         self.skus[sku]['quantity_delivered'] += quantity

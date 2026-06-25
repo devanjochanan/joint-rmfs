@@ -21,6 +21,7 @@ class RobotJob:
         self.picking_delay = 0
         self.replenishment_delay_per_sku = 20
         self.replenishment_delay = 0
+        self.replenishment_skus = []
         self.is_finished = False
 
     def add_picking_task(self, order_id, sku, quantity):
@@ -28,8 +29,9 @@ class RobotJob:
         self.orders.append((order_id, sku, quantity))
         self.picking_delay += self.picking_delay_per_sku * quantity
     
-    def add_replenishment_task(self, pod):
-        total_skus = len(pod.skus)
+    def add_replenishment_task(self, pod, skus_to_replenish=None):
+        self.replenishment_skus = list(skus_to_replenish or [])
+        total_skus = len(self.replenishment_skus) if self.replenishment_skus else len(pod.skus)
         self.replenishment_delay += total_skus * self.replenishment_delay_per_sku
 
     def is_being_processed(self):

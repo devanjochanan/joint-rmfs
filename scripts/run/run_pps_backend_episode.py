@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import pickle
 import sys
@@ -51,6 +52,12 @@ def parse_args() -> argparse.Namespace:
         help="Stop when the backend simulation clock reaches this value.",
     )
     parser.add_argument(
+        "--order-cycle-time",
+        type=int,
+        default=500,
+        help="Order arrivals per simulated hour for the shared shuffled order stream.",
+    )
+    parser.add_argument(
         "--model-path",
         type=str,
         default=None,
@@ -60,7 +67,7 @@ def parse_args() -> argparse.Namespace:
         "--seed",
         type=int,
         default=None,
-        help="Optional simulation seed to apply before backend setup.",
+        help="Optional reproducible simulation seed. Omit it for a fresh random seed.",
     )
     parser.add_argument(
         "--bootstrap-n-orders",
@@ -119,11 +126,20 @@ def parse_args() -> argparse.Namespace:
         default=10.0,
         help="Print a progress line every N real seconds. Use 0 to disable.",
     )
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default=None,
+        help="Optional scenario bundle name under joint-rmfs/data/input/scenarios.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.order_cycle_time <= 0:
+        raise SystemExit("--order-cycle-time must be a positive orders-per-hour value.")
+    os.environ["RMFS_ORDER_CYCLE_TIME"] = str(args.order_cycle_time)
 
     if args.normal_io:
         os.environ.pop("RMFS_FAST_TRAIN", None)
@@ -134,6 +150,8 @@ def main() -> None:
         os.environ["PPS_RL_MODEL_PATH"] = args.model_path
     if args.seed is not None:
         os.environ["RMFS_SIM_SEED"] = str(args.seed)
+    if args.scenario:
+        os.environ["RMFS_SCENARIO_NAME"] = args.scenario
     profile_cfg = resolve_run_profile(
         args.profile,
         run_horizon_ticks=int(args.max_ticks),
@@ -180,10 +198,11 @@ def main() -> None:
 
     setup_start = time.perf_counter()
     with maybe_silence_logs():
-        if args.seed is not None:
-            netlogo.set_sim_seed(args.seed)
+        netlogo.set_order_cycle_time(args.order_cycle_time)
+        netlogo.set_sim_seed(args.seed if args.seed is not None else 0)
         netlogo.set_pps_mode(args.mode)
         setup_result = netlogo.setup()
+        actual_seed = netlogo.get_sim_seed()
 
     if (
         isinstance(setup_result, str)
@@ -198,6 +217,21 @@ def main() -> None:
     state_file = netlogo.get_run_context().state_file
     if not state_file.exists():
         raise SystemExit(f"Backend setup did not create {state_file}.")
+
+    scenario_meta = netlogo.get_run_context().runtime_root / "active_scenario.json"
+    if scenario_meta.exists():
+        try:
+            meta = json.loads(scenario_meta.read_text(encoding="utf-8"))
+            print(
+                "[INPUT] "
+                f"scenario={meta.get('scenario_name', '')} "
+                f"items_rows={meta.get('items_rows', '')} "
+                f"pods_rows={meta.get('pods_rows', '')} "
+                f"unique_pods={meta.get('unique_pods', '')} "
+                f"unique_pod_items={meta.get('unique_pod_items', '')}"
+            )
+        except Exception:
+            pass
 
     with open(state_file, "rb") as file:
         universe = pickle.load(file)
@@ -224,7 +258,7 @@ def main() -> None:
                     "progress: "
                     f"tick={universe._tick:.2f}/{args.max_ticks:g}, "
                     f"steps={backend_steps}, "
-                    f"throughput={netlogo._get_throughput(universe)}, "
+                    f"throughput={_get_throughput(universe)}, "
                     f"elapsed={now - run_start:.1f}s"
                 )
 
@@ -232,9 +266,12 @@ def main() -> None:
     total_elapsed = time.perf_counter() - setup_start
 
     print(f"Mode: {args.mode}")
-    print(f"Seed: {args.seed if args.seed is not None else ''}")
+    if args.scenario:
+        print(f"Scenario: {args.scenario}")
+    print(f"Seed: {actual_seed}")
     print(f"Run profile: {profile_cfg.profile}")
-    print(f"Bootstrap orders: {profile_cfg.bootstrap_n_orders}")
+    print("Order stream: full GUI history, shuffled")
+    print(f"Order cycle rate: {args.order_cycle_time} orders/hour")
     print(f"Demand horizon ticks: {profile_cfg.demand_horizon_ticks}")
     print(f"Pod location mode: {profile_cfg.pod_location_mode}")
     print(f"Fast training I/O: {'off' if args.normal_io else 'on'}")

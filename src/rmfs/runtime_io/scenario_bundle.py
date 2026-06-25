@@ -15,6 +15,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SCENARIO_ROOT = REPO_ROOT / "data" / "input" / "scenarios"
 DEFAULT_TARGET_ROOT = REPO_ROOT / "data" / "input" / "base"
 DEFAULT_METADATA_PATH = REPO_ROOT / "data" / "runtime" / "latest" / "active_scenario.json"
+OPTIONAL_BUNDLE_FILES = (
+    "generated_pod.csv",
+    "raw_order.csv",
+)
 
 SCENARIO_ALIASES = {
     "cindy_s1": "cindy_s1",
@@ -184,7 +188,7 @@ def activate_scenario_inputs(
     metadata_path: str | os.PathLike[str] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any] | None:
-    """Copy normalized scenario items.csv and pods.csv into a target root."""
+    """Copy normalized scenario inputs into a target root."""
     selected_name = scenario_name if scenario_name is not None else os.environ.get("RMFS_SCENARIO_NAME")
     if selected_name is None or str(selected_name).strip() == "":
         return None
@@ -194,10 +198,19 @@ def activate_scenario_inputs(
     pods_source = scenario_path / "pods.csv"
     items_frame = normalize_items_frame(_read_csv_auto(items_source))
     pods_frame = normalize_pods_frame(_read_csv_auto(pods_source))
+    optional_sources = {
+        name: scenario_path / name
+        for name in OPTIONAL_BUNDLE_FILES
+        if (scenario_path / name).exists()
+    }
 
     destination_root = Path(target_root).resolve() if target_root is not None else DEFAULT_TARGET_ROOT
     items_target = destination_root / "items.csv"
     pods_target = destination_root / "pods.csv"
+    optional_targets = {
+        name: destination_root / name
+        for name in optional_sources
+    }
     metadata_target = Path(metadata_path).resolve() if metadata_path is not None else DEFAULT_METADATA_PATH
     metadata = {
         "scenario_name": canonical,
@@ -206,6 +219,12 @@ def activate_scenario_inputs(
         "pods_source": str(pods_source),
         "items_target": str(items_target),
         "pods_target": str(pods_target),
+        "optional_sources": {
+            name: str(path) for name, path in optional_sources.items()
+        },
+        "optional_targets": {
+            name: str(path) for name, path in optional_targets.items()
+        },
         "metadata_target": str(metadata_target),
         "items_rows": int(len(items_frame)),
         "pods_rows": int(len(pods_frame)),
@@ -222,6 +241,12 @@ def activate_scenario_inputs(
     destination_root.mkdir(parents=True, exist_ok=True)
     items_frame.to_csv(items_target, index=False)
     pods_frame.to_csv(pods_target, index=False)
+    for name in OPTIONAL_BUNDLE_FILES:
+        optional_target = destination_root / name
+        if name not in optional_sources and optional_target.exists():
+            optional_target.unlink()
+    for name, source in optional_sources.items():
+        shutil.copy2(source, optional_targets[name])
     metadata_target.parent.mkdir(parents=True, exist_ok=True)
     metadata_target.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return metadata
@@ -242,4 +267,8 @@ def copy_scenario_bundle(
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source / "items.csv", destination / "items.csv")
     shutil.copy2(source / "pods.csv", destination / "pods.csv")
+    for name in OPTIONAL_BUNDLE_FILES:
+        optional_source = source / name
+        if optional_source.exists():
+            shutil.copy2(optional_source, destination / name)
     return destination

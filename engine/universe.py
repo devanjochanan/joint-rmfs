@@ -1,4 +1,12 @@
 class Universe:
+    def __init__(self):
+        # Simulation objects and clock must never leak between runs.
+        self._tick = 0
+        self.id = 0
+        self._objects = []
+        self.deadlock_prevention_manager = None
+        self.warehouse_size = []
+
     _tick = 0
     id = 0
     tick_to_second = 0.5
