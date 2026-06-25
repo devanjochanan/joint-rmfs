@@ -1029,6 +1029,48 @@ def assign_backlog_orders(universe: Inventory):
 
 
 def draw_storage_from_generated_file(universe: Inventory):
+    # ── PATCH C: load charging config, apply policy, register chargers ────
+    # Runs before initRobots(), so Robot class policy reaches the fleet.
+    import json as _json
+    from model.robot import Robot as _Robot
+    from src.rmfs.decisions.charging.config import canonical_charging_config_path
+    _cfg_path = os.environ.get("RMFS_CHARGING_CONFIG", "") or str(canonical_charging_config_path())
+    _cfg = {}
+    if os.path.exists(_cfg_path):
+        try:
+            with open(_cfg_path, "r", encoding="utf-8") as _f:
+                _cfg = _json.load(_f)
+        except Exception as _e:
+            print(f"[charging] could not read {_cfg_path}: {_e}")
+    # Apply policy to the Robot class BEFORE the fleet is created.
+    for _k, _a in (("battery_low_pct", "BATTERY_LOW_PCT"),
+                   ("battery_charged_pct", "BATTERY_CHARGED_PCT"),
+                   ("battery_interrupt_pct", "BATTERY_INTERRUPT_PCT"),
+                   ("initial_battery_frac", "INITIAL_BATTERY_FRAC")):
+        if _k in _cfg:
+            setattr(_Robot, _a, float(_cfg[_k]))
+    if "corrected_energy_model" in _cfg:
+        _Robot.CORRECTED_ENERGY_MODEL = bool(_cfg["corrected_energy_model"])
+    # Register charger overlay positions ([row, col] in config -> (x=col, y=row)).
+    for _pos in _cfg.get("charger_positions", []):
+        universe.charger_cells.add((int(_pos[1]), int(_pos[0])))
+    for _pos in _cfg.get("active_charger_positions", []):
+        universe.active_charger_cells.add((int(_pos[1]), int(_pos[0])))
+    universe.disable_active_charging = bool(_cfg.get("disable_active_charging", False))
+    # Charging is ON by default (realistic battery model). It is active whenever
+    # chargers exist (config positions OR grid value-2 cells). Set
+    # RMFS_CHARGING_ENABLED=0 to fall back to the old no-battery behavior.
+    _env = os.environ.get("RMFS_CHARGING_ENABLED", "").strip().lower()
+    _explicit_off = _env in {"0", "false", "no", "off"}
+    universe.charging_enabled = (not _explicit_off) and bool(universe.charger_cells)
+    if universe.charging_enabled:
+        print(f"[charging] ON: {len(universe.charger_cells)} charger cells "
+              f"(active={len(universe.active_charger_cells)}), policy "
+              f"{_Robot.BATTERY_LOW_PCT}/{_Robot.BATTERY_CHARGED_PCT}/"
+              f"{_Robot.BATTERY_INTERRUPT_PCT} from {os.path.basename(_cfg_path)}")
+    else:
+        print("[charging] OFF (RMFS_CHARGING_ENABLED=0, or no chargers found)")
+
     station_picker_counter = 1
     station_replenish_counter = 1
     pods_horizontal_length = 5
@@ -1104,6 +1146,7 @@ def draw_storage_from_generated_file(universe: Inventory):
                     universe.pod_manager.add_pod(obj)
                 elif value == 2:
                     obj.shape = 'square 2'
+                    universe.charger_cells.add((x, y))   # PATCH C: grid-encoded charger
 
                 if obj_left_value != 1:
                     graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)

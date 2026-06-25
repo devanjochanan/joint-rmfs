@@ -9,7 +9,7 @@ class Universe:
 
     _tick = 0
     id = 0
-    tick_to_second = 0.5
+    tick_to_second = 0.15
     _objects = []
     landscape = None
     graph = None
