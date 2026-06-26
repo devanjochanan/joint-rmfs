@@ -29,6 +29,15 @@ class RTSRolloutWriter:
             self._fh = None
         self._closed = True
 
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state["_fh"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._fh = None
+
     def _write(self, row: Mapping[str, Any]) -> None:
         if not self.enabled:
             return

@@ -12,6 +12,8 @@ from .runtime_config import RTSRuntimeConfig, validate_rts_runtime_config
 def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path | None):
     validate_rts_runtime_config(config)
     inventory.rts_rollout_runtime = NoopRTSRolloutRuntime()
+    inventory.rts_controls_post_pick_replenishment = False
+    inventory.committed_next_reservations_enabled = bool(config.committed_next_reservations_enabled)
 
     if config.policy_mode == "current":
         if config.rollout_enabled:
@@ -65,6 +67,7 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
                 feature_schema_id=config.policy_checkpoint_id,
             ),
         )
+        inventory.rts_controls_post_pick_replenishment = True
         inventory.rts_rollout_runtime = RTSRolloutRuntime(config=config, runtime_root=runtime_root)
         return inventory.rts_rollout_runtime
 

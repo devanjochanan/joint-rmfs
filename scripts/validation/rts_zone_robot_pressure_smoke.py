@@ -105,7 +105,8 @@ def main() -> None:
         stations=[picker, repl],
     )
     state = build_state(state_context, ("A", "B")).state_json
-    assert state["spatial_context"]["selected_replenishment_station_logical_load"] == 1.0
+    assert "selected_replenishment_station_logical_load" not in state["spatial_context"]
+    assert state["zone_registry"]["robot_pressure_denominator"] == "total active warehouse robot objects"
 
     print("rts zone robot pressure smoke ok")
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .action_space import STORE, build_action_mask, encode_action
+from .action_space import STORE, build_action_mask_from_contexts, encode_action
 from .cycle_reference import read_cycle_reference
 from .evaluation_policy import infer_zone_ids_from_context
 from .evaluation_summary import summarize_rollout_events, write_rollout_summary
@@ -23,6 +23,9 @@ from .training.reward_normalizer import pending_cold_start_reward_json
 PAPER_CYCLE_STATUS_PENDING = "pending"
 PAPER_CYCLE_STATUS_COMPLETE = "complete"
 PAPER_CYCLE_STATUS_CENSORED_NEXT_TASK_REPLENISHMENT = "censored_next_task_replenishment"
+PAPER_CYCLE_STATUS_CENSORED_NO_NEXT_TASK = "censored_no_next_task"
+PAPER_CYCLE_STATUS_CENSORED_COMMITTED_NEXT_CANCELLED = "censored_committed_next_cancelled"
+PAPER_CYCLE_STATUS_CENSORED_RUN_END = "censored_run_end"
 PAPER_CYCLE_COMPLETION_RULE_NEXT_ORDER_RETRIEVAL_ARRIVAL = "next_order_retrieval_arrival"
 
 
@@ -39,6 +42,18 @@ class PendingRTSDecision:
     return_finish_tick: float | None = None
     return_duration: float | None = None
     paper_cycle_status: str = PAPER_CYCLE_STATUS_PENDING
+    committed_next_reservation_id: str | None = None
+    committed_next_job_id: str | None = None
+    committed_next_pod_id: str | None = None
+    committed_next_station_id: str | None = None
+    committed_next_zone_id: str | None = None
+    committed_next_created_time_seconds: float | None = None
+    committed_next_activation_time_seconds: float | None = None
+    cycle_estimate_known: bool = False
+    estimated_cycle_time_at_decision: float | None = None
+    estimated_queue_time_at_decision: float | None = None
+    estimated_replenishment_service_time_at_decision: float | None = None
+    cycle_estimate_status: str | None = None
 
 
 class RTSOutcomeTracker:
@@ -109,6 +124,15 @@ class NoopRTSRolloutRuntime:
     def on_station_arrival(self, *args, **kwargs) -> None:
         return None
 
+    def on_committed_next_activated(self, *args, **kwargs) -> None:
+        return None
+
+    def censor_pending_for_robot(self, *args, **kwargs) -> None:
+        return None
+
+    def censor_all_pending(self, *args, **kwargs) -> None:
+        return None
+
     def close(self) -> None:
         return None
 
@@ -128,29 +152,43 @@ class RTSRolloutRuntime:
         if self.config.rollout_enabled:
             self._write_summary()
 
-    def on_decision(self, *, robot: Any, context: Any, decision: Any) -> None:
+    def on_decision(self, *, robot: Any, context: Any, decision: Any) -> str | None:
         if not self.config.rollout_enabled:
-            return
+            return None
         zones = self.config.zone_ids or infer_zone_ids_from_context(context)
         if not zones:
             raise RuntimeError("RTS rollout requires configured or inferable zone_ids when a decision occurs")
-        state = build_state(context, zones)
-        store_valid = {row["zone_id"]: bool(row["store_action_valid"]) for row in state.state_json["zone_rows"]}
-        repl_valid = {row["zone_id"]: bool(row["replenish_store_action_valid"]) for row in state.state_json["zone_rows"]}
-        mask = build_action_mask(zones, store_valid_by_zone=store_valid, replenish_valid_by_zone=repl_valid)
+        metadata = dict(getattr(decision, "metadata", {}) or {})
+        captured_state = metadata.get("state_json")
+        if isinstance(captured_state, dict):
+            state_json = captured_state
+            captured_mask = metadata.get("action_mask")
+            mask = list(captured_mask) if captured_mask is not None else [
+                int(row.get("mask_value", 0))
+                for row in sorted(
+                    state_json.get("rts_action_contexts", []) or [],
+                    key=lambda row: int(row.get("action_index", 0)),
+                )
+            ]
+        else:
+            state = build_state(context, zones)
+            state_json = state.state_json
+            mask = build_action_mask_from_contexts(zones, state.action_contexts)
         selected = _selected_action(decision, zones)
-        features = build_feature_bundle(zones, mask, state.state_json)
+        selected_context_payload = _selected_action_context_payload(state_json, selected["index"])
+        selected_cycle_estimate = dict(selected_context_payload.get("cycle_estimate") or {})
+        features = build_feature_bundle(zones, mask, state_json)
         warehouse = getattr(context, "warehouse", None)
         tick = getattr(warehouse, "_tick", None)
         tick_to_second = getattr(warehouse, "tick_to_second", None)
         warehouse_time = _float_or_none(tick)
         netlogo_step = _netlogo_step_or_none(warehouse_time, tick_to_second)
-        metadata = dict(getattr(decision, "metadata", {}) or {})
         robot_id = _robot_id(robot)
         job = getattr(robot, "job", None)
         job_id = _text(getattr(job, "my_id", ""))
         pod_id = _text(getattr(getattr(job, "pod", None), "pod_id", getattr(context.pod, "pod_id", "")))
         decision_event_id = make_decision_event_id(robot_id=robot_id, job_id=job_id, pod_id=pod_id, tick=tick)
+        committed_next = _committed_next_payload(context, robot)
         row = build_decision_event(
             decision_event_id=decision_event_id,
             tick=tick,
@@ -166,7 +204,7 @@ class RTSRolloutRuntime:
             selected_action_branch=selected["branch"],
             selected_zone_id=selected["zone_id"],
             selected_storage=getattr(decision, "storage", None),
-            state_json=state.state_json,
+            state_json=state_json,
             feature_shapes={
                 "X_actions": list(features.X_actions.shape),
                 "M_actions": list(features.M_actions.shape),
@@ -184,6 +222,21 @@ class RTSRolloutRuntime:
             warehouse_time=warehouse_time,
             tick_to_second=tick_to_second,
         )
+        row.update(committed_next)
+        row.update(
+            {
+                "action_context_id": getattr(decision, "action_context_id", None) or metadata.get("action_context_id"),
+                "action_context_version": getattr(decision, "action_context_version", None)
+                or metadata.get("action_context_version"),
+                "candidate_storage_id": metadata.get("candidate_storage_id"),
+                "selected_replenishment_station_id": getattr(decision, "replenishment_station_id", None)
+                or metadata.get("selected_replenishment_station_id"),
+                "validity_reason_codes": list(metadata.get("validity_reason_codes", []) or []),
+                "next_job_proposal_id": getattr(decision, "next_job_proposal_id", None)
+                or metadata.get("next_job_proposal_id"),
+            }
+        )
+        row.update(_cycle_estimate_payload(selected_cycle_estimate))
         self.writer.write_decision(row)
         self.tracker.record_decision(
             PendingRTSDecision(
@@ -195,9 +248,27 @@ class RTSRolloutRuntime:
                 selected_action_branch=selected["branch"] or STORE,
                 metadata=metadata,
                 tick_to_second=float(tick_to_second) if tick_to_second is not None else None,
+                committed_next_reservation_id=committed_next["committed_next_reservation_id"],
+                committed_next_job_id=committed_next["committed_next_job_id"],
+                committed_next_pod_id=committed_next["committed_next_pod_id"],
+                committed_next_station_id=committed_next["committed_next_station_id"],
+                committed_next_zone_id=committed_next["committed_next_zone_id"],
+                committed_next_created_time_seconds=committed_next["committed_next_created_time_seconds"],
+                cycle_estimate_known=bool(selected_cycle_estimate.get("known", False)),
+                estimated_cycle_time_at_decision=_float_or_none(
+                    selected_cycle_estimate.get("estimated_cycle_seconds")
+                ),
+                estimated_queue_time_at_decision=_float_or_none(
+                    selected_cycle_estimate.get("estimated_queue_seconds")
+                ),
+                estimated_replenishment_service_time_at_decision=_float_or_none(
+                    selected_cycle_estimate.get("estimated_replenishment_service_seconds")
+                ),
+                cycle_estimate_status=_text(selected_cycle_estimate.get("status")) or None,
             )
         )
         self._write_summary()
+        return decision_event_id
 
     def on_return_completed(self, *, robot: Any) -> None:
         if not self.config.rollout_enabled:
@@ -261,6 +332,8 @@ class RTSRolloutRuntime:
             paper_cycle_censor_reason="",
             paper_cycle_completion_rule="",
         )
+        row.update(_pending_committed_next_payload(pending))
+        row.update(_pending_cycle_estimate_payload(pending, realized_cycle_time=None))
         self.writer.write_outcome(row)
         self._write_summary()
 
@@ -275,7 +348,8 @@ class RTSRolloutRuntime:
             return
         station_type = str(getattr(station, "station_type", "")).strip().lower()
         if station_type in {"picker", "picking"}:
-            self._complete_paper_cycle(robot=robot, station=station, pending=pending)
+            if self._matches_committed_next_arrival(robot=robot, station=station, pending=pending):
+                self._complete_paper_cycle(robot=robot, station=station, pending=pending)
         elif station_type == "replenishment":
             self._censor_paper_cycle(
                 robot=robot,
@@ -285,9 +359,50 @@ class RTSRolloutRuntime:
                 reason="next_task_replenishment",
             )
 
+    def on_committed_next_activated(self, *, robot: Any, reservation: Any) -> None:
+        if not self.config.rollout_enabled:
+            return
+        pending = self.tracker.pending_by_robot_id.get(_robot_id(robot))
+        if pending is None:
+            return
+        if pending.committed_next_reservation_id != _text(getattr(reservation, "reservation_id", "")):
+            return
+        pending.committed_next_activation_time_seconds = _float_or_none(
+            getattr(reservation, "activation_time_seconds", None)
+        )
+
+    def censor_pending_for_robot(self, *, robot: Any, status: str, reason: str) -> None:
+        if not self.config.rollout_enabled:
+            return
+        pending = self.tracker.pending_by_robot_id.get(_robot_id(robot))
+        if pending is None:
+            return
+        self._censor_paper_cycle(robot=robot, station=None, pending=pending, status=status, reason=reason)
+
+    def censor_all_pending(self, *, status: str, reason: str) -> None:
+        if not self.config.rollout_enabled:
+            return
+        for pending in self.tracker.orphan_pending():
+            robot = type("_PendingRobot", (), {"warehouse": None, "universe": None, "job": None, "destination": None})()
+            setattr(robot, "_id", pending.robot_id)
+            self._censor_paper_cycle(robot=robot, station=None, pending=pending, status=status, reason=reason)
+
     def close(self) -> None:
+        self.censor_all_pending(status=PAPER_CYCLE_STATUS_CENSORED_RUN_END, reason="runtime_close")
         self._write_summary()
         self.writer.close()
+
+    def _matches_committed_next_arrival(self, *, robot: Any, station: Any, pending: PendingRTSDecision) -> bool:
+        job = getattr(robot, "job", None)
+        if pending.committed_next_reservation_id is None:
+            return True
+        if _text(getattr(job, "committed_next_activated_by_robot_id", "")) != pending.robot_id:
+            return False
+        if _text(getattr(job, "my_id", "")) != pending.committed_next_job_id:
+            return False
+        if _text(getattr(getattr(job, "pod", None), "pod_id", "")) != pending.committed_next_pod_id:
+            return False
+        return _text(getattr(station, "station_id", "")) == pending.committed_next_station_id
 
     def _complete_paper_cycle(self, *, robot: Any, station: Any, pending: PendingRTSDecision) -> None:
         tick = float(getattr(getattr(robot, "universe", None), "_tick", getattr(getattr(robot, "warehouse", None), "_tick", 0.0)))
@@ -327,6 +442,8 @@ class RTSRolloutRuntime:
             paper_cycle_censor_reason="",
             paper_cycle_completion_rule=PAPER_CYCLE_COMPLETION_RULE_NEXT_ORDER_RETRIEVAL_ARRIVAL,
         )
+        row.update(_pending_committed_next_payload(completed))
+        row.update(_pending_cycle_estimate_payload(completed, realized_cycle_time=duration))
         self.writer.write_outcome(row)
         self._write_summary()
 
@@ -334,7 +451,7 @@ class RTSRolloutRuntime:
         self,
         *,
         robot: Any,
-        station: Any,
+        station: Any | None,
         pending: PendingRTSDecision,
         status: str,
         reason: str,
@@ -364,11 +481,13 @@ class RTSRolloutRuntime:
             paper_cycle_complete=0,
             paper_cycle_start_tick=censored.return_start_tick,
             paper_cycle_storage_arrival_tick=censored.return_finish_tick,
-            paper_cycle_next_station_arrival_tick=tick,
+            paper_cycle_next_station_arrival_tick=tick if station is not None else None,
             paper_cycle_duration=None,
             paper_cycle_censor_reason=reason,
             paper_cycle_completion_rule=status,
         )
+        row.update(_pending_committed_next_payload(censored))
+        row.update(_pending_cycle_estimate_payload(censored, realized_cycle_time=None))
         self.writer.write_outcome(row)
         self._write_summary()
 
@@ -391,21 +510,133 @@ class RTSRolloutRuntime:
 
 def _selected_action(decision: Any, zones: tuple[str, ...]) -> dict[str, Any]:
     metadata: Mapping[str, Any] = getattr(decision, "metadata", {}) or {}
+    decision_branch = getattr(decision, "branch", None)
+    decision_zone_id = getattr(decision, "zone_id", None)
+    if getattr(decision, "action_index", None) is not None:
+        return {
+            "index": int(getattr(decision, "action_index")),
+            "branch": decision_branch or metadata.get("selected_action_branch"),
+            "zone_id": decision_zone_id or metadata.get("selected_zone_id"),
+        }
     if metadata.get("selected_action_index") is not None:
         return {
             "index": int(metadata["selected_action_index"]),
-            "branch": metadata.get("selected_action_branch"),
-            "zone_id": metadata.get("selected_zone_id"),
+            "branch": decision_branch or metadata.get("selected_action_branch"),
+            "zone_id": decision_zone_id or metadata.get("selected_zone_id"),
         }
     storage = getattr(decision, "storage", None)
     if storage is None:
         return {"index": None, "branch": None, "zone_id": None}
-    zone_id = infer_zone_id(storage)
+    zone_id = decision_zone_id or infer_zone_id(storage)
+    branch = decision_branch or STORE
     try:
-        index = encode_action(STORE, zone_id, zones)
+        index = encode_action(branch, zone_id, zones)
     except ValueError:
         index = None
-    return {"index": index, "branch": STORE, "zone_id": zone_id}
+    return {"index": index, "branch": branch, "zone_id": zone_id}
+
+
+def _committed_next_payload(context: Any, robot: Any) -> dict[str, Any]:
+    warehouse = getattr(context, "warehouse", None)
+    registry = getattr(warehouse, "committed_next_registry", None)
+    reservation = registry.get_for_robot(robot) if registry is not None else None
+    if reservation is None:
+        return _empty_committed_next_payload()
+    return {
+        "committed_next_reservation_id": _text(getattr(reservation, "reservation_id", "")) or None,
+        "committed_next_job_id": _text(getattr(reservation, "job_id", "")) or None,
+        "committed_next_pod_id": _text(getattr(reservation, "pod_id", "")) or None,
+        "committed_next_station_id": _text(getattr(reservation, "picking_station_id", "")) or None,
+        "committed_next_zone_id": _text(getattr(reservation, "committed_next_zone_id", "")) or None,
+        "committed_next_created_time_seconds": _float_or_none(
+            getattr(reservation, "created_time_seconds", None)
+        ),
+        "committed_next_activation_time_seconds": _float_or_none(
+            getattr(reservation, "activation_time_seconds", None)
+        ),
+        "committed_next_candidate_count": getattr(reservation, "candidate_count", None),
+        "committed_next_retrieval_cost": _float_or_none(getattr(reservation, "retrieval_cost", None)),
+    }
+
+
+def _pending_committed_next_payload(pending: PendingRTSDecision) -> dict[str, Any]:
+    return {
+        "committed_next_reservation_id": pending.committed_next_reservation_id,
+        "committed_next_job_id": pending.committed_next_job_id,
+        "committed_next_pod_id": pending.committed_next_pod_id,
+        "committed_next_station_id": pending.committed_next_station_id,
+        "committed_next_zone_id": pending.committed_next_zone_id,
+        "committed_next_created_time_seconds": pending.committed_next_created_time_seconds,
+        "committed_next_activation_time_seconds": pending.committed_next_activation_time_seconds,
+    }
+
+
+def _selected_action_context_payload(state_json: Mapping[str, Any], action_index: Any) -> dict[str, Any]:
+    if action_index is None:
+        return {}
+    try:
+        selected_index = int(action_index)
+    except Exception:
+        return {}
+    for row in state_json.get("rts_action_contexts", []) or []:
+        try:
+            if int(row.get("action_index")) == selected_index:
+                return dict(row)
+        except Exception:
+            continue
+    return {}
+
+
+def _cycle_estimate_payload(cycle_estimate: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "cycle_estimate_known": 1 if bool(cycle_estimate.get("known", False)) else 0,
+        "cycle_estimate_status": _text(cycle_estimate.get("status")) or None,
+        "cycle_estimate_semantics": _text(cycle_estimate.get("semantics")) or None,
+        "cycle_estimator_version": _text(cycle_estimate.get("estimator_version")) or None,
+        "estimated_cycle_time_at_decision": _float_or_none(cycle_estimate.get("estimated_cycle_seconds")),
+        "estimated_travel_time_at_decision": _float_or_none(cycle_estimate.get("estimated_travel_seconds")),
+        "estimated_queue_time_at_decision": _float_or_none(cycle_estimate.get("estimated_queue_seconds")),
+        "estimated_replenishment_service_time_at_decision": _float_or_none(
+            cycle_estimate.get("estimated_replenishment_service_seconds")
+        ),
+        "estimated_handling_time_at_decision": _float_or_none(cycle_estimate.get("estimated_handling_seconds")),
+        "cycle_estimate_fallback_used": 1 if bool(cycle_estimate.get("fallback_used", False)) else 0,
+    }
+
+
+def _pending_cycle_estimate_payload(pending: PendingRTSDecision, *, realized_cycle_time: float | None) -> dict[str, Any]:
+    estimate = pending.estimated_cycle_time_at_decision
+    payload = {
+        "cycle_estimate_known": 1 if pending.cycle_estimate_known else 0,
+        "cycle_estimate_status": pending.cycle_estimate_status,
+        "estimated_cycle_time_at_decision": estimate,
+        "estimated_queue_time_at_decision": pending.estimated_queue_time_at_decision,
+        "estimated_replenishment_service_time_at_decision": pending.estimated_replenishment_service_time_at_decision,
+        "cycle_estimate_error": None,
+        "cycle_estimate_absolute_error": None,
+        "cycle_estimate_relative_error": None,
+    }
+    if realized_cycle_time is None or estimate is None:
+        return payload
+    error = float(realized_cycle_time) - float(estimate)
+    payload["cycle_estimate_error"] = error
+    payload["cycle_estimate_absolute_error"] = abs(error)
+    payload["cycle_estimate_relative_error"] = abs(error) / max(1e-9, abs(float(realized_cycle_time)))
+    return payload
+
+
+def _empty_committed_next_payload() -> dict[str, Any]:
+    return {
+        "committed_next_reservation_id": None,
+        "committed_next_job_id": None,
+        "committed_next_pod_id": None,
+        "committed_next_station_id": None,
+        "committed_next_zone_id": None,
+        "committed_next_created_time_seconds": None,
+        "committed_next_activation_time_seconds": None,
+        "committed_next_candidate_count": 0,
+        "committed_next_retrieval_cost": None,
+    }
 
 
 def _load_reward_reference(path: str | None) -> RTSRewardReference | None:

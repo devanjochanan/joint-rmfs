@@ -10,8 +10,18 @@ import torch
 
 from .metrics import append_jsonl, atomic_write_json, json_safe, write_json
 from .references import copy_cycle_reference_to_checkpoint
+from ..features import ACTION_FEATURE_SCHEMA_VERSION
+from ..cycle_estimator import CYCLE_ESTIMATE_VERSION, SEMANTICS_HOST_STRUCTURAL
 from ..graph_distance import DISTANCE_SEMANTICS_VERSION
 from ..reward import REWARD_HORIZON
+from ..travel_time import TIME_CONVERSION_VERSION, TRAVEL_TIME_VERSION
+from ..static_state_context import (
+    DISTANCE_NORMALIZATION_VERSION,
+    HISTORICAL_POD_RANK_VERSION,
+    LAYOUT_NORMALIZATION_VERSION,
+)
+from ..stock_features import STOCK_FEATURE_SCHEMA_VERSION, STOCK_SOURCE_VERSION
+from ..zone_features import SKU_SIMILARITY_VERSION
 from ..zone_registry import schema_metadata_for_zone_ids, zone_ids_from_action_feature_names
 
 
@@ -61,6 +71,17 @@ def write_feature_schema(
         metadata = {**schema_metadata_for_zone_ids(zone_ids), **metadata}
     metadata.setdefault("reward_horizon", REWARD_HORIZON)
     metadata.setdefault("distance_semantics_version", DISTANCE_SEMANTICS_VERSION)
+    metadata.setdefault("cycle_estimator_version", CYCLE_ESTIMATE_VERSION)
+    metadata.setdefault("cycle_estimate_semantics", SEMANTICS_HOST_STRUCTURAL)
+    metadata.setdefault("travel_time_version", TRAVEL_TIME_VERSION)
+    metadata.setdefault("time_conversion_version", TIME_CONVERSION_VERSION)
+    metadata.setdefault("action_feature_schema_version", ACTION_FEATURE_SCHEMA_VERSION)
+    metadata.setdefault("stock_feature_schema_version", STOCK_FEATURE_SCHEMA_VERSION)
+    metadata.setdefault("stock_source_version", STOCK_SOURCE_VERSION)
+    metadata.setdefault("layout_normalization_version", LAYOUT_NORMALIZATION_VERSION)
+    metadata.setdefault("historical_pod_rank_version", HISTORICAL_POD_RANK_VERSION)
+    metadata.setdefault("sku_similarity_version", SKU_SIMILARITY_VERSION)
+    metadata.setdefault("distance_normalization_version", DISTANCE_NORMALIZATION_VERSION)
     schema = {
         "action_feature_names": list(action_feature_names),
         "stock_feature_names": list(stock_feature_names),

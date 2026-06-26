@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 from .zone_registry import validate_no_col_zone_ids
+from .cycle_estimator import SUPPORTED_CYCLE_ESTIMATE_SEMANTICS, SEMANTICS_HOST_STRUCTURAL
 
 
 SUPPORTED_RTS_POLICY_MODES = (
@@ -30,6 +31,9 @@ class RTSRuntimeConfig:
     policy_checkpoint_id: str | None = None
     policy_action_mode: str = "sample"
     policy_device: str = "cpu"
+    committed_next_reservations_enabled: bool = False
+    cycle_estimate_semantics: str = SEMANTICS_HOST_STRUCTURAL
+    cycle_estimate_allow_metric_fallback: bool = True
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> "RTSRuntimeConfig":
@@ -59,9 +63,16 @@ def validate_rts_runtime_config(config: RTSRuntimeConfig) -> None:
         raise ValueError("rts policy_action_mode must be sample or greedy")
     if config.policy_device not in {"cpu", "cuda", "auto"}:
         raise ValueError("rts policy_device must be cpu, cuda, or auto")
+    if config.cycle_estimate_semantics not in SUPPORTED_CYCLE_ESTIMATE_SEMANTICS:
+        raise ValueError(
+            "rts cycle_estimate_semantics must be one of "
+            f"{sorted(SUPPORTED_CYCLE_ESTIMATE_SEMANTICS)}"
+        )
     if config.policy_mode == "rts_rl_explicit":
         if not config.rollout_enabled:
             raise ValueError("rts_rl_explicit requires rollout_enabled=True")
+        if not config.committed_next_reservations_enabled:
+            raise ValueError("rts_rl_explicit requires committed_next_reservations_enabled=True")
         if not config.policy_checkpoint_dir:
             raise ValueError("rts_rl_explicit requires policy_checkpoint_dir")
         if not config.policy_checkpoint_id:

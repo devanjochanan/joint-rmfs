@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 
 STORE = "store"
@@ -71,6 +71,21 @@ def build_action_mask(
     zones = normalize_zone_ids(zone_ids)
     mask = [1 if bool(store_valid_by_zone.get(zone_id, False)) else 0 for zone_id in zones]
     mask.extend(1 if bool(replenish_valid_by_zone.get(zone_id, False)) else 0 for zone_id in zones)
+    return mask
+
+
+def build_action_mask_from_contexts(zone_ids: Sequence[str], action_contexts: Sequence[Any]) -> list[int]:
+    zones = normalize_zone_ids(zone_ids)
+    expected = action_space_size(zones)
+    ordered = sorted(action_contexts, key=lambda context: int(getattr(context, "action_index")))
+    if len(ordered) != expected:
+        raise ValueError(f"RTS action context count mismatch: {len(ordered)} != {expected}")
+    mask = [0] * expected
+    for context in ordered:
+        action_index = int(getattr(context, "action_index"))
+        if action_index < 0 or action_index >= expected:
+            raise ValueError(f"RTS action context index out of bounds: {action_index}")
+        mask[action_index] = 1 if bool(getattr(context, "action_valid", False)) else 0
     return mask
 
 

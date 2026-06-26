@@ -104,6 +104,8 @@ class PodManager:
                     self.is_idle(pod.pod_id) is True
                     and not getattr(pod, "is_awaiting_replenishment", False)
                     and not getattr(pod, "must_replenish_before_pick", False)
+                    and not getattr(pod, "rts_return_in_progress", False)
+                    and not getattr(pod, "committed_next_owner_robot_id", None)
                     and pod.skus[sku]['current_qty'] > 0
                 ):
                     return pod
@@ -321,6 +323,11 @@ class PodManager:
     #     pod.is_idle = True
 
     def is_idle(self, pod_id):
+        pod = self.get_pod_by_id(pod_id)
+        if pod is not None and getattr(pod, "rts_return_in_progress", False):
+            return False
+        if pod is not None and getattr(pod, "committed_next_owner_robot_id", None):
+            return False
         return self.pod_idle.get(int(str(pod_id)), True)
 
     def get_pods_by_sku(self, sku):
@@ -331,4 +338,3 @@ class PodManager:
 
     def get_pod_by_id(self, pod_id) -> Pod:
         return self.id_to_pod.get(pod_id, None)
-

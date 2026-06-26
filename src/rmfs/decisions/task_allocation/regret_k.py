@@ -29,13 +29,14 @@ def scheduler_metadata(
     *,
     robot_task_allocator: str = DEFAULT_ROBOT_TASK_ALLOCATOR,
     regret_k: int | None = DEFAULT_REGRET_K,
+    committed_next_reservations_enabled: bool = False,
 ) -> dict[str, Any]:
     allocator = _normalize_allocator(robot_task_allocator)
     return {
         "robot_task_allocator": allocator,
         "regret_k": _normalize_k(regret_k) if allocator == DEFAULT_ROBOT_TASK_ALLOCATOR else None,
         "task_allocator_scope": TASK_ALLOCATOR_SCOPE,
-        "committed_next_reservations_enabled": False,
+        "committed_next_reservations_enabled": bool(committed_next_reservations_enabled),
     }
 
 

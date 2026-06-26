@@ -6,6 +6,12 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 from .tools.pod_location import upsert_pod_location
 
 
+def replenishment_service_steps_for_skus(pod, skus_to_replenish=None, *, delay_per_sku=20):
+    skus = list(skus_to_replenish or [])
+    total_skus = len(skus) if skus else len(getattr(pod, "skus", []) or [])
+    return int(total_skus) * int(delay_per_sku)
+
+
 class RobotJob:
     counter = 1
     def __init__(self, pod_coordinate: NetLogoCoordinate, station_id, pod):
@@ -23,6 +29,27 @@ class RobotJob:
         self.replenishment_delay = 0
         self.replenishment_skus = []
         self.is_finished = False
+        self.rts_continuation_active = False
+        self.rts_decision_identity = None
+        self.rts_branch = None
+        self.rts_zone_id = None
+        self.rts_final_storage = None
+        self.rts_final_destination = None
+        self.rts_replenishment_station = None
+        self.rts_source_station_id = None
+        self.rts_stage = None
+        self.rts_storage_reserved = False
+        self.rts_pending_replenishment_request_snapshot = None
+        self.rts_action_index = None
+        self.rts_action_context_id = None
+        self.rts_action_context_version = None
+        self.rts_final_storage_id = None
+        self.rts_replenishment_station_id = None
+        self.rts_next_job_proposal_id = None
+        self.rts_committed_next_reservation_id = None
+        self.committed_next_reservation_id = None
+        self.committed_next_owner_robot_id = None
+        self.committed_next_activated_by_robot_id = None
 
     def add_picking_task(self, order_id, sku, quantity):
         """Add an order with the specific SKU and quantity to be picked."""
@@ -31,8 +58,11 @@ class RobotJob:
     
     def add_replenishment_task(self, pod, skus_to_replenish=None):
         self.replenishment_skus = list(skus_to_replenish or [])
-        total_skus = len(self.replenishment_skus) if self.replenishment_skus else len(pod.skus)
-        self.replenishment_delay += total_skus * self.replenishment_delay_per_sku
+        self.replenishment_delay += replenishment_service_steps_for_skus(
+            pod,
+            self.replenishment_skus,
+            delay_per_sku=self.replenishment_delay_per_sku,
+        )
 
     def is_being_processed(self):
         """Check if the job is being processed based on delays."""
@@ -48,6 +78,26 @@ class RobotJob:
     def set_job_finish(self):
         self.is_finished = True
         upsert_pod_location(self.pod.pod_id, self.pod.pos_x, self.pod.pos_y)
+
+    def clear_rts_continuation(self):
+        self.rts_continuation_active = False
+        self.rts_decision_identity = None
+        self.rts_branch = None
+        self.rts_zone_id = None
+        self.rts_final_storage = None
+        self.rts_final_destination = None
+        self.rts_replenishment_station = None
+        self.rts_source_station_id = None
+        self.rts_stage = None
+        self.rts_storage_reserved = False
+        self.rts_pending_replenishment_request_snapshot = None
+        self.rts_action_index = None
+        self.rts_action_context_id = None
+        self.rts_action_context_version = None
+        self.rts_final_storage_id = None
+        self.rts_replenishment_station_id = None
+        self.rts_next_job_proposal_id = None
+        self.rts_committed_next_reservation_id = None
 
     def pop_order(self):
         return self.orders.pop(0)

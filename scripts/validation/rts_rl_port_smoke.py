@@ -68,7 +68,13 @@ def build_synthetic_context():
     warehouse = Obj(
         storage_manager=Obj(storages=storages),
         station_manager=Obj(stations=[station, Obj(station_id="replenishment-1", station_type="replenishment")]),
-        pod_manager=Obj(pods=[pod]),
+        pod_manager=Obj(
+            pods=[pod],
+            skus_data={
+                1: {"current_global_qty": 20, "max_global_qty": 100, "global_inv_level": 0.2, "global_threshold_inv_level": 0.3},
+                2: {"current_global_qty": 50, "max_global_qty": 100, "global_inv_level": 0.5, "global_threshold_inv_level": 0.2},
+            },
+        ),
         _objects=[robot],
     )
     return Obj(warehouse=warehouse, robot=robot, pod=pod, station=station)
@@ -115,7 +121,13 @@ def main():
         warehouse=Obj(
             storage_manager=Obj(storages=context.warehouse.storage_manager.storages),
             station_manager=Obj(stations=context.warehouse.station_manager.stations),
-            pod_manager=Obj(pods=[no_need_pod]),
+            pod_manager=Obj(
+                pods=[no_need_pod],
+                skus_data={
+                    1: {"current_global_qty": 80, "max_global_qty": 100, "global_inv_level": 0.8, "global_threshold_inv_level": 0.3},
+                    2: {"current_global_qty": 80, "max_global_qty": 100, "global_inv_level": 0.8, "global_threshold_inv_level": 0.2},
+                },
+            ),
             _objects=context.warehouse._objects,
         ),
         robot=context.robot,

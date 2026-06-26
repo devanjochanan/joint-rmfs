@@ -8,7 +8,8 @@ from typing import Any, Sequence
 from engine.netlogo_coordinate import NetLogoCoordinate
 from src.rmfs.decisions.rts.types import RTSDecision
 
-from .action_space import build_action_mask, decode_action, validate_action_mask
+from .action_context import selected_context_by_index
+from .action_space import build_action_mask_from_contexts, decode_action, validate_action_mask
 from .state import build_state
 from .storage_resolver import find_free_storage_in_zone
 from .zone_registry import build_zone_registry
@@ -32,15 +33,22 @@ class RTSRandomValidStoragePolicy:
         if not zones:
             raise RuntimeError("random_valid RTS policy requires zone_ids or inferable storage zones")
         state = build_state(context, zones)
-        store_valid = {row["zone_id"]: bool(row["store_action_valid"]) for row in state.state_json["zone_rows"]}
-        repl_valid = {zone_id: False for zone_id in zones}
-        mask = build_action_mask(zones, store_valid_by_zone=store_valid, replenish_valid_by_zone=repl_valid)
+        mask = build_action_mask_from_contexts(zones, state.action_contexts)
+        for action_context in state.action_contexts:
+            if action_context.branch != "store":
+                mask[action_context.action_index] = 0
         action = self.action_policy.select_action(zones, mask, self.rng)
-        storage = find_free_storage_in_zone(context, action.zone_id, action.branch)
+        action_context = selected_context_by_index(state.action_contexts, action.action_index)
+        storage = action_context.candidate_storage or find_free_storage_in_zone(context, action.zone_id, action.branch)
         if storage is None:
             raise RuntimeError(
                 f"random_valid selected {action.branch}:{action.zone_id}, but no free storage resolved"
             )
+        cycle_estimate = (
+            action_context.cycle_estimate.to_json_dict()
+            if getattr(action_context, "cycle_estimate", None) is not None
+            else None
+        )
         destination = NetLogoCoordinate(storage.pos_x, storage.pos_y)
         return RTSDecision(
             storage=storage,
@@ -52,6 +60,10 @@ class RTSRandomValidStoragePolicy:
                 "selected_action_index": action.action_index,
                 "selected_action_branch": action.branch,
                 "selected_zone_id": action.zone_id,
+                "action_context_id": action_context.context_id,
+                "action_context_version": action_context.context_version,
+                "candidate_storage_id": action_context.candidate_storage_id,
+                "selected_cycle_estimate": cycle_estimate,
                 "action_mask": list(mask),
                 "zone_ids": list(zones),
             },

@@ -7,42 +7,59 @@ from typing import Any, Mapping
 import numpy as np
 
 
+STOCK_SOURCE_VERSION = "rts_stock_source.v2"
+STOCK_FEATURE_SCHEMA_VERSION = "rts_stock_features.v2"
+
 STOCK_FEATURE_NAMES: tuple[str, ...] = (
-    "current_qty",
-    "limit_qty",
-    "fill_ratio",
-    "pod_below_threshold",
-    "below_threshold",
-    "is_zero_qty",
-    "is_zero_and_global_low",
-    "shortage_depth",
-    "global_low_depth",
+    "local_fill_ratio",
+    "local_shortage_depth",
+    "local_below_threshold",
+    "local_zero_qty",
+    "global_fill_ratio",
+    "global_shortage_depth",
+    "global_below_threshold",
+    "local_zero_and_global_low",
 )
 
 
-def stock_rows_from_pod(pod: Any) -> list[dict[str, float]]:
+def stock_rows_from_pod(
+    pod: Any,
+    warehouse: Any | None = None,
+    *,
+    strict_global: bool = True,
+) -> list[dict[str, float | str]]:
     rows = []
-    for sku_id, details in (getattr(pod, "skus", {}) or {}).items():
+    for sku_id, details in sorted((getattr(pod, "skus", {}) or {}).items(), key=lambda item: str(item[0])):
         details = dict(details or {})
         current_qty = _finite_float(details.get("current_qty", 0.0))
         limit_qty = _finite_float(details.get("limit_qty", 0.0))
-        fill_ratio = current_qty / limit_qty if limit_qty > 0.0 else 0.0
         threshold = _finite_float(details.get("threshold", 0.0))
-        global_inv_level = _finite_float(details.get("global_inv_level", 0.0))
-        global_low = _finite_float(details.get("global_low_depth", 0.0))
-        below = 1.0 if fill_ratio <= threshold else 0.0
+        local_fill = _ratio(current_qty, limit_qty)
+        global_data = _global_sku_data(warehouse, sku_id, strict=strict_global)
+        global_current = _finite_float(global_data.get("current_global_qty", 0.0))
+        global_limit = _finite_float(global_data.get("max_global_qty", 0.0))
+        global_threshold = _finite_float(global_data.get("global_threshold_inv_level", 0.0))
+        global_fill = _ratio(global_current, global_limit)
+        local_below = 1.0 if local_fill <= threshold else 0.0
+        global_below = 1.0 if global_fill <= global_threshold else 0.0
+        local_zero = 1.0 if current_qty <= 0.0 else 0.0
         rows.append(
             {
                 "sku_id": str(sku_id),
-                "current_qty": current_qty,
-                "limit_qty": limit_qty,
-                "fill_ratio": fill_ratio,
-                "pod_below_threshold": below,
-                "below_threshold": below,
-                "is_zero_qty": 1.0 if current_qty <= 0.0 else 0.0,
-                "is_zero_and_global_low": 1.0 if current_qty <= 0.0 and (global_inv_level <= 0.0 or global_low > 0.0) else 0.0,
-                "shortage_depth": max(0.0, threshold - fill_ratio),
-                "global_low_depth": max(0.0, global_low),
+                "local_current_qty": current_qty,
+                "local_limit_qty": limit_qty,
+                "local_threshold": threshold,
+                "global_current_qty": global_current,
+                "global_limit_qty": global_limit,
+                "global_threshold": global_threshold,
+                "local_fill_ratio": _bounded(local_fill),
+                "local_shortage_depth": _bounded(max(0.0, threshold - local_fill)),
+                "local_below_threshold": local_below,
+                "local_zero_qty": local_zero,
+                "global_fill_ratio": _bounded(global_fill),
+                "global_shortage_depth": _bounded(max(0.0, global_threshold - global_fill)),
+                "global_below_threshold": global_below,
+                "local_zero_and_global_low": 1.0 if local_zero and global_below else 0.0,
             }
         )
     return rows
@@ -50,42 +67,53 @@ def stock_rows_from_pod(pod: Any) -> list[dict[str, float]]:
 
 def derive_stock_feature_row(stock_row: Mapping[str, Any]) -> dict[str, float]:
     row = dict(stock_row or {})
-    values = {name: _finite_float(row.get(name, 0.0)) for name in STOCK_FEATURE_NAMES}
-    if values["limit_qty"] > 0.0 and "fill_ratio" not in row:
-        values["fill_ratio"] = values["current_qty"] / values["limit_qty"]
-    return values
+    return {name: _bounded(_finite_float(row.get(name, 0.0))) for name in STOCK_FEATURE_NAMES}
 
 
 def stock_summary(stock_rows: list[Mapping[str, Any]]) -> dict[str, float]:
     if not stock_rows:
         return {
             "pod_fill_ratio": 0.0,
+            "capacity_weighted_pod_fill_ratio": 0.0,
             "pod_below_threshold_ratio": 0.0,
+            "pod_global_low_ratio": 0.0,
             "replenishment_signal_active": 0.0,
             "pod_has_zero_and_global_low_sku": 0.0,
             "zero_global_low_sku_count": 0.0,
             "zero_global_low_sku_ratio": 0.0,
             "below_threshold_sku_count": 0.0,
             "below_threshold_sku_ratio": 0.0,
+            "global_low_sku_count": 0.0,
+            "global_low_sku_ratio": 0.0,
+            "min_local_fill_ratio": 0.0,
             "min_sku_fill_ratio": 0.0,
             "mean_sku_fill_ratio": 0.0,
         }
-    rows = [derive_stock_feature_row(row) for row in stock_rows]
+    rows = [dict(row) for row in stock_rows]
     count = float(len(rows))
-    fill = [row["fill_ratio"] for row in rows]
-    below_count = float(sum(1 for row in rows if row["below_threshold"] > 0.0))
-    zero_global_count = float(sum(1 for row in rows if row["is_zero_and_global_low"] > 0.0))
+    local_qty_sum = sum(_finite_float(row.get("local_current_qty", 0.0)) for row in rows)
+    local_limit_sum = sum(_finite_float(row.get("local_limit_qty", 0.0)) for row in rows)
+    fill = [_bounded(_finite_float(row.get("local_fill_ratio", 0.0))) for row in rows]
+    below_count = float(sum(1 for row in rows if _finite_float(row.get("local_below_threshold", 0.0)) > 0.0))
+    global_low_count = float(sum(1 for row in rows if _finite_float(row.get("global_below_threshold", 0.0)) > 0.0))
+    zero_global_count = float(sum(1 for row in rows if _finite_float(row.get("local_zero_and_global_low", 0.0)) > 0.0))
+    capacity_weighted = _ratio(local_qty_sum, local_limit_sum)
     return {
-        "pod_fill_ratio": float(sum(fill) / count),
-        "pod_below_threshold_ratio": float(below_count / count),
+        "pod_fill_ratio": _bounded(capacity_weighted),
+        "capacity_weighted_pod_fill_ratio": _bounded(capacity_weighted),
+        "pod_below_threshold_ratio": _bounded(below_count / count),
+        "pod_global_low_ratio": _bounded(global_low_count / count),
         "replenishment_signal_active": 1.0 if below_count > 0.0 or zero_global_count > 0.0 else 0.0,
         "pod_has_zero_and_global_low_sku": 1.0 if zero_global_count > 0.0 else 0.0,
         "zero_global_low_sku_count": zero_global_count,
-        "zero_global_low_sku_ratio": float(zero_global_count / count),
+        "zero_global_low_sku_ratio": _bounded(zero_global_count / count),
         "below_threshold_sku_count": below_count,
-        "below_threshold_sku_ratio": float(below_count / count),
+        "below_threshold_sku_ratio": _bounded(below_count / count),
+        "global_low_sku_count": global_low_count,
+        "global_low_sku_ratio": _bounded(global_low_count / count),
+        "min_local_fill_ratio": float(min(fill)),
         "min_sku_fill_ratio": float(min(fill)),
-        "mean_sku_fill_ratio": float(sum(fill) / count),
+        "mean_sku_fill_ratio": _bounded(sum(fill) / count),
     }
 
 
@@ -97,6 +125,42 @@ def build_stock_feature_matrix(stock_rows: list[Mapping[str, Any]]) -> np.ndarra
         [[derive_stock_feature_row(row)[name] for name in STOCK_FEATURE_NAMES] for row in sorted_rows],
         dtype=np.float32,
     )
+
+
+def stock_source_metadata() -> dict[str, Any]:
+    return {
+        "stock_source_version": STOCK_SOURCE_VERSION,
+        "stock_feature_schema_version": STOCK_FEATURE_SCHEMA_VERSION,
+        "local_stock_source": "pod.skus[sku]",
+        "global_stock_source": "warehouse.pod_manager.skus_data[sku]",
+    }
+
+
+def _global_sku_data(warehouse: Any | None, sku_id: Any, *, strict: bool) -> Mapping[str, Any]:
+    pod_manager = getattr(warehouse, "pod_manager", None)
+    all_global = getattr(pod_manager, "skus_data", None)
+    if isinstance(all_global, Mapping) and sku_id in all_global:
+        return dict(all_global[sku_id] or {})
+    try:
+        int_sku = int(sku_id)
+    except Exception:
+        int_sku = None
+    if isinstance(all_global, Mapping) and int_sku is not None and int_sku in all_global:
+        return dict(all_global[int_sku] or {})
+    if strict:
+        raise ValueError(f"missing RTS-RL global SKU data for pod SKU {sku_id!r}")
+    return {}
+
+
+def _ratio(numerator: Any, denominator: Any) -> float:
+    denom = _finite_float(denominator)
+    if denom <= 0.0:
+        return 0.0
+    return _finite_float(numerator) / denom
+
+
+def _bounded(value: Any) -> float:
+    return max(0.0, min(1.0, _finite_float(value)))
 
 
 def _finite_float(value: Any, default: float = 0.0) -> float:

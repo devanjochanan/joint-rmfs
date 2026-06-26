@@ -4,13 +4,23 @@ from __future__ import annotations
 
 from typing import Any
 
+from .action_context import select_candidate_storage
 from .graph_distance import graph_distance_or_fallback
 from .zone_registry import build_zone_registry
 
 
 def find_free_storage_in_zone(context: Any, zone_id: str, branch: str) -> Any | None:
-    del branch
+    storage, feasibility = select_candidate_storage(context, str(zone_id))
+    if storage is not None and feasibility.available and feasibility.reachable:
+        return storage
     warehouse = getattr(context, "warehouse", None)
+    registry_obj = getattr(warehouse, "committed_next_registry", None)
+    robot = getattr(context, "robot", None)
+    if registry_obj is not None and robot is not None:
+        proposal = registry_obj.get_action_proposal(robot, branch, zone_id)
+        proposed_storage = getattr(proposal, "candidate_storage", None)
+        if proposed_storage is not None and _available(proposed_storage):
+            return proposed_storage
     storage_manager = getattr(warehouse, "storage_manager", None)
     storages = list(getattr(storage_manager, "storages", []) or [])
     registry = build_zone_registry(context, (str(zone_id),))
@@ -18,8 +28,7 @@ def find_free_storage_in_zone(context: Any, zone_id: str, branch: str) -> Any | 
         storage
         for storage in storages
         if registry.zone_id_for_storage(storage) == str(zone_id)
-        and bool(getattr(storage, "is_empty", False))
-        and getattr(storage, "assigned_pod", None) is None
+        and _available(storage)
     ]
     if not candidates:
         return None
@@ -39,6 +48,10 @@ def _origin(context: Any) -> tuple[float, float]:
 
 def _has_coord(obj: Any) -> bool:
     return getattr(obj, "pos_x", None) is not None and getattr(obj, "pos_y", None) is not None
+
+
+def _available(storage: Any) -> bool:
+    return bool(getattr(storage, "is_empty", False)) and getattr(storage, "assigned_pod", None) is None
 
 
 def _coord(storage: Any) -> tuple[float, float]:

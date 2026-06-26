@@ -12,8 +12,18 @@ import torch
 from src.rmfs.rl.rts.training.device import resolve_rts_torch_device
 from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id
 from src.rmfs.rl.rts.model import RTSMaskedActorCritic
+from src.rmfs.rl.rts.features import ACTION_FEATURE_SCHEMA_VERSION
+from src.rmfs.rl.rts.cycle_estimator import CYCLE_ESTIMATE_VERSION, SEMANTICS_HOST_STRUCTURAL
 from src.rmfs.rl.rts.graph_distance import DISTANCE_SEMANTICS_VERSION
 from src.rmfs.rl.rts.reward import REWARD_HORIZON
+from src.rmfs.rl.rts.travel_time import TIME_CONVERSION_VERSION, TRAVEL_TIME_VERSION
+from src.rmfs.rl.rts.static_state_context import (
+    DISTANCE_NORMALIZATION_VERSION,
+    HISTORICAL_POD_RANK_VERSION,
+    LAYOUT_NORMALIZATION_VERSION,
+)
+from src.rmfs.rl.rts.stock_features import STOCK_FEATURE_SCHEMA_VERSION, STOCK_SOURCE_VERSION
+from src.rmfs.rl.rts.zone_features import SKU_SIMILARITY_VERSION
 
 
 @dataclass(frozen=True)
@@ -75,3 +85,20 @@ def _validate_schema_semantics(feature_schema: dict[str, Any]) -> None:
             "unsupported RTS checkpoint distance_semantics_version: "
             f"{distance_semantics!r}; expected {DISTANCE_SEMANTICS_VERSION!r}"
         )
+    required = {
+        "action_feature_schema_version": ACTION_FEATURE_SCHEMA_VERSION,
+        "stock_feature_schema_version": STOCK_FEATURE_SCHEMA_VERSION,
+        "stock_source_version": STOCK_SOURCE_VERSION,
+        "cycle_estimator_version": CYCLE_ESTIMATE_VERSION,
+        "cycle_estimate_semantics": SEMANTICS_HOST_STRUCTURAL,
+        "travel_time_version": TRAVEL_TIME_VERSION,
+        "time_conversion_version": TIME_CONVERSION_VERSION,
+        "layout_normalization_version": LAYOUT_NORMALIZATION_VERSION,
+        "historical_pod_rank_version": HISTORICAL_POD_RANK_VERSION,
+        "sku_similarity_version": SKU_SIMILARITY_VERSION,
+        "distance_normalization_version": DISTANCE_NORMALIZATION_VERSION,
+    }
+    for key, expected in required.items():
+        actual = feature_schema.get(key)
+        if actual != expected:
+            raise ValueError(f"unsupported RTS checkpoint {key}: {actual!r}; expected {expected!r}")

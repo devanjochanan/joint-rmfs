@@ -12,6 +12,8 @@ from .graph_distance import (
 )
 from .zone_registry import RTSZoneRegistry, build_zone_registry
 
+SKU_SIMILARITY_VERSION = "rts_positive_sku_similarity.v1"
+
 
 class _Coord:
     def __init__(self, x: Any, y: Any):
@@ -85,6 +87,7 @@ def build_zone_rows(
     storage_manager = getattr(warehouse, "storage_manager", None)
     storages = list(getattr(storage_manager, "storages", []) or [])
     robots = [obj for obj in getattr(warehouse, "_objects", []) or [] if _is_robot_object(obj)]
+    active_robot_denominator = max(1, len(robots))
     warnings: list[str] = []
     rows = []
     registry = build_zone_registry(context, zone_ids)
@@ -106,8 +109,6 @@ def build_zone_rows(
     stations = getattr(station_manager, "stations", []) or []
     repl_stations = [s for s in stations if getattr(s, "station_type", "") == "replenishment"]
     station_coord = _coord_for(station)
-    selected_repl_station = _selected_replenishment_station(station, repl_stations)
-    selected_repl_coord = _coord_for(selected_repl_station)
     fallback_distance_seen = False
     
     for zone_id in zone_ids:
@@ -115,6 +116,7 @@ def build_zone_rows(
         zone_storages = [storage for storage in storages if registry.zone_id_for_storage(storage) == zone_id]
         free = [storage for storage in zone_storages if bool(getattr(storage, "is_empty", False)) and getattr(storage, "assigned_pod", None) is None]
         total = len(zone_storages)
+        free_slot_ratio = float(len(free)) / float(max(1, total))
         
         present_robot_count = sum(
             1 for pressure_zone_id in present_pressure_zone_ids
@@ -153,11 +155,20 @@ def build_zone_rows(
         for storage in zone_storages:
             p = getattr(storage, "assigned_pod", None)
             if p is not None:
-                zone_skus.update(getattr(p, "skus", {}).keys())
+                zone_skus.update(
+                    sku
+                    for sku, details in (getattr(p, "skus", {}) or {}).items()
+                    if _float(details.get("current_qty", 0.0)) > 0.0
+                )
                 
-        pod_skus = set(getattr(pod, "skus", {}).keys()) if pod is not None else set()
+        pod_skus = {
+            sku
+            for sku, details in (getattr(pod, "skus", {}) or {}).items()
+            if _float(details.get("current_qty", 0.0)) > 0.0
+        } if pod is not None else set()
+        sku_similarity_count = len(pod_skus.intersection(zone_skus))
         if pod_skus and zone_skus:
-            sku_similarity = len(pod_skus.intersection(zone_skus)) / len(pod_skus)
+            sku_similarity = sku_similarity_count / max(1, len(pod_skus))
         else:
             sku_similarity = 0.0
 
@@ -167,32 +178,13 @@ def build_zone_rows(
         if storage_cycle.status == DISTANCE_STATUS_FALLBACK:
             fallback_distance_seen = True
 
-        if selected_repl_coord is not None and representative_coord is not None:
-            selected_repl_distance = graph_distance_or_fallback(
-                warehouse,
-                selected_repl_coord,
-                representative_coord,
-            )
-        else:
-            selected_repl_distance = graph_distance_or_fallback(
-                warehouse,
-                station_coord,
-                representative_coord,
-            )
-        if selected_repl_distance.status == DISTANCE_STATUS_FALLBACK:
-            fallback_distance_seen = True
-
-        nearest_repl_distance = _nearest_replenishment_distance(
-            warehouse,
-            repl_stations,
-            representative_coord,
-        )
-        if nearest_repl_distance.status == DISTANCE_STATUS_FALLBACK:
-            fallback_distance_seen = True
-
-        replenish_cycle = selected_repl_distance
-        
         replenish_valid = bool(free) and replenishment_signal_active and replenishment_station_available
+        zone_dest_pressure = _pressure(destination_robot_count, active_robot_denominator)
+        neighbor_dest_pressure = _pressure(neighbor_dest_count, active_robot_denominator)
+        superzone_dest_pressure = _pressure(superzone_dest_count, active_robot_denominator)
+        zone_present_pressure = _pressure(present_robot_count, active_robot_denominator)
+        neighbor_present_pressure = _pressure(neighbor_present_count, active_robot_denominator)
+        superzone_present_pressure = _pressure(superzone_present_count, active_robot_denominator)
         
         rows.append(
             {
@@ -200,19 +192,28 @@ def build_zone_rows(
                 "zone_row_index": float(zone_info.row_index),
                 "zone_col_index": float(zone_info.col_index),
                 "selected_superzone_id": zone_info.superzone_id,
-                "occupation_level": 1.0 - (float(len(free)) / float(total)) if total else 0.0,
+                "occupation_level": 1.0 - free_slot_ratio if total else 0.0,
                 "free_slot_count": float(len(free)),
+                "total_slot_count": float(total),
+                "free_slot_ratio": float(free_slot_ratio),
                 "zone_destination_robot_count": float(destination_robot_count),
                 "neighbor_zone_destination_robot_count": float(neighbor_dest_count),
                 "superzone_destination_robot_count": float(superzone_dest_count),
                 "zone_present_robot_count": float(present_robot_count),
                 "neighbor_zone_present_robot_count": float(neighbor_present_count),
                 "superzone_present_robot_count": float(superzone_present_count),
+                "robot_pressure_denominator": float(active_robot_denominator),
+                "zone_destination_robot_pressure": zone_dest_pressure,
+                "neighbor_zone_destination_robot_pressure": neighbor_dest_pressure,
+                "superzone_destination_robot_pressure": superzone_dest_pressure,
+                "zone_present_robot_pressure": zone_present_pressure,
+                "neighbor_zone_present_robot_pressure": neighbor_present_pressure,
+                "superzone_present_robot_pressure": superzone_present_pressure,
                 "storage_cycle_time_estimate": float(storage_cycle.value_or_zero),
-                "replenish_cycle_time_estimate": float(replenish_cycle.value_or_zero),
+                "replenish_cycle_time_estimate": 0.0,
+                "sku_similarity_count": float(sku_similarity_count),
+                "sku_similarity_fraction": float(sku_similarity),
                 "sku_similarity": float(sku_similarity),
-                "candidate_zone_to_selected_replenishment_station_distance": float(selected_repl_distance.value_or_zero),
-                "candidate_zone_to_nearest_replenishment_station_distance": float(nearest_repl_distance.value_or_zero),
                 "distance_status": storage_cycle.status,
                 "store_action_valid": 1.0 if free else 0.0,
                 "replenish_store_action_valid": 1.0 if replenish_valid else 0.0,
@@ -228,6 +229,12 @@ def build_zone_registry_metadata(context: Any, zone_ids: Sequence[str]) -> dict[
     metadata = registry.metadata()
     warehouse = getattr(context, "warehouse", None)
     metadata.update(distance_cache_metadata(warehouse))
+    metadata.update(
+        {
+            "sku_similarity_version": SKU_SIMILARITY_VERSION,
+            "robot_pressure_denominator": "total active warehouse robot objects",
+        }
+    )
     return metadata
 
 
@@ -305,3 +312,14 @@ def _metric_distance(a: Any, b: Any) -> float:
     return abs(float(getattr(a, "x", 0.0)) - float(getattr(b, "x", 0.0))) + abs(
         float(getattr(a, "y", 0.0)) - float(getattr(b, "y", 0.0))
     )
+
+
+def _pressure(count: int, denominator: int) -> float:
+    return max(0.0, min(1.0, float(count) / float(max(1, denominator))))
+
+
+def _float(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0

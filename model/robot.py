@@ -1,5 +1,6 @@
 import math
 import numpy as np
+from dataclasses import replace
 from typing import Optional, List, TYPE_CHECKING
 
 from engine.heading import Heading
@@ -202,20 +203,24 @@ class Robot(Object):
             # print(f"{self.warehouse.pod_manager.get_pod_by_id(self.job.pod.pod_id).coordinate}")
             # input()
             # raise AssertionError
-            upsert_pod_location(self.job.pod.pod_id, self.job.pod.pos_x, self.job.pod.pos_y)
+            completed_job = self.job
+            upsert_pod_location(completed_job.pod.pod_id, completed_job.pod.pos_x, completed_job.pod.pos_y)
             self.warehouse.rts_rollout_runtime.on_return_completed(robot=self)
+            self._clear_rts_return_ownership()
             e_li = self.load_mass * self._gravity * self._lift_coef
             self.energy_consumption += e_li
             self.load_mass = 0
             self.taking_pod_delay += self.delay_per_task
-            self.current_state = "idle"
             upsert_pod_travel(
-                self.job.my_id,
+                completed_job.my_id,
                 self.robotID(self.robotName()),
-                str(self.job.pod.pod_id),
+                str(completed_job.pod.pod_id),
                 "returning_pod",
                 finish_time=self.universe._tick
             )
+            if self.warehouse.activate_committed_next_after_return(self):
+                return
+            self.current_state = "idle"
         # print(f"become {self.current_state}")
 
     def decideCollision(self, collision_block, o, collide_distance):
@@ -903,6 +908,10 @@ class Robot(Object):
         """
         from src.rmfs.decisions.rts.types import RTSDestinationContext
 
+        if getattr(self.job, "rts_continuation_active", False):
+            self._continue_rts_return_after_replenishment()
+            return
+
         context = RTSDestinationContext(
             warehouse=self.warehouse,
             robot=self,
@@ -910,19 +919,18 @@ class Robot(Object):
             station=station,
         )
         decision = self.warehouse.rts_policy.select_destination(context)
-        self.warehouse.rts_rollout_runtime.on_decision(
-            robot=self,
-            context=context,
-            decision=decision,
-        )
+        if decision.mode == "rl":
+            self._validate_rts_rl_decision(decision)
 
         if decision.mode == "fixed":
+            self._record_rts_decision(context, decision)
             # --- Fixed return: identical to old self.return_fix branch ---
             self.job.writePodReturnReport(-1)
             self.destination = decision.destination
             self.set_move(self.destination, self.warehouse.graph_pod, need_neutralize_robot=False)
 
         elif decision.mode == "nearest":
+            self._record_rts_decision(context, decision)
             # --- Nearest return: identical to old self.return_nearest branch (storage found) ---
             nearest_storage = decision.storage
             print(f"[DEBUG] nearest_storage: {nearest_storage}")
@@ -942,13 +950,107 @@ class Robot(Object):
             self.warehouse.storage_manager.addPodToStorage(self.job.pod, nearest_storage)
 
         elif decision.mode == "rl":
-            # --- RL return: identical to nearest return but uses RL-selected storage ---
-            if decision.storage is None:
-                raise ValueError("RTS policy returned 'rl' mode but decision.storage is None")
-            if decision.destination is None:
-                raise ValueError("RTS policy returned 'rl' mode but decision.destination is None")
-            
-            nearest_storage = decision.storage
+            if decision.branch == "store":
+                self._start_rts_store_return(decision, station, context)
+            elif decision.branch == "replenish_store":
+                self._start_rts_replenish_store_return(decision, station, context)
+
+        elif decision.mode in ("nearest_fallback", "none"):
+            self._record_rts_decision(context, decision)
+            # --- Fallback: no empty storage, or neither flag set ---
+            self.job.writePodReturnReport(-1)
+            self.destination = decision.destination
+            self.set_move(self.destination, self.warehouse.graph_pod, need_neutralize_robot=False)
+
+    def _record_rts_decision(self, context, decision):
+        if getattr(self.warehouse, "committed_next_reservations_enabled", False) and decision.mode != "rl":
+            self.warehouse.commit_committed_next_decision(self, decision)
+        decision_event_id = self.warehouse.rts_rollout_runtime.on_decision(
+            robot=self,
+            context=context,
+            decision=decision,
+        )
+        self.warehouse.link_committed_next_decision(self, decision_event_id)
+        return decision_event_id
+
+    def _validate_rts_rl_decision(self, decision):
+        if decision.storage is None:
+            raise ValueError("RTS policy returned 'rl' mode but decision.storage is None")
+        if decision.destination is None:
+            raise ValueError("RTS policy returned 'rl' mode but decision.destination is None")
+        if decision.branch not in {"store", "replenish_store"}:
+            raise ValueError(f"RTS policy returned unsupported rl branch: {decision.branch!r}")
+        if decision.zone_id is None or not str(decision.zone_id).strip():
+            raise ValueError("RTS policy returned 'rl' mode without a zone_id")
+        if getattr(decision, "storage_id", None) and str(decision.storage_id) != self._storage_id(decision.storage):
+            raise ValueError("RTS policy returned mismatched storage_id and storage object")
+        if decision.branch == "replenish_store":
+            if getattr(decision, "replenishment_station", None) is None:
+                raise ValueError("RTS replenish_store decision is missing replenishment_station")
+            station_id = str(getattr(decision.replenishment_station, "station_id", ""))
+            if getattr(decision, "replenishment_station_id", None) and str(decision.replenishment_station_id) != station_id:
+                raise ValueError("RTS policy returned mismatched replenishment_station_id and station object")
+
+    def _commit_selected_next_for_rts_decision(self, decision):
+        if not getattr(self.warehouse, "committed_next_reservations_enabled", False):
+            return decision
+        metadata = dict(getattr(decision, "metadata", {}) or {})
+        try:
+            reservation = self.warehouse.commit_committed_next_decision(self, decision)
+        except Exception as exc:
+            metadata["committed_next_commit_failed"] = str(exc)
+            return replace(decision, metadata=metadata)
+        if reservation is None:
+            metadata["committed_next_reservation_id"] = None
+            return replace(decision, metadata=metadata, committed_next_reservation_id=None)
+        metadata["committed_next_reservation_id"] = getattr(reservation, "reservation_id", None)
+        return replace(
+            decision,
+            committed_next_reservation_id=getattr(reservation, "reservation_id", None),
+            metadata=metadata,
+        )
+
+    def _reserve_rts_storage(self, decision):
+        storage = decision.storage
+        storage_manager = self.warehouse.storage_manager
+        storage_manager.reserveStorageForPod(self.job.pod, storage)
+        return storage
+
+    def _begin_rts_return_ownership(self, *, decision, storage, station, stage):
+        pod = self.job.pod
+        pod.rts_return_in_progress = True
+        pod.rts_return_branch = decision.branch
+        pod.rts_return_zone_id = str(decision.zone_id)
+        self.job.rts_continuation_active = True
+        self.job.rts_decision_identity = (
+            f"{decision.policy_name}:{self.robotName()}:{self.job.my_id}:"
+            f"{pod.pod_id}:{self.warehouse._tick}"
+        )
+        self.job.rts_branch = decision.branch
+        self.job.rts_zone_id = str(decision.zone_id)
+        self.job.rts_final_storage = storage
+        self.job.rts_final_storage_id = getattr(decision, "storage_id", None) or self._storage_id(storage)
+        self.job.rts_final_destination = decision.destination
+        self.job.rts_action_index = getattr(decision, "action_index", None)
+        self.job.rts_action_context_id = getattr(decision, "action_context_id", None)
+        self.job.rts_action_context_version = getattr(decision, "action_context_version", None)
+        self.job.rts_next_job_proposal_id = getattr(decision, "next_job_proposal_id", None)
+        self.job.rts_committed_next_reservation_id = getattr(decision, "committed_next_reservation_id", None)
+        self.job.rts_source_station_id = station.station_id
+        self.job.rts_stage = stage
+        self.job.rts_storage_reserved = True
+
+    def _start_rts_store_return(self, decision, station: "Station", context):
+        storage = None
+        try:
+            storage = self._reserve_rts_storage(decision)
+            decision = self._commit_selected_next_for_rts_decision(decision)
+            self._begin_rts_return_ownership(
+                decision=decision,
+                storage=storage,
+                station=station,
+                stage="to_storage",
+            )
             self.destination = decision.destination
             self.job.pod_return_coordinate = self.destination
             self.job.writePodReturnReport(
@@ -957,15 +1059,146 @@ class Robot(Object):
                     (self.job.pod_coordinate.x, self.job.pod_coordinate.y),
                 )
             )
-
             self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
-            self.warehouse.storage_manager.addPodToStorage(self.job.pod, nearest_storage)
+            self._record_rts_decision(context, decision)
+        except Exception as exc:
+            self._rollback_rts_return(
+                reason=f"failed to start RTS store return: {exc}",
+                reserved_storage=storage,
+            )
+            raise
 
-        elif decision.mode in ("nearest_fallback", "none"):
-            # --- Fallback: no empty storage, or neither flag set ---
-            self.job.writePodReturnReport(-1)
-            self.destination = decision.destination
-            self.set_move(self.destination, self.warehouse.graph_pod, need_neutralize_robot=False)
+    def _start_rts_replenish_store_return(self, decision, station: "Station", context):
+        storage = None
+        replenishment_station = None
+        try:
+            storage = self._reserve_rts_storage(decision)
+            decision = self._commit_selected_next_for_rts_decision(decision)
+            self._begin_rts_return_ownership(
+                decision=decision,
+                storage=storage,
+                station=station,
+                stage="to_replenishment",
+            )
+            replenishment_station = decision.replenishment_station
+            if replenishment_station is None:
+                raise RuntimeError("RTS replenish_store decision is missing replenishment station")
+            skus_to_replenish, _ = self.warehouse.get_replenishment_skus_for_pod(self.job.pod)
+            if not skus_to_replenish:
+                raise RuntimeError(
+                    f"no eligible replenishment SKU set for RTS pod {self.job.pod.pod_id}"
+                )
+
+            pending_request = self.warehouse.get_pending_replenishment_dispatch(self.job.pod.pod_id)
+            self.job.rts_pending_replenishment_request_snapshot = (
+                dict(pending_request) if pending_request is not None else None
+            )
+            if pending_request is not None:
+                self.warehouse.remove_pending_replenishment_dispatch(self.job.pod.pod_id)
+
+            self.job.station_id = replenishment_station.station_id
+            self.job.replenishment_skus = []
+            self.job.replenishment_delay = 0
+            self.job.add_replenishment_task(self.job.pod, skus_to_replenish)
+            self.job.is_finished = False
+            self.job.rts_replenishment_station = replenishment_station
+            self.job.rts_replenishment_station_id = getattr(decision, "replenishment_station_id", None) or str(
+                getattr(replenishment_station, "station_id", "")
+            )
+            replenishment_station.add_pod(self.job.pod.pod_id)
+            self.job.pod.station = replenishment_station
+            self.job.pod.is_awaiting_replenishment = True
+            self.job.pod.has_pending_replenishment_dispatch = False
+            self.job.pod.must_replenish_before_pick = False
+            self.warehouse.pod_manager.mark_pod_not_available(self.job.pod)
+
+            self.current_state = "delivering_pod"
+            self.destination = replenishment_station.get_path()[0]
+            self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
+            self._record_rts_decision(context, decision)
+        except Exception as exc:
+            self._rollback_rts_return(
+                reason=f"failed to start RTS replenish_store return: {exc}",
+                reserved_storage=storage,
+                replenishment_station=replenishment_station,
+            )
+            raise
+
+    @staticmethod
+    def _storage_id(storage):
+        if storage is None:
+            return ""
+        if getattr(storage, "storage_id", None) is not None:
+            return str(getattr(storage, "storage_id"))
+        return f"{getattr(storage, 'pos_x', '')}:{getattr(storage, 'pos_y', '')}"
+
+    def _continue_rts_return_after_replenishment(self):
+        if getattr(self.job, "rts_stage", None) != "post_replenishment_to_storage":
+            raise RuntimeError(
+                f"RTS continuation reached return handling in invalid stage {self.job.rts_stage!r}"
+            )
+        if self.job.rts_final_storage is None or self.job.rts_final_destination is None:
+            raise RuntimeError("RTS continuation is missing its final storage destination")
+        try:
+            self.destination = self.job.rts_final_destination
+            self.job.pod_return_coordinate = self.destination
+            self.job.writePodReturnReport(
+                calculateManhattanDistance(
+                    (self.job.pod_return_coordinate.x, self.job.pod_return_coordinate.y),
+                    (self.job.pod_coordinate.x, self.job.pod_coordinate.y),
+                )
+            )
+            self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
+            self.job.rts_stage = "to_storage"
+        except Exception as exc:
+            self._rollback_rts_return(
+                reason=f"failed to continue RTS return after replenishment: {exc}",
+                reserved_storage=self.job.rts_final_storage,
+            )
+            raise
+
+    def _rollback_rts_return(self, *, reason, reserved_storage=None, replenishment_station=None):
+        pod = self.job.pod if self.job is not None else None
+        storage = reserved_storage or getattr(self.job, "rts_final_storage", None)
+        registry = getattr(self.warehouse, "committed_next_registry", None)
+        if registry is not None:
+            registry.cancel_for_robot(self, "rts_return_rollback")
+        if pod is not None and storage is not None:
+            self.warehouse.storage_manager.releaseStorageReservation(pod, storage)
+        if pod is not None:
+            if replenishment_station is not None:
+                replenishment_station.remove_pod(pod.pod_id)
+            pod.rts_return_in_progress = False
+            pod.rts_return_branch = None
+            pod.rts_return_zone_id = None
+            pod.is_awaiting_replenishment = False
+            pod.station = None
+        snapshot = getattr(self.job, "rts_pending_replenishment_request_snapshot", None)
+        if snapshot is not None and pod is not None:
+            if self.warehouse.get_pending_replenishment_dispatch(pod.pod_id) is None:
+                self.warehouse.pending_replenishment_dispatches.append(dict(snapshot))
+                pod.has_pending_replenishment_dispatch = True
+                pod.must_replenish_before_pick = bool(snapshot.get("guaranteed_on_release", False))
+        if self.job is not None:
+            self.job.replenishment_skus = []
+            self.job.replenishment_delay = 0
+            self.job.clear_rts_continuation()
+        raise RuntimeError(reason)
+
+    def _clear_rts_return_ownership(self):
+        if self.job is None or not getattr(self.job, "rts_continuation_active", False):
+            return
+        pod = self.job.pod
+        pod.rts_return_in_progress = False
+        pod.rts_return_branch = None
+        pod.rts_return_zone_id = None
+        pod.is_awaiting_replenishment = False
+        pending_request = self.warehouse.get_pending_replenishment_dispatch(pod.pod_id)
+        pod.has_pending_replenishment_dispatch = pending_request is not None
+        pod.must_replenish_before_pick = bool(
+            pending_request and pending_request.get("guaranteed_on_release", False)
+        )
+        self.job.clear_rts_continuation()
 
     def assign_job_and_set_move_to_take_pod(self, job: RobotJob):
         self.job = job

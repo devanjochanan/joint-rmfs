@@ -9,7 +9,8 @@ import torch
 
 from engine.netlogo_coordinate import NetLogoCoordinate
 from src.rmfs.decisions.rts.types import RTSDecision
-from src.rmfs.rl.rts.action_space import build_action_mask, decode_action
+from src.rmfs.rl.rts.action_context import revalidate_selected_context, selected_context_by_index
+from src.rmfs.rl.rts.action_space import build_action_mask_from_contexts, decode_action, validate_action_mask
 from src.rmfs.rl.rts.features import build_feature_bundle
 from src.rmfs.rl.rts.state import build_state
 from src.rmfs.rl.rts.storage_resolver import find_free_storage_in_zone
@@ -40,9 +41,8 @@ class RTSOnPolicyActor:
     def select_destination(self, context: Any) -> RTSDecision:
         zones = self.zone_ids
         state = build_state(context, zones)
-        store_valid = {row["zone_id"]: bool(row["store_action_valid"]) for row in state.state_json["zone_rows"]}
-        repl_valid = {row["zone_id"]: bool(row["replenish_store_action_valid"]) for row in state.state_json["zone_rows"]}
-        action_mask = build_action_mask(zones, store_valid_by_zone=store_valid, replenish_valid_by_zone=repl_valid)
+        action_mask = build_action_mask_from_contexts(zones, state.action_contexts)
+        validate_action_mask(zones, action_mask, require_valid=True)
         features = build_feature_bundle(zones, action_mask, state.state_json)
         device_str = resolve_rts_torch_device(self.config.policy_device)
         device = torch.device(device_str)
@@ -62,14 +62,30 @@ class RTSOnPolicyActor:
             old_value = float(values.squeeze(0).item())
             policy_entropy = float(dist.entropy().squeeze(0).item())
         action = decode_action(selected, zones)
-        storage = find_free_storage_in_zone(context, action.zone_id, action.branch)
+        action_context = revalidate_selected_context(context, selected_context_by_index(state.action_contexts, selected))
+        storage = action_context.candidate_storage
         if storage is None:
             raise RuntimeError(f"rts_rl_explicit selected {action.branch}:{action.zone_id}, but no storage resolved")
+        proposal = action_context.next_job_proposal
+        cycle_estimate = (
+            action_context.cycle_estimate.to_json_dict()
+            if getattr(action_context, "cycle_estimate", None) is not None
+            else None
+        )
         return RTSDecision(
             storage=storage,
             destination=NetLogoCoordinate(storage.pos_x, storage.pos_y),
             policy_name="rts_rl_explicit",
             mode="rl",
+            action_index=selected,
+            branch=action.branch,
+            zone_id=action.zone_id,
+            storage_id=action_context.candidate_storage_id,
+            replenishment_station=action_context.replenishment_station,
+            replenishment_station_id=action_context.replenishment_station_id,
+            action_context_id=action_context.context_id,
+            action_context_version=action_context.context_version,
+            next_job_proposal_id=getattr(proposal, "proposal_id", None),
             reason="explicit RTS-RL on-policy actor",
             metadata={
                 "actor_kind": "rts_rl_explicit",
@@ -81,6 +97,15 @@ class RTSOnPolicyActor:
                 "selected_action_index": selected,
                 "selected_action_branch": action.branch,
                 "selected_zone_id": action.zone_id,
+                "action_mask": list(action_mask),
+                "action_context_id": action_context.context_id,
+                "action_context_version": action_context.context_version,
+                "candidate_storage_id": action_context.candidate_storage_id,
+                "selected_replenishment_station_id": action_context.replenishment_station_id,
+                "validity_reason_codes": list(action_context.invalid_reason_codes),
+                "next_job_proposal_id": getattr(proposal, "proposal_id", None),
+                "selected_cycle_estimate": cycle_estimate,
+                "state_json": state.state_json,
                 "feature_schema_id": self.config.feature_schema_id or self.config.policy_checkpoint_id,
             },
         )

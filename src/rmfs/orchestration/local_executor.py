@@ -240,6 +240,7 @@ def run_worker(spec: RunSpec):
                 policy_checkpoint_id=spec.rts_policy_checkpoint_id,
                 policy_action_mode=spec.rts_policy_action_mode,
                 policy_device=spec.rts_policy_device,
+                committed_next_reservations_enabled=spec.committed_next_reservations_enabled,
             ),
             runtime_root=spec.runtime_root,
         )
@@ -368,6 +369,8 @@ def run_worker(spec: RunSpec):
             runtime = None
             if netlogo_module is not None:
                 universe = getattr(netlogo_module, "universe", None)
+                if universe is not None and hasattr(universe, "finalize_committed_next_run_end"):
+                    universe.finalize_committed_next_run_end()
                 runtime = getattr(universe, "rts_rollout_runtime", None)
             if runtime is not None:
                 runtime.close()
@@ -490,6 +493,7 @@ def run_controller(
     else:
         deferred_root_read_only_inputs = DEFERRED_ROOT_READ_ONLY_INPUTS
         snapshot_copied_inputs = []
+    committed_next_reservations_enabled = bool(rts_policy_mode == "rts_rl_explicit")
 
     manifest = {
         "status": "started",
@@ -529,6 +533,7 @@ def run_controller(
         "rts_policy_checkpoint_id": rts_policy_checkpoint_id,
         "rts_policy_action_mode": rts_policy_action_mode,
         "rts_policy_device": rts_policy_device,
+        "committed_next_reservations_enabled": committed_next_reservations_enabled,
         "keep_runtime_artifacts": keep_runtime_artifacts,
         "detail_db": detail_db,
         "timing": timing,
@@ -601,6 +606,7 @@ def run_controller(
             rts_policy_checkpoint_id=rts_policy_checkpoint_id,
             rts_policy_action_mode=rts_policy_action_mode,
             rts_policy_device=rts_policy_device,
+            committed_next_reservations_enabled=committed_next_reservations_enabled,
             keep_runtime_artifacts=keep_runtime_artifacts,
             detail_db=detail_db,
             timing=timing,

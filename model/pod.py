@@ -16,6 +16,11 @@ class Pod(Object):
         self.is_awaiting_replenishment = False
         self.has_pending_replenishment_dispatch = False
         self.must_replenish_before_pick = False
+        self.rts_return_in_progress = False
+        self.rts_return_branch = None
+        self.rts_return_zone_id = None
+        self.committed_next_owner_robot_id = None
+        self.committed_next_reservation_id = None
         self.mass = 0
         self.velocity = 0
         self.acceleration = 0

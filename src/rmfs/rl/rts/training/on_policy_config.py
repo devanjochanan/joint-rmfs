@@ -37,7 +37,7 @@ class RTSOnPolicyTrainingConfig:
     robot_task_allocator: str = DEFAULT_ROBOT_TASK_ALLOCATOR
     regret_k: int | None = DEFAULT_REGRET_K
     task_allocator_scope: str = TASK_ALLOCATOR_SCOPE
-    committed_next_reservations_enabled: bool = False
+    committed_next_reservations_enabled: bool = True
     debug_worker_logs: bool = False
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -114,6 +114,6 @@ def validate_on_policy_training_config(
         raise ValueError("regret_k must be None when robot_task_allocator=legacy_nearest")
     if config.task_allocator_scope != TASK_ALLOCATOR_SCOPE:
         raise ValueError(f"task_allocator_scope must be {TASK_ALLOCATOR_SCOPE}")
-    if bool(config.committed_next_reservations_enabled):
-        raise ValueError("committed_next_reservations_enabled must remain false in this recovery patch")
+    if not bool(config.committed_next_reservations_enabled):
+        raise ValueError("RTS on-policy training requires committed_next_reservations_enabled=True")
     validate_no_col_zone_ids(config.zone_ids, context="RTS on-policy training")

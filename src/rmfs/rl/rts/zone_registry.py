@@ -152,11 +152,16 @@ def schema_metadata_for_zone_ids(zone_ids: Sequence[str]) -> dict[str, Any]:
 
 
 def zone_ids_from_action_feature_names(action_feature_names: Sequence[str]) -> tuple[str, ...]:
-    prefix = "next_retrieval_zone_one_hot__"
+    prefix = "next_pod_zone_one_hot__"
+    legacy_prefix = "next_retrieval_zone_one_hot__"
     return tuple(
         str(name).removeprefix(prefix)
         for name in action_feature_names
         if str(name).startswith(prefix)
+    ) or tuple(
+        str(name).removeprefix(legacy_prefix)
+        for name in action_feature_names
+        if str(name).startswith(legacy_prefix)
     )
 
 

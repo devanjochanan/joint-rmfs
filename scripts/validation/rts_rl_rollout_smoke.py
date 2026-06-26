@@ -55,7 +55,13 @@ def build_context():
         _tick=3,
         storage_manager=Obj(storages=storages),
         station_manager=Obj(stations=[station, Obj(station_id="replenishment-1", station_type="replenishment")]),
-        pod_manager=Obj(pods=[pod]),
+        pod_manager=Obj(
+            pods=[pod],
+            skus_data={
+                1: {"current_global_qty": 20, "max_global_qty": 100, "global_inv_level": 0.2, "global_threshold_inv_level": 0.3},
+                2: {"current_global_qty": 50, "max_global_qty": 100, "global_inv_level": 0.5, "global_threshold_inv_level": 0.2},
+            },
+        ),
         _objects=[robot],
     )
     robot.universe = warehouse

@@ -36,7 +36,7 @@ from .reward_normalizer import (
 from src.rmfs.experiments.identity import make_experiment_run_id, make_scenario_id
 from src.rmfs.experiments.feature_flags import default_rika_rts_rl_feature_flags
 from src.rmfs.decisions.task_allocation import scheduler_metadata
-from src.rmfs.rl.rts.zone_registry import validate_no_col_zone_ids
+from src.rmfs.rl.rts.zone_registry import validate_no_col_zone_ids, zone_ids_from_action_feature_names
 
 
 def run_on_policy_training_controller(
@@ -96,6 +96,7 @@ def run_on_policy_training_controller(
     scheduler = scheduler_metadata(
         robot_task_allocator=config.robot_task_allocator,
         regret_k=config.regret_k,
+        committed_next_reservations_enabled=config.committed_next_reservations_enabled,
     )
     config_dict.update(scheduler)
     reward_metadata = default_reward_normalizer_metadata()
@@ -701,11 +702,7 @@ def _zone_ids_from_checkpoint(checkpoint_dir: Path | None) -> tuple[str, ...] | 
         return None
     loaded = load_policy_from_checkpoint(checkpoint_dir, device="cpu")
     names = loaded.feature_schema.get("action_feature_names", []) or []
-    zones = [
-        name.removeprefix("next_retrieval_zone_one_hot__")
-        for name in names
-        if str(name).startswith("next_retrieval_zone_one_hot__")
-    ]
+    zones = zone_ids_from_action_feature_names(names)
     if not zones:
         raise RuntimeError("could not infer RTS zone_ids from checkpoint feature schema")
     return tuple(zones)

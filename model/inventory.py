@@ -34,6 +34,7 @@ from .tools.pre_assign import initialize_pre_assign_table, clear_pre_assign_tabl
 # from .live_advanced_table import start_gui
 # RTS decision seam (Phase 5B)
 from src.rmfs.decisions.task_allocation import (
+    CommittedNextRegistry,
     DEFAULT_REGRET_K,
     DEFAULT_ROBOT_TASK_ALLOCATOR,
     TASK_ALLOCATOR_SCOPE,
@@ -137,6 +138,7 @@ class Inventory(Universe):
         self.replenishment_trips = 0
         self.global_critical_skus = set()
         self.pending_replenishment_dispatches = []
+        self.rts_controls_post_pick_replenishment = False
         self.replenishment_dispatch_aging_ticks = int(
             os.environ.get("RMFS_REPLENISHMENT_AGING_TICKS", "300")
         )
@@ -149,6 +151,7 @@ class Inventory(Universe):
         self.regret_k = DEFAULT_REGRET_K
         self.task_allocator_scope = TASK_ALLOCATOR_SCOPE
         self.committed_next_reservations_enabled = False
+        self.committed_next_registry = CommittedNextRegistry()
 
         # Aisyahna's similarity-based batching parameters
         self.aisyahna_batch_interval = 5   # fire every t ticks
@@ -297,6 +300,10 @@ class Inventory(Universe):
             return False
         if getattr(pod, "is_awaiting_replenishment", False):
             return False
+        if getattr(pod, "rts_return_in_progress", False):
+            return False
+        if getattr(pod, "committed_next_owner_robot_id", None):
+            return False
 
         existing = self.get_pending_replenishment_dispatch(pod.pod_id)
         if existing is not None:
@@ -347,6 +354,10 @@ class Inventory(Universe):
         for pod in pods_with_sku:
             if pod is None or getattr(pod, "is_awaiting_replenishment", False):
                 continue
+            if getattr(pod, "rts_return_in_progress", False):
+                continue
+            if getattr(pod, "committed_next_owner_robot_id", None):
+                continue
             skus_to_replenish, qj_score = self.get_replenishment_skus_for_pod(pod)
             if sku_id not in skus_to_replenish:
                 continue
@@ -381,12 +392,21 @@ class Inventory(Universe):
         for pod in self.pod_manager.get_all_pods():
             if pod is None or getattr(pod, "is_awaiting_replenishment", False):
                 continue
+            if getattr(pod, "rts_return_in_progress", False):
+                continue
+            if getattr(pod, "committed_next_owner_robot_id", None):
+                continue
             pod.must_replenish_before_pick = False
         for request in self.pending_replenishment_dispatches:
             if not self.should_guarantee_replenishment_request(request, current_tick):
                 continue
             pod = self.pod_manager.get_pod_by_id(int(request["pod_id"]))
-            if pod is not None and not getattr(pod, "is_awaiting_replenishment", False):
+            if (
+                pod is not None
+                and not getattr(pod, "is_awaiting_replenishment", False)
+                and not getattr(pod, "rts_return_in_progress", False)
+                and not getattr(pod, "committed_next_owner_robot_id", None)
+            ):
                 pod.must_replenish_before_pick = True
 
     def send_pod_for_replenishment(
@@ -399,6 +419,10 @@ class Inventory(Universe):
         if pod is None or station is None:
             return False
         if getattr(pod, "is_awaiting_replenishment", False):
+            return False
+        if getattr(pod, "rts_return_in_progress", False):
+            return False
+        if getattr(pod, "committed_next_owner_robot_id", None):
             return False
         replenishment_skus = sorted({int(sku) for sku in skus_to_replenish if sku is not None})
         if not replenishment_skus:
@@ -450,6 +474,10 @@ class Inventory(Universe):
             if getattr(pod, "is_awaiting_replenishment", False):
                 self.remove_pending_replenishment_dispatch(pod.pod_id)
                 continue
+            if getattr(pod, "rts_return_in_progress", False):
+                continue
+            if getattr(pod, "committed_next_owner_robot_id", None):
+                continue
             if not pod.is_idle:
                 continue
 
@@ -489,6 +517,82 @@ class Inventory(Universe):
             guaranteed_on_release=bool(critical_set),
         )
 
+    def ensure_committed_next_reservation(self, robot: Robot):
+        if not self.committed_next_reservations_enabled:
+            return None
+        registry = self.committed_next_registry
+        if registry is None:
+            registry = CommittedNextRegistry()
+            self.committed_next_registry = registry
+        return registry.reserve_for_robot(self, robot)
+
+    def ensure_committed_next_action_proposals(self, robot: Robot, context, zone_ids, action_contexts=None):
+        if not self.committed_next_reservations_enabled:
+            return {}
+        registry = self.committed_next_registry
+        if registry is None:
+            registry = CommittedNextRegistry()
+            self.committed_next_registry = registry
+        return registry.build_action_proposals(
+            self,
+            robot,
+            context,
+            tuple(str(zone_id) for zone_id in zone_ids),
+            action_contexts=action_contexts,
+        )
+
+    def commit_committed_next_decision(self, robot: Robot, decision):
+        if not self.committed_next_reservations_enabled:
+            return None
+        registry = self.committed_next_registry
+        if registry is None:
+            registry = CommittedNextRegistry()
+            self.committed_next_registry = registry
+        return registry.commit_for_decision(self, robot, decision)
+
+    def link_committed_next_decision(self, robot: Robot, decision_event_id) -> None:
+        registry = getattr(self, "committed_next_registry", None)
+        if registry is not None:
+            registry.link_decision_event(robot, decision_event_id)
+
+    def activate_committed_next_after_return(self, robot: Robot) -> bool:
+        if not self.committed_next_reservations_enabled:
+            return False
+        registry = getattr(self, "committed_next_registry", None)
+        reservation = registry.get_for_robot(robot) if registry is not None else None
+        if reservation is None:
+            pending_had_reservation = False
+            tracker = getattr(getattr(self.rts_rollout_runtime, "tracker", None), "pending_by_robot_id", {})
+            pending = tracker.get(str(getattr(robot, "_id", getattr(robot, "id", "")))) if tracker is not None else None
+            if pending is not None and getattr(pending, "committed_next_reservation_id", None):
+                pending_had_reservation = True
+            if registry is not None:
+                registry.clear_action_proposals_for_robot(robot)
+            self.rts_rollout_runtime.censor_pending_for_robot(
+                robot=robot,
+                status="censored_committed_next_cancelled" if pending_had_reservation else "censored_no_next_task",
+                reason="committed_next_cancelled_before_activation" if pending_had_reservation else "no_committed_next_retrieval",
+            )
+            return False
+        activated = registry.activate_for_robot(self, robot)
+        if activated is None:
+            self.rts_rollout_runtime.censor_pending_for_robot(
+                robot=robot,
+                status="censored_committed_next_cancelled",
+                reason=getattr(reservation, "cancellation_reason", None) or "committed_next_activation_failed",
+            )
+            return False
+        self.rts_rollout_runtime.on_committed_next_activated(robot=robot, reservation=activated)
+        return True
+
+    def finalize_committed_next_run_end(self) -> None:
+        runtime = getattr(self, "rts_rollout_runtime", None)
+        if runtime is not None:
+            runtime.censor_all_pending(status="censored_run_end", reason="run_end")
+        registry = getattr(self, "committed_next_registry", None)
+        if registry is not None:
+            registry.cancel_all("run_end")
+
     def addObject(self, object):
         if object.object_type == "robot":
             object._id = self.total_pod + 1
@@ -523,6 +627,8 @@ class Inventory(Universe):
                 self.intersection_manager.update_allowed_direction_using_q_model(int(self._tick))
 
         for queued_job in list(self.job_queue):
+            if getattr(queued_job, "committed_next_reservation_id", None):
+                continue
             self.update_robot_job_for_new_orders(queued_job)
 
         print(f"Current job queue length: {len(self.job_queue)}")
@@ -532,8 +638,15 @@ class Inventory(Universe):
                 o for o in self.get_movable_objects()
                 if o.object_type == "robot" and (o.job is None or o.job.is_finished) and o.current_state == 'idle'
             ]
+            allocatable_jobs = [
+                (queue_index, job)
+                for queue_index, job in enumerate(self.job_queue)
+                if not getattr(getattr(job, "pod", None), "rts_return_in_progress", False)
+                and not getattr(getattr(job, "pod", None), "committed_next_owner_robot_id", None)
+                and not getattr(job, "committed_next_reservation_id", None)
+            ]
             allocation = select_active_job_queue_assignment(
-                jobs=list(self.job_queue),
+                jobs=[job for _queue_index, job in allocatable_jobs],
                 robots=idle_robots,
                 cost_fn=lambda job, robot: calculateDistance(
                     robot.pos_x,
@@ -550,7 +663,7 @@ class Inventory(Universe):
             if allocation is not None:
                 job = allocation.job
                 assigned_robot = allocation.robot
-                del self.job_queue[allocation.queue_index]
+                del self.job_queue[allocatable_jobs[allocation.queue_index][0]]
                 print(
                     f"Assigning job {job.pod}-{job.station_id} to robot {assigned_robot._id} "
                     f"using {allocation.allocator}"
@@ -726,7 +839,8 @@ class Inventory(Universe):
         job.set_job_finish()
         if sku_need_replenished:
             self.global_critical_skus.update(sku_need_replenished)
-        self.queue_post_pick_replenishment(pod, sku_need_replenished)
+        if not self.rts_controls_post_pick_replenishment:
+            self.queue_post_pick_replenishment(pod, sku_need_replenished)
         return False
     
     def finish_replenishment_task(self, job: RobotJob):
@@ -783,6 +897,8 @@ class Inventory(Universe):
         pod.is_awaiting_replenishment = False
         pod.has_pending_replenishment_dispatch = False
         pod.must_replenish_before_pick = False
+        if getattr(job, "rts_continuation_active", False):
+            job.rts_stage = "post_replenishment_to_storage"
         self.replenishment_trips += 1
         self.replenishment_count += replenished_count
         for sku_id in restored_quantities:

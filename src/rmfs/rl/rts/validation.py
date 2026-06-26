@@ -29,6 +29,8 @@ def validate_feature_matrix_shape(matrix: np.ndarray, feature_names: Sequence[st
         raise ValueError("RTS-RL feature matrix must be 2D")
     if matrix.shape[1] != len(tuple(feature_names)):
         raise ValueError("RTS-RL feature matrix width does not match feature names")
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("RTS-RL feature matrix contains NaN or infinity")
 
 
 def validate_stock_matrix_shape(matrix: np.ndarray, stock_feature_names: Sequence[str]) -> None:
@@ -36,6 +38,25 @@ def validate_stock_matrix_shape(matrix: np.ndarray, stock_feature_names: Sequenc
         raise ValueError("RTS-RL stock matrix must be 2D")
     if matrix.shape[1] != len(tuple(stock_feature_names)):
         raise ValueError("RTS-RL stock matrix width does not match stock feature names")
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("RTS-RL stock matrix contains NaN or infinity")
+
+
+def validate_no_removed_placeholder_features(feature_names: Sequence[str]) -> None:
+    names = tuple(str(name) for name in feature_names)
+    forbidden = {
+        "next_retrieval_zone_known",
+        "turnover_value",
+        "arrival_rate_order_cycle_time",
+        "total_robot_count",
+        "active_pod_total",
+        "free_slot_count",
+    }
+    present = forbidden.intersection(names)
+    if present:
+        raise ValueError(f"removed RTS-RL placeholder/raw features are present: {sorted(present)}")
+    if any(name.startswith("next_retrieval_zone_one_hot__") for name in names):
+        raise ValueError("global next_retrieval one-hot features are no longer valid")
 
 
 def validate_reward_result(result) -> None:

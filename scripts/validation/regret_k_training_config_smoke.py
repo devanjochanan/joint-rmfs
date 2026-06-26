@@ -21,7 +21,7 @@ EXPECTED = {
     "robot_task_allocator": "regret_k",
     "regret_k": 2,
     "task_allocator_scope": "active_job_queue",
-    "committed_next_reservations_enabled": False,
+    "committed_next_reservations_enabled": True,
 }
 
 

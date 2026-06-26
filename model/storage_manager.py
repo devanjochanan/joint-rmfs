@@ -65,6 +65,34 @@ class StorageManager:
             self.empty_storages.remove(storage)
         storage.is_empty = False
 
+    def reserveStorageForPod(self, pod: Pod, storage: Storage):
+        if pod is None:
+            raise ValueError("cannot reserve storage for missing pod")
+        if storage is None:
+            raise ValueError("cannot reserve missing storage")
+        if storage not in self.storages:
+            raise ValueError(f"storage {storage!r} is not managed by this warehouse")
+        if not getattr(storage, "is_empty", False) or getattr(storage, "assigned_pod", None) is not None:
+            raise ValueError(f"storage {storage!r} is not available for reservation")
+        existing_storage = self.pods_to_storage.get(pod)
+        if existing_storage is not None and existing_storage is not storage:
+            raise ValueError(f"pod {pod!r} is already assigned to storage {existing_storage!r}")
+        self.addPodToStorage(pod, storage)
+
+    def releaseStorageReservation(self, pod: Pod, storage: Storage | None = None):
+        target_storage = storage or self.pods_to_storage.get(pod)
+        if target_storage is None:
+            return False
+        if self.pods_to_storage.get(pod) is target_storage:
+            del self.pods_to_storage[pod]
+        if getattr(target_storage, "assigned_pod", None) is pod:
+            target_storage.removeStoragePod()
+        elif getattr(target_storage, "assigned_pod", None) is None:
+            target_storage.is_empty = True
+        if target_storage not in self.empty_storages:
+            self.empty_storages.append(target_storage)
+        return True
+
     def getPodByNumber(self, pod_number: int) -> Optional[Pod]:
         return next((p for p in self.pods_to_storage if p.pod_number == pod_number), None)
 

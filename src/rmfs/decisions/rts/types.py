@@ -34,5 +34,15 @@ class RTSDecision:
     destination: Any            # engine.netlogo_coordinate.NetLogoCoordinate
     policy_name: str
     mode: str                   # "fixed" | "nearest" | "nearest_fallback"
+    action_index: int | None = None
+    branch: str | None = None
+    zone_id: str | None = None
+    storage_id: str | None = None
+    replenishment_station: Any | None = None
+    replenishment_station_id: str | None = None
+    action_context_id: str | None = None
+    action_context_version: str | None = None
+    next_job_proposal_id: str | None = None
+    committed_next_reservation_id: str | None = None
     reason: str = "current_behavior"
     metadata: Mapping[str, Any] = field(default_factory=dict)
