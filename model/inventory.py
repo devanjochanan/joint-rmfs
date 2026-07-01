@@ -92,6 +92,12 @@ class Inventory(Universe):
         self._fast_pod_info_records = []
         self._fast_finished_orders = []
         self.job_queue: list[RobotJob] = []
+        # ── Charging state (Salsa charging integration; PATCH B) ──────────
+        self.charging_enabled = True          # ON by default; RMFS_CHARGING_ENABLED=0 disables
+        self.charger_cells = set()            # all charger coords (drive-by eligible)
+        self.active_charger_cells = set()     # active-dispatch targets (empty => global)
+        self.occupied_chargers = {}           # cell -> robot id (one claim per cell)
+        self.disable_active_charging = False  # True => opportunity-only (drive-by only)
         # Instance-level mutable state (prevents cross-instance contamination)
         self.map = []
         self.movement_channel = {}
@@ -636,7 +642,12 @@ class Inventory(Universe):
         if len(self.job_queue) > 0:
             idle_robots = [
                 o for o in self.get_movable_objects()
-                if o.object_type == "robot" and (o.job is None or o.job.is_finished) and o.current_state == 'idle'
+                if o.object_type == "robot"
+                and (o.job is None or o.job.is_finished)
+                and o.current_state == 'idle'
+                and not getattr(o, "is_charging_pending", False)
+                and not getattr(o, "is_charging", False)
+                and getattr(o, "_claimed_charger", None) is None
             ]
             allocatable_jobs = [
                 (queue_index, job)
