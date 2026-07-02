@@ -14,11 +14,12 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 
 from .action_space import REPLENISH_STORE, STORE, decode_action, normalize_zone_ids
 from .graph_distance import graph_distance_or_fallback
+from .macro_region import macro_region_pressures
 from .replenishment_snapshot import RTSReplenishmentSnapshot, build_replenishment_snapshot
 from .zone_registry import build_zone_registry
 
 
-ACTION_CONTEXT_VERSION = "rts_action_context.v2"
+ACTION_CONTEXT_VERSION = "rts_action_context.v3"
 
 
 @dataclass(frozen=True)
@@ -142,14 +143,30 @@ def build_action_contexts(
     )
     rows_by_zone = {str(row.get("zone_id")): dict(row) for row in (zone_rows or [])}
     proposal_by_key = dict(next_job_proposals or {})
+    per_zone: dict[str, dict[str, Any]] = {}
+    for zone_id in zones:
+        storage, storage_feasibility = select_candidate_storage(context, zone_id)
+        station, station_feasibility = select_replenishment_station(context, storage)
+        state_values = dict(rows_by_zone.get(zone_id, {}))
+        if storage is not None:
+            state_values["candidate_storage_x"] = float(getattr(storage, "pos_x", 0.0))
+            state_values["candidate_storage_y"] = float(getattr(storage, "pos_y", 0.0))
+            state_values.update(macro_region_pressures(context, storage))
+        per_zone[zone_id] = {
+            "storage": storage,
+            "storage_feasibility": storage_feasibility,
+            "replenishment_station": station,
+            "replenishment_station_feasibility": station_feasibility,
+            "state_values": state_values,
+        }
     contexts: list[RTSActionContext] = []
     for action_index in range(len(zones) * 2):
         action = decode_action(action_index, zones)
-        storage, storage_feasibility = select_candidate_storage(context, action.zone_id)
-        station = None
-        station_feasibility = None
-        if action.branch == REPLENISH_STORE:
-            station, station_feasibility = select_replenishment_station(context, storage)
+        physical = per_zone[action.zone_id]
+        storage = physical["storage"]
+        storage_feasibility = physical["storage_feasibility"]
+        station = physical["replenishment_station"] if action.branch == REPLENISH_STORE else None
+        station_feasibility = physical["replenishment_station_feasibility"] if action.branch == REPLENISH_STORE else None
         store_valid = storage_feasibility.available and storage_feasibility.reachable
         replenish_valid = (
             store_valid
@@ -171,9 +188,13 @@ def build_action_contexts(
             else:
                 reasons.extend(station_feasibility.reason_codes)
         reasons = tuple(sorted(set(reasons)))
-        proposal = proposal_by_key.get(action_key(action.branch, action.zone_id))
+        proposal = proposal_by_key.get(action.zone_id) or proposal_by_key.get(action_key(action.branch, action.zone_id))
         storage_coord = _coord(storage) if storage is not None else None
         station_coord = _coord(station) if station is not None else None
+        state_values = dict(physical["state_values"])
+        state_values["selected_replenishment_station_destination_pressure"] = (
+            _station_destination_pressure(context, station) if action.branch == REPLENISH_STORE else 0.0
+        )
         context_id = (
             f"{ACTION_CONTEXT_VERSION}:{getattr(getattr(context, 'robot', None), '_id', '')}:"
             f"{getattr(getattr(context, 'pod', None), 'pod_id', '')}:{action.action_index}:"
@@ -198,7 +219,7 @@ def build_action_contexts(
             action_valid=bool(action_valid),
             invalid_reason_codes=() if action_valid else reasons,
             next_job_proposal=proposal,
-            state_feature_values=rows_by_zone.get(action.zone_id, {}),
+            state_feature_values=state_values,
             context_id=context_id,
         )
         contexts.append(_with_cycle_estimate(context, action_context))
@@ -246,6 +267,21 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
         invalid_reason_codes=(),
         action_valid=True,
     )
+    proposal = getattr(refreshed, "next_job_proposal", None)
+    registry = getattr(getattr(context, "warehouse", None), "committed_next_registry", None)
+    robot = getattr(context, "robot", None)
+    if registry is not None and robot is not None:
+        current = registry.get_action_proposal(robot, selected.branch, selected.zone_id)
+        if current is None or storage_id(getattr(current, "candidate_storage", None)) != storage_id(storage):
+            current = registry.refresh_action_proposal_for_zone(
+                getattr(context, "warehouse", None),
+                robot,
+                context,
+                selected.zone_id,
+                storage,
+            )
+        proposal = current
+    refreshed = refreshed.with_next_job_proposal(proposal)
     return _with_cycle_estimate(context, refreshed)
 
 
@@ -415,6 +451,30 @@ def _distance_from_source(context: Any, storage: Any) -> float:
     src = _coord(_source_coordinate(context)) or (0.0, 0.0)
     dst = _coord(storage) or (0.0, 0.0)
     return abs(src[0] - dst[0]) + abs(src[1] - dst[1])
+
+
+def _station_destination_pressure(context: Any, station: Any | None) -> float:
+    if station is None:
+        return 0.0
+    station_key = station_id(station)
+    robots = [obj for obj in getattr(getattr(context, "warehouse", None), "_objects", []) or [] if _is_robot_object(obj)]
+    denominator = max(1, len(robots))
+    count = 0
+    station_coord = _coord(station)
+    for robot in robots:
+        destination = getattr(robot, "destination", None)
+        if destination is None:
+            continue
+        if getattr(destination, "station_id", None) is not None and str(getattr(destination, "station_id")) == station_key:
+            count += 1
+            continue
+        if station_coord is not None and _coord(destination) == station_coord:
+            count += 1
+    return max(0.0, min(1.0, float(count) / float(denominator)))
+
+
+def _is_robot_object(obj: object) -> bool:
+    return str(getattr(obj, "object_type", "")).lower() == "robot"
 
 
 def _with_cycle_estimate(context: Any, action_context: RTSActionContext) -> RTSActionContext:

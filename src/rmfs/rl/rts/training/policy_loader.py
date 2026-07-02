@@ -12,9 +12,11 @@ import torch
 from src.rmfs.rl.rts.training.device import resolve_rts_torch_device
 from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id
 from src.rmfs.rl.rts.model import RTSMaskedActorCritic
-from src.rmfs.rl.rts.features import ACTION_FEATURE_SCHEMA_VERSION
+from src.rmfs.rl.rts.features import ACTION_FEATURE_SCHEMA_VERSION, build_action_feature_names
+from src.rmfs.rl.rts.action_space import ACTION_BRANCHES, ACTION_BRANCH_ORDER_VERSION
 from src.rmfs.rl.rts.cycle_estimator import CYCLE_ESTIMATE_VERSION, SEMANTICS_HOST_STRUCTURAL
 from src.rmfs.rl.rts.graph_distance import DISTANCE_SEMANTICS_VERSION
+from src.rmfs.rl.rts.macro_region import MACRO_REGION_SEMANTIC_VERSION, TRAFFIC_PRESSURE_SEMANTIC_VERSION
 from src.rmfs.rl.rts.reward import REWARD_HORIZON
 from src.rmfs.rl.rts.travel_time import TIME_CONVERSION_VERSION, TRAVEL_TIME_VERSION
 from src.rmfs.rl.rts.static_state_context import (
@@ -22,8 +24,9 @@ from src.rmfs.rl.rts.static_state_context import (
     HISTORICAL_POD_RANK_VERSION,
     LAYOUT_NORMALIZATION_VERSION,
 )
-from src.rmfs.rl.rts.stock_features import STOCK_FEATURE_SCHEMA_VERSION, STOCK_SOURCE_VERSION
+from src.rmfs.rl.rts.stock_features import STOCK_FEATURE_SCHEMA_VERSION, STOCK_SOURCE_VERSION, STOCK_FEATURE_NAMES
 from src.rmfs.rl.rts.zone_features import SKU_SIMILARITY_VERSION
+from src.rmfs.rl.rts.zone_registry import ZONE_GEOMETRY_VERSION
 
 
 @dataclass(frozen=True)
@@ -97,8 +100,24 @@ def _validate_schema_semantics(feature_schema: dict[str, Any]) -> None:
         "historical_pod_rank_version": HISTORICAL_POD_RANK_VERSION,
         "sku_similarity_version": SKU_SIMILARITY_VERSION,
         "distance_normalization_version": DISTANCE_NORMALIZATION_VERSION,
+        "action_branch_order_version": ACTION_BRANCH_ORDER_VERSION,
+        "zone_geometry_version": ZONE_GEOMETRY_VERSION,
+        "macro_region_semantic_version": MACRO_REGION_SEMANTIC_VERSION,
+        "traffic_pressure_semantic_version": TRAFFIC_PRESSURE_SEMANTIC_VERSION,
     }
     for key, expected in required.items():
         actual = feature_schema.get(key)
         if actual != expected:
-            raise ValueError(f"unsupported RTS checkpoint {key}: {actual!r}; expected {expected!r}")
+            raise ValueError(f"incompatible RTS checkpoint {key}: {actual!r}; expected {expected!r}")
+    if tuple(feature_schema.get("action_branch_order", []) or ()) != tuple(ACTION_BRANCHES):
+        raise ValueError(
+            "incompatible RTS checkpoint action_branch_order: "
+            f"{feature_schema.get('action_branch_order')!r}; expected {list(ACTION_BRANCHES)!r}"
+        )
+    expected_action_names = build_action_feature_names(())
+    actual_action_names = tuple(str(name) for name in feature_schema.get("action_feature_names", []) or ())
+    if actual_action_names != expected_action_names:
+        raise ValueError("incompatible RTS checkpoint action_feature_names order")
+    actual_stock_names = tuple(str(name) for name in feature_schema.get("stock_feature_names", []) or ())
+    if actual_stock_names != tuple(STOCK_FEATURE_NAMES):
+        raise ValueError("incompatible RTS checkpoint stock_feature_names order")

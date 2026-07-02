@@ -10,9 +10,11 @@ import torch
 
 from .metrics import append_jsonl, atomic_write_json, json_safe, write_json
 from .references import copy_cycle_reference_to_checkpoint
-from ..features import ACTION_FEATURE_SCHEMA_VERSION
+from ..features import ACTION_FEATURE_SCHEMA_VERSION, feature_schema_metadata
 from ..cycle_estimator import CYCLE_ESTIMATE_VERSION, SEMANTICS_HOST_STRUCTURAL
 from ..graph_distance import DISTANCE_SEMANTICS_VERSION
+from ..action_space import ACTION_BRANCHES, ACTION_BRANCH_ORDER_VERSION
+from ..macro_region import macro_region_metadata
 from ..reward import REWARD_HORIZON
 from ..travel_time import TIME_CONVERSION_VERSION, TRAVEL_TIME_VERSION
 from ..static_state_context import (
@@ -69,6 +71,7 @@ def write_feature_schema(
     metadata = dict(schema_metadata or {})
     if zone_ids:
         metadata = {**schema_metadata_for_zone_ids(zone_ids), **metadata}
+    metadata = {**feature_schema_metadata(), **metadata}
     metadata.setdefault("reward_horizon", REWARD_HORIZON)
     metadata.setdefault("distance_semantics_version", DISTANCE_SEMANTICS_VERSION)
     metadata.setdefault("cycle_estimator_version", CYCLE_ESTIMATE_VERSION)
@@ -82,6 +85,9 @@ def write_feature_schema(
     metadata.setdefault("historical_pod_rank_version", HISTORICAL_POD_RANK_VERSION)
     metadata.setdefault("sku_similarity_version", SKU_SIMILARITY_VERSION)
     metadata.setdefault("distance_normalization_version", DISTANCE_NORMALIZATION_VERSION)
+    metadata.setdefault("action_branch_order_version", ACTION_BRANCH_ORDER_VERSION)
+    metadata.setdefault("action_branch_order", list(ACTION_BRANCHES))
+    metadata.update({key: metadata.get(key, value) for key, value in macro_region_metadata().items()})
     schema = {
         "action_feature_names": list(action_feature_names),
         "stock_feature_names": list(stock_feature_names),
@@ -135,6 +141,10 @@ def save_training_checkpoint(
         checkpoint_dir / "feature_schema.json",
         action_feature_names=action_feature_names,
         stock_feature_names=stock_feature_names,
+        schema_metadata={
+            "training_zone_count": len(tuple(getattr(config, "zone_ids", ()) or ())),
+            "training_zone_ids": list(tuple(getattr(config, "zone_ids", ()) or ())),
+        },
     )
     copied_reference = None
     if cycle_reference_path is not None:

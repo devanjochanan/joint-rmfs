@@ -106,7 +106,8 @@ def main() -> None:
     )
     state = build_state(state_context, ("A", "B")).state_json
     assert "selected_replenishment_station_logical_load" not in state["spatial_context"]
-    assert state["zone_registry"]["robot_pressure_denominator"] == "total active warehouse robot objects"
+    assert state["zone_registry"]["traffic_pressure_semantic_version"] == "rts_bounded_robot_pressure.v2"
+    assert state["zone_registry"]["robot_pressure_denominator"] == "bounded active robot denominator capped by zone storage capacity for zone pressure"
 
     print("rts zone robot pressure smoke ok")
 

@@ -413,7 +413,7 @@ def test_conflict_guards_and_multiple_reservations():
     assert other_reservation.job is not first_job
 
 
-def test_action_conditioned_proposals_and_storage_alignment():
+def test_zone_conditioned_proposals_and_storage_alignment():
     inv, picker, _repl, final_storage, robot, _pod, _next_jobs, _policy = build_inventory(branch=STORE, next_jobs=1)
     zone_b_storage = inv.storage_manager.createStorage(30, 5)
     zone_b_storage.rts_zone_id = "zone-b"
@@ -428,18 +428,17 @@ def test_action_conditioned_proposals_and_storage_alignment():
     build_state(context, zone_ids)
     proposals = get_committed_next_action_proposals(inv, robot)
     assert get_committed_next_reservation(inv, robot) is None
-    assert set(proposals) == {
-        f"{STORE}:zone-a",
-        f"{STORE}:zone-b",
-        f"{REPLENISH_STORE}:zone-a",
-        f"{REPLENISH_STORE}:zone-b",
-    }
+    assert set(proposals) == {"zone-a", "zone-b"}
 
-    store_a = proposals[f"{STORE}:zone-a"]
-    store_b = proposals[f"{STORE}:zone-b"]
+    store_a = proposals["zone-a"]
+    store_b = proposals["zone-b"]
+    assert store_a is get_committed_next_action_proposal(inv, robot, STORE, "zone-a")
+    assert store_a is get_committed_next_action_proposal(inv, robot, REPLENISH_STORE, "zone-a")
     assert store_a.candidate_storage is final_storage
     assert store_b.candidate_storage is zone_b_storage
-    assert store_a.allocator_cost != store_b.allocator_cost
+    assert store_a.proposal_cost != store_b.proposal_cost
+    assert store_a.to_state_json()["proposed_next_job_known"] == 1
+    assert "regret_score" not in store_a.to_state_json()
     assert find_free_storage_in_zone(context, "zone-a", STORE) is final_storage
     assert find_free_storage_in_zone(context, "zone-b", STORE) is zone_b_storage
 
@@ -471,7 +470,7 @@ def main():
     test_no_next_task_censored_and_dataset_rejected()
     test_cancelled_and_route_failure_cleanup()
     test_conflict_guards_and_multiple_reservations()
-    test_action_conditioned_proposals_and_storage_alignment()
+    test_zone_conditioned_proposals_and_storage_alignment()
     test_pickle_and_run_end_finalization()
     print("rts committed-next smoke ok")
 

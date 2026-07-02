@@ -218,7 +218,7 @@ def test_no_next_job_does_not_mask_action():
     mask = build_action_mask_from_contexts(("zone-a",), state.action_contexts)
     assert mask == [1, 1]
     features = build_feature_bundle(("zone-a",), mask, state.state_json)
-    next_known_index = features.action_feature_names.index("next_job_known")
+    next_known_index = features.action_feature_names.index("proposed_next_job_known")
     assert features.X_actions[0, next_known_index] == 0.0
     assert features.X_actions[1, next_known_index] == 0.0
     inv.rts_policy = ContextPolicy(STORE)

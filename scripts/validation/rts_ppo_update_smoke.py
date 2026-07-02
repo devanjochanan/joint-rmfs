@@ -26,27 +26,23 @@ from src.rmfs.rl.rts.training.rollout_dataset import build_feature_tensors_from_
 
 def synthetic_state(offset: float = 0.0) -> dict:
     return {
-        "state_contract_version": "rts_rl_state.v2",
+        "state_contract_version": "rts_rl_state.v4",
         "historical_pod_request_rank": 0.1 + offset,
         "historical_pod_request_count": 2,
         "committed_next_action_proposals": {
-            "store:A": {
-                "next_job_known": 1,
+            "A": {
+                "proposed_next_job_known": 1,
                 "committed_next_zone_id": "A",
-                "candidate_storage_to_next_pod_distance": 1.0 + offset,
+                "candidate_to_proposed_next_pod_distance": 1.0 + offset,
                 "next_pod_to_picker_distance": 2.0 + offset,
-                "allocator_cost": 3.0 + offset,
-                "regret_score": 0.5,
-                "one_robot_degenerate": 0,
+                "proposal_cost": 3.0 + offset,
             },
-            "store:B": {
-                "next_job_known": 1,
+            "B": {
+                "proposed_next_job_known": 1,
                 "committed_next_zone_id": "B",
-                "candidate_storage_to_next_pod_distance": 2.0 + offset,
+                "candidate_to_proposed_next_pod_distance": 2.0 + offset,
                 "next_pod_to_picker_distance": 2.0 + offset,
-                "allocator_cost": 4.0 + offset,
-                "regret_score": 0.25,
-                "one_robot_degenerate": 0,
+                "proposal_cost": 4.0 + offset,
             },
         },
         "zone_rows": [
@@ -70,6 +66,8 @@ def synthetic_state(offset: float = 0.0) -> dict:
                 "zone_present_robot_pressure": 0.5,
                 "neighbor_zone_present_robot_pressure": 0.0,
                 "superzone_present_robot_pressure": 0.5,
+                "macro_region_present_robot_pressure": 0.5,
+                "macro_region_destination_robot_pressure": 0.0,
                 "sku_similarity_fraction": 0.5,
                 "store_action_valid": 1.0,
                 "replenish_store_action_valid": 0.0,
@@ -94,6 +92,8 @@ def synthetic_state(offset: float = 0.0) -> dict:
                 "zone_present_robot_pressure": 0.0,
                 "neighbor_zone_present_robot_pressure": 0.5,
                 "superzone_present_robot_pressure": 0.5,
+                "macro_region_present_robot_pressure": 0.0,
+                "macro_region_destination_robot_pressure": 0.0,
                 "sku_similarity_fraction": 0.3,
                 "store_action_valid": 1.0,
                 "replenish_store_action_valid": 0.0,
@@ -119,6 +119,8 @@ def synthetic_state(offset: float = 0.0) -> dict:
             "source_station_is_replenishment": 0.0,
             "source_station_x_norm": 0.1,
             "source_station_y_norm": 0.1,
+            "source_picker_x_norm": 0.1,
+            "source_picker_y_norm": 0.1,
             "picking_station_count": 1.0,
             "replenishment_station_count": 1.0,
             "total_robot_count": 2.0,
@@ -129,6 +131,13 @@ def synthetic_state(offset: float = 0.0) -> dict:
             "zone_col_max": 1.0,
             "distance_normalization_denominator": 10.0,
         },
+        "layout_normalization": {
+            "x_min": 0.0,
+            "x_max": 10.0,
+            "y_min": 0.0,
+            "y_max": 10.0,
+        },
+        "replenishment_snapshot": {"eligible_skus": ["sku-1"]},
     }
 
 

@@ -10,6 +10,7 @@ from .graph_distance import (
     graph_cycle_distance_or_fallback,
     graph_distance_or_fallback,
 )
+from .macro_region import macro_region_metadata, macro_region_pressures
 from .zone_registry import RTSZoneRegistry, build_zone_registry
 
 SKU_SIMILARITY_VERSION = "rts_positive_sku_similarity.v1"
@@ -179,12 +180,14 @@ def build_zone_rows(
             fallback_distance_seen = True
 
         replenish_valid = bool(free) and replenishment_signal_active and replenishment_station_available
-        zone_dest_pressure = _pressure(destination_robot_count, active_robot_denominator)
+        zone_denominator = max(1, min(active_robot_denominator, max(1, total)))
+        zone_dest_pressure = _pressure(destination_robot_count, zone_denominator)
         neighbor_dest_pressure = _pressure(neighbor_dest_count, active_robot_denominator)
         superzone_dest_pressure = _pressure(superzone_dest_count, active_robot_denominator)
-        zone_present_pressure = _pressure(present_robot_count, active_robot_denominator)
+        zone_present_pressure = _pressure(present_robot_count, zone_denominator)
         neighbor_present_pressure = _pressure(neighbor_present_count, active_robot_denominator)
         superzone_present_pressure = _pressure(superzone_present_count, active_robot_denominator)
+        macro_pressures = macro_region_pressures(context, representative)
         
         rows.append(
             {
@@ -202,13 +205,14 @@ def build_zone_rows(
                 "zone_present_robot_count": float(present_robot_count),
                 "neighbor_zone_present_robot_count": float(neighbor_present_count),
                 "superzone_present_robot_count": float(superzone_present_count),
-                "robot_pressure_denominator": float(active_robot_denominator),
+                "robot_pressure_denominator": float(zone_denominator),
                 "zone_destination_robot_pressure": zone_dest_pressure,
                 "neighbor_zone_destination_robot_pressure": neighbor_dest_pressure,
                 "superzone_destination_robot_pressure": superzone_dest_pressure,
                 "zone_present_robot_pressure": zone_present_pressure,
                 "neighbor_zone_present_robot_pressure": neighbor_present_pressure,
                 "superzone_present_robot_pressure": superzone_present_pressure,
+                **macro_pressures,
                 "storage_cycle_time_estimate": float(storage_cycle.value_or_zero),
                 "replenish_cycle_time_estimate": 0.0,
                 "sku_similarity_count": float(sku_similarity_count),
@@ -232,7 +236,8 @@ def build_zone_registry_metadata(context: Any, zone_ids: Sequence[str]) -> dict[
     metadata.update(
         {
             "sku_similarity_version": SKU_SIMILARITY_VERSION,
-            "robot_pressure_denominator": "total active warehouse robot objects",
+            "robot_pressure_denominator": "bounded active robot denominator capped by zone storage capacity for zone pressure",
+            **macro_region_metadata(),
         }
     )
     return metadata

@@ -8,17 +8,13 @@ import numpy as np
 
 
 STOCK_SOURCE_VERSION = "rts_stock_source.v2"
-STOCK_FEATURE_SCHEMA_VERSION = "rts_stock_features.v2"
+STOCK_FEATURE_SCHEMA_VERSION = "rts_stock_features.v3"
 
 STOCK_FEATURE_NAMES: tuple[str, ...] = (
     "local_fill_ratio",
-    "local_shortage_depth",
     "local_below_threshold",
-    "local_zero_qty",
     "global_fill_ratio",
-    "global_shortage_depth",
     "global_below_threshold",
-    "local_zero_and_global_low",
 )
 
 

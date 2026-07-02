@@ -7,12 +7,13 @@ from typing import Any, Sequence
 
 from .action_context import ACTION_CONTEXT_VERSION, build_action_contexts
 from .cycle_estimator import CYCLE_ESTIMATE_VERSION, SEMANTICS_HOST_STRUCTURAL
+from .macro_region import macro_region_metadata
 from .replenishment_snapshot import build_replenishment_snapshot
 from .static_state_context import get_or_build_static_state_context
 from .stock_features import stock_rows_from_pod
 from .zone_features import build_zone_registry_metadata, build_zone_rows
 
-STATE_CONTRACT_VERSION = "rts_rl_state.v3"
+STATE_CONTRACT_VERSION = "rts_rl_state.v4"
 FIDELITY_EXACT = "exact"
 FIDELITY_APPROX = "approx_repo_grounded"
 FIDELITY_DEFAULT = "default_unavailable"
@@ -55,6 +56,9 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
     robot = getattr(context, "robot", None)
     pod = getattr(context, "pod", None)
     station = getattr(context, "station", None)
+    station_type = str(getattr(station, "station_type", ""))
+    if station_type not in {"picker", "picking"} and not bool(getattr(getattr(robot, "job", None), "rts_continuation_active", False)):
+        raise ValueError(f"RTS-RL policy requires a picker source station, got {station_type!r}")
     static_context = get_or_build_static_state_context(warehouse)
 
     stock_rows = stock_rows_from_pod(pod, warehouse, strict_global=True)
@@ -105,11 +109,11 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
     )
     rows = [float(row.get("zone_row_index", 0.0)) for row in zone_rows]
     cols = [float(row.get("zone_col_index", 0.0)) for row in zone_rows]
-    station_type = str(getattr(station, "station_type", ""))
     station_id = str(getattr(station, "station_id", ""))
     spatial_context = {
-        "source_station_is_picking": 1.0 if station_type == "picker" else 0.0,
-        "source_station_is_replenishment": 1.0 if station_type == "replenishment" else 0.0,
+        "source_picker_x_norm": static_context.norm_x(getattr(station, "pos_x", 0.0)),
+        "source_picker_y_norm": static_context.norm_y(getattr(station, "pos_y", 0.0)),
+        "source_station_is_picking": 1.0 if station_type in {"picker", "picking"} else 0.0,
         "source_station_x_norm": static_context.norm_x(getattr(station, "pos_x", 0.0)),
         "source_station_y_norm": static_context.norm_y(getattr(station, "pos_y", 0.0)),
         "picking_station_count": float(_station_count(warehouse, "picker")),
@@ -151,6 +155,10 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
             ),
             "total_count": len(action_contexts),
         },
+        "macro_regions": {
+            "available": True,
+            **macro_region_metadata(),
+        },
     }
     state_json = {
         "state_contract_version": STATE_CONTRACT_VERSION,
@@ -174,6 +182,7 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         "historical_pod_request_rank_metadata": static_context.historical_metadata,
         "layout_normalization": static_context.layout_metadata,
         "distance_normalization": static_context.distance_metadata,
+        "macro_region_contract": macro_region_metadata(),
         "warnings": warnings,
     }
     return RTSStateBundle(

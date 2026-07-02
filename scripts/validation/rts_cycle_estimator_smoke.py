@@ -81,7 +81,7 @@ def test_store_cycle_components_and_features():
     names = features.action_feature_names
     assert "cycle_estimate_known" in names
     assert "estimated_cycle_time" in names
-    assert "estimated_queue_time" in names
+    assert "estimated_queue_time" not in names
     assert features.X_actions[0, names.index("cycle_estimate_known")] == 1.0
     assert abs(features.X_actions[0, names.index("estimated_cycle_time")] - expected) < 1e-5
 

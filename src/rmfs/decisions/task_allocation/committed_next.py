@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from engine.util import calculateDistance
+from src.rmfs.rl.rts.graph_distance import graph_distance_or_fallback
+from src.rmfs.rl.rts.travel_time import EMPTY_ROBOT, LOADED_ROBOT
 from src.rmfs.rl.rts.zone_registry import build_zone_registry
 
+PROPOSAL_SEMANTICS_VERSION = "rts_nearest_next_job_proposal.v1"
 STATUS_COMMITTED = "committed"
 STATUS_ACTIVATED = "activated"
 STATUS_CANCELLED = "cancelled"
@@ -45,9 +47,7 @@ class CommittedNextReservation:
 class CommittedNextProposal:
     proposal_id: str
     owner_robot_id: str
-    branch: str
     zone_id: str
-    action_index: int
     candidate_storage: Any
     candidate_storage_id: str
     destination_x: float
@@ -59,12 +59,15 @@ class CommittedNextProposal:
     original_queue_index: int | None
     created_time_seconds: float
     candidate_count: int = 0
-    candidate_storage_to_next_pod_distance: float | None = None
+    candidate_to_proposed_next_pod_distance: float | None = None
     next_pod_to_picker_distance: float | None = None
-    allocator_cost: float | None = None
-    regret_score: float | None = None
+    proposal_cost: float | None = None
     committed_next_zone_id: str | None = None
-    one_robot_degenerate: bool = False
+    candidate_to_proposed_next_pod_distance_source: str | None = None
+    candidate_to_proposed_next_pod_distance_status: str | None = None
+    next_pod_to_picker_distance_source: str | None = None
+    next_pod_to_picker_distance_status: str | None = None
+    fallback_used: bool = False
 
     @property
     def has_next_job(self) -> bool:
@@ -73,24 +76,28 @@ class CommittedNextProposal:
     def to_state_json(self) -> dict[str, Any]:
         next_zone = str(self.committed_next_zone_id or "")
         return {
+            "proposal_semantics_version": PROPOSAL_SEMANTICS_VERSION,
             "proposal_id": self.proposal_id,
-            "branch": self.branch,
             "zone_id": self.zone_id,
-            "action_index": int(self.action_index),
             "candidate_storage_id": self.candidate_storage_id,
             "destination_x": float(self.destination_x),
             "destination_y": float(self.destination_y),
+            "proposed_next_job_known": 1 if self.has_next_job else 0,
             "next_job_known": 1 if self.has_next_job else 0,
             "job_id": str(self.job_id or ""),
             "pod_id": str(self.pod_id or ""),
             "picking_station_id": str(self.picking_station_id or ""),
             "committed_next_zone_id": next_zone,
             "candidate_count": int(self.candidate_count),
-            "candidate_storage_to_next_pod_distance": _finite(self.candidate_storage_to_next_pod_distance),
+            "candidate_to_proposed_next_pod_distance": _finite(self.candidate_to_proposed_next_pod_distance),
+            "candidate_storage_to_next_pod_distance": _finite(self.candidate_to_proposed_next_pod_distance),
             "next_pod_to_picker_distance": _finite(self.next_pod_to_picker_distance),
-            "allocator_cost": _finite(self.allocator_cost),
-            "regret_score": _finite(self.regret_score),
-            "one_robot_degenerate": 1 if self.one_robot_degenerate else 0,
+            "proposal_cost": _finite(self.proposal_cost),
+            "candidate_to_proposed_next_pod_distance_source": str(self.candidate_to_proposed_next_pod_distance_source or ""),
+            "candidate_to_proposed_next_pod_distance_status": str(self.candidate_to_proposed_next_pod_distance_status or ""),
+            "next_pod_to_picker_distance_source": str(self.next_pod_to_picker_distance_source or ""),
+            "next_pod_to_picker_distance_status": str(self.next_pod_to_picker_distance_status or ""),
+            "fallback_used": bool(self.fallback_used),
         }
 
 
@@ -135,36 +142,30 @@ class CommittedNextRegistry:
         zone_ids: tuple[str, ...],
         action_contexts: tuple[Any, ...] | None = None,
     ) -> dict[str, CommittedNextProposal]:
-        from src.rmfs.rl.rts.action_space import decode_action
-
         owner_id = robot_id(robot)
         proposals: dict[str, CommittedNextProposal] = {}
         if self.get_for_robot(robot) is not None:
             self.robot_id_to_action_proposals[owner_id] = proposals
             return proposals
         registry = build_zone_registry(inventory, zone_ids=zone_ids)
-        contexts_by_key = {
-            proposal_key(getattr(action_context, "branch", ""), getattr(action_context, "zone_id", "")): action_context
-            for action_context in (action_contexts or ())
-        }
-        action_count = len(zone_ids) * 2
-        for action_index in range(action_count):
-            action = decode_action(action_index, zone_ids)
-            action_context = contexts_by_key.get(proposal_key(action.branch, action.zone_id))
+        contexts_by_zone = {}
+        for action_context in action_contexts or ():
+            zone_id = str(getattr(action_context, "zone_id", ""))
+            contexts_by_zone.setdefault(zone_id, action_context)
+        for zone_id in zone_ids:
+            action_context = contexts_by_zone.get(str(zone_id))
             storage = getattr(action_context, "candidate_storage", None)
             if storage is None:
-                storage = self._candidate_storage_for_action(context, registry, action.zone_id)
+                storage = self._candidate_storage_for_action(context, registry, str(zone_id))
             if storage is None:
                 continue
             proposal = self._build_proposal_for_storage(
                 inventory=inventory,
                 robot=robot,
-                action_index=action_index,
-                branch=action.branch,
-                zone_id=action.zone_id,
+                zone_id=str(zone_id),
                 storage=storage,
             )
-            proposals[proposal_key(action.branch, action.zone_id)] = proposal
+            proposals[proposal_key("", zone_id)] = proposal
         self.robot_id_to_action_proposals[owner_id] = proposals
         return proposals
 
@@ -173,6 +174,31 @@ class CommittedNextRegistry:
 
     def get_action_proposal(self, robot: Any, branch: str, zone_id: str) -> CommittedNextProposal | None:
         return self.robot_id_to_action_proposals.get(robot_id(robot), {}).get(proposal_key(branch, zone_id))
+
+    def refresh_action_proposal_for_zone(
+        self,
+        inventory: Any,
+        robot: Any,
+        context: Any,
+        zone_id: str,
+        storage: Any | None = None,
+    ) -> CommittedNextProposal | None:
+        if storage is None:
+            try:
+                registry = build_zone_registry(inventory, zone_ids=(str(zone_id),))
+            except Exception:
+                registry = None
+            storage = self._candidate_storage_for_action(context, registry, str(zone_id)) if registry is not None else None
+        if storage is None:
+            return None
+        proposal = self._build_proposal_for_storage(
+            inventory=inventory,
+            robot=robot,
+            zone_id=str(zone_id),
+            storage=storage,
+        )
+        self.robot_id_to_action_proposals.setdefault(robot_id(robot), {})[proposal_key("", zone_id)] = proposal
+        return proposal
 
     def clear_action_proposals_for_robot(self, robot: Any) -> None:
         self.robot_id_to_action_proposals.pop(robot_id(robot), None)
@@ -192,14 +218,20 @@ class CommittedNextRegistry:
         decision_storage = getattr(decision, "storage", None)
         if decision_storage is not None and proposal.candidate_storage is not decision_storage:
             if storage_id(proposal.candidate_storage) != storage_id(decision_storage):
-                raise ValueError("Committed-next proposal storage does not match selected RTS storage")
+                proposal = self._proposal_from_decision(inventory, robot, decision)
+                if proposal is None or not proposal.has_next_job:
+                    self.clear_action_proposals_for_robot(robot)
+                    return None
         if self.job_id_to_reservation.get(str(proposal.job_id)) is not None:
             return None
         if self.pod_id_to_reservation.get(str(proposal.pod_id)) is not None:
             return None
         valid, reason = self._validate_proposal_for_commit(inventory, proposal)
         if not valid:
-            raise ValueError(f"Committed-next proposal is no longer valid: {reason}")
+            proposal = self._proposal_from_decision(inventory, robot, decision)
+            valid, reason = self._validate_proposal_for_commit(inventory, proposal) if proposal is not None else (False, "missing_proposal")
+            if not valid:
+                raise ValueError(f"Committed-next proposal is no longer valid: {reason}")
         self._counter += 1
         reservation = CommittedNextReservation(
             reservation_id=f"cnr-{int(getattr(inventory, '_tick', 0))}-{robot_id(robot)}-{self._counter}",
@@ -211,11 +243,11 @@ class CommittedNextRegistry:
             original_queue_index=int(proposal.original_queue_index or 0),
             created_time_seconds=float(getattr(inventory, "_tick", 0.0)),
             candidate_count=int(proposal.candidate_count),
-            retrieval_cost=float(proposal.allocator_cost) if proposal.allocator_cost is not None else None,
+            retrieval_cost=float(proposal.proposal_cost) if proposal.proposal_cost is not None else None,
             committed_next_zone_id=proposal.committed_next_zone_id,
             selected_branch=branch,
             selected_zone_id=zone_id,
-            selected_action_index=int(proposal.action_index),
+            selected_action_index=int(getattr(decision, "action_index", -1) if getattr(decision, "action_index", None) is not None else -1),
             selected_storage_id=proposal.candidate_storage_id,
         )
         self._set_markers(reservation)
@@ -275,7 +307,7 @@ class CommittedNextRegistry:
         return sorted(
             candidates,
             key=lambda storage: (
-                calculateDistance(origin_x, origin_y, getattr(storage, "pos_x", 0.0), getattr(storage, "pos_y", 0.0)),
+                _distance_between(inventory=warehouse, src=_Coord(origin_x, origin_y), dst=storage, topology=LOADED_ROBOT),
                 _coord(storage),
             ),
         )[0]
@@ -284,22 +316,17 @@ class CommittedNextRegistry:
         self,
         inventory: Any,
         robot: Any,
-        action_index: int,
-        branch: str,
         zone_id: str,
         storage: Any,
     ) -> CommittedNextProposal:
         candidates = self._eligible_candidates_from_storage(inventory, storage)
         candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
         best = candidates[0] if candidates else None
-        second_cost = float(candidates[1][0]) if len(candidates) > 1 else None
         if best is None:
             return CommittedNextProposal(
-                proposal_id=f"cnp-{int(getattr(inventory, '_tick', 0))}-{robot_id(robot)}-{action_index}",
+                proposal_id=f"cnp-{int(getattr(inventory, '_tick', 0))}-{robot_id(robot)}-{zone_id}",
                 owner_robot_id=robot_id(robot),
-                branch=str(branch),
                 zone_id=str(zone_id),
-                action_index=int(action_index),
                 candidate_storage=storage,
                 candidate_storage_id=storage_id(storage),
                 destination_x=float(getattr(storage, "pos_x", 0.0)),
@@ -311,16 +338,12 @@ class CommittedNextRegistry:
                 original_queue_index=None,
                 created_time_seconds=float(getattr(inventory, "_tick", 0.0)),
                 candidate_count=0,
-                one_robot_degenerate=True,
             )
-        cost, queue_index, job_key, pod_key, job, station_id, next_zone_id, storage_to_pod, pod_to_picker = best
-        regret_score = 0.0 if second_cost is None else max(0.0, float(second_cost) - float(cost))
+        cost, queue_index, job_key, pod_key, job, station_id, next_zone_id, storage_to_pod, pod_to_picker, empty_source, empty_status, loaded_source, loaded_status, fallback_used = best
         return CommittedNextProposal(
-            proposal_id=f"cnp-{int(getattr(inventory, '_tick', 0))}-{robot_id(robot)}-{action_index}",
+            proposal_id=f"cnp-{int(getattr(inventory, '_tick', 0))}-{robot_id(robot)}-{zone_id}",
             owner_robot_id=robot_id(robot),
-            branch=str(branch),
             zone_id=str(zone_id),
-            action_index=int(action_index),
             candidate_storage=storage,
             candidate_storage_id=storage_id(storage),
             destination_x=float(getattr(storage, "pos_x", 0.0)),
@@ -332,19 +355,22 @@ class CommittedNextRegistry:
             original_queue_index=queue_index,
             created_time_seconds=float(getattr(inventory, "_tick", 0.0)),
             candidate_count=len(candidates),
-            candidate_storage_to_next_pod_distance=float(storage_to_pod),
+            candidate_to_proposed_next_pod_distance=float(storage_to_pod),
             next_pod_to_picker_distance=float(pod_to_picker),
-            allocator_cost=float(cost),
-            regret_score=float(regret_score),
+            proposal_cost=float(cost),
             committed_next_zone_id=next_zone_id,
-            one_robot_degenerate=len(candidates) <= 1,
+            candidate_to_proposed_next_pod_distance_source=empty_source,
+            candidate_to_proposed_next_pod_distance_status=empty_status,
+            next_pod_to_picker_distance_source=loaded_source,
+            next_pod_to_picker_distance_status=loaded_status,
+            fallback_used=bool(fallback_used),
         )
 
     def _eligible_candidates_from_storage(
         self,
         inventory: Any,
         storage: Any,
-    ) -> list[tuple[float, int, str, str, Any, str, str, float, float]]:
+    ) -> list[tuple[float, int, str, str, Any, str, str, float, float, str, str, str, str, bool]]:
         candidates = []
         runtime = getattr(inventory, "rts_rollout_runtime", None)
         config = getattr(runtime, "config", None)
@@ -363,32 +389,39 @@ class CommittedNextRegistry:
             if _active_robot_has_job_or_pod(inventory, job, pod):
                 continue
             try:
-                storage_to_pod = float(calculateDistance(
-                    getattr(storage, "pos_x", 0.0),
-                    getattr(storage, "pos_y", 0.0),
-                    job.pod_coordinate.x,
-                    job.pod_coordinate.y,
-                ))
-                pod_to_picker = float(calculateDistance(
-                    job.pod_coordinate.x,
-                    job.pod_coordinate.y,
-                    getattr(station, "pos_x", 0.0),
-                    getattr(station, "pos_y", 0.0),
-                ))
+                empty_leg = graph_distance_or_fallback(inventory, storage, job.pod_coordinate, topology=EMPTY_ROBOT)
+                loaded_leg = graph_distance_or_fallback(inventory, job.pod_coordinate, station, topology=LOADED_ROBOT)
+                if empty_leg.distance is None or loaded_leg.distance is None:
+                    continue
+                storage_to_pod = float(empty_leg.distance)
+                pod_to_picker = float(loaded_leg.distance)
             except Exception:
                 continue
             cost = storage_to_pod + pod_to_picker
-            candidates.append((cost, queue_index, job_id(job), pod_id(pod), job, station.station_id, zone_id, storage_to_pod, pod_to_picker))
+            candidates.append((
+                cost,
+                queue_index,
+                job_id(job),
+                pod_id(pod),
+                job,
+                station.station_id,
+                zone_id,
+                storage_to_pod,
+                pod_to_picker,
+                empty_leg.source,
+                empty_leg.status,
+                loaded_leg.source,
+                loaded_leg.status,
+                bool(empty_leg.fallback_used or loaded_leg.fallback_used),
+            ))
         return candidates
 
     def _proposal_from_decision(self, inventory: Any, robot: Any, decision: Any) -> CommittedNextProposal | None:
         storage = getattr(decision, "storage", None)
-        branch = str(getattr(decision, "branch", "") or "")
         zone_id = str(getattr(decision, "zone_id", "") or "")
-        if storage is None or not branch or not zone_id:
+        if storage is None or not zone_id:
             return None
-        action_index = int(getattr(decision, "metadata", {}).get("selected_action_index", -1))
-        return self._build_proposal_for_storage(inventory, robot, action_index, branch, zone_id, storage)
+        return self._build_proposal_for_storage(inventory, robot, zone_id, storage)
 
     def _validate_proposal_for_commit(self, inventory: Any, proposal: CommittedNextProposal) -> tuple[bool, str]:
         if proposal.job is None:
@@ -507,10 +540,7 @@ class CommittedNextRegistry:
                 continue
             if _active_robot_has_job_or_pod(inventory, job, pod):
                 continue
-            try:
-                cost = float(calculateDistance(robot.pos_x, robot.pos_y, job.pod_coordinate.x, job.pod_coordinate.y))
-            except Exception:
-                continue
+            cost = _distance_between(inventory=inventory, src=robot, dst=job.pod_coordinate, topology=EMPTY_ROBOT)
             candidates.append((cost, queue_index, job_id(job), pod_id(pod), job, station.station_id, zone_id))
         return candidates
 
@@ -646,7 +676,7 @@ def get_committed_next_action_proposal(
 
 
 def proposal_key(branch: str, zone_id: str) -> str:
-    return f"{str(branch)}:{str(zone_id)}"
+    return str(zone_id)
 
 
 def robot_id(robot: Any) -> str:
@@ -679,6 +709,21 @@ def _storage_available(storage: Any) -> bool:
 
 def _coord(storage: Any) -> tuple[float, float]:
     return (float(getattr(storage, "pos_x", 0.0)), float(getattr(storage, "pos_y", 0.0)))
+
+
+def _distance_between(*, inventory: Any, src: Any, dst: Any, topology: str) -> float:
+    result = graph_distance_or_fallback(inventory, src, dst, topology=topology)
+    if result.distance is not None:
+        return float(result.distance)
+    src_coord = _coord(src)
+    dst_coord = _coord(dst)
+    return abs(src_coord[0] - dst_coord[0]) + abs(src_coord[1] - dst_coord[1])
+
+
+class _Coord:
+    def __init__(self, x: Any, y: Any):
+        self.x = x
+        self.y = y
 
 
 def _finite(value: Any) -> float:

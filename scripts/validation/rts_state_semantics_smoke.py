@@ -206,8 +206,16 @@ def test_similarity_pressure_features_and_placeholders():
     features = build_feature_bundle(("A", "B"), mask, state)
     validate_no_removed_placeholder_features(features.action_feature_names)
     assert "turnover_value" not in features.action_feature_names
-    assert "estimated_queue_time" in features.action_feature_names
+    assert features.action_feature_names == build_action_feature_names(("A", "B"))
+    assert len(features.action_feature_names) == 18
+    assert "estimated_queue_time" not in features.action_feature_names
     assert "cycle_estimate_known" in features.action_feature_names
+    assert "is_store_action" not in features.action_feature_names
+    assert "is_replenish_store_action" not in features.action_feature_names
+    assert "allocator_cost_norm" not in features.action_feature_names
+    assert "regret_score_norm" not in features.action_feature_names
+    assert "one_robot_degenerate" not in features.action_feature_names
+    assert all(not name.startswith("next_pod_zone_one_hot__") for name in features.action_feature_names)
     assert all(not name.startswith("next_retrieval_zone_one_hot__") for name in features.action_feature_names)
     assert features.X_actions.shape[1] == len(features.action_feature_names)
     assert features.X_stock.shape[1] == len(features.stock_feature_names)
@@ -227,7 +235,7 @@ def test_phase2_preservation():
     proposals = get_committed_next_action_proposals(inv, robot)
     assert proposals
     assert get_committed_next_reservation(inv, robot) is None
-    proposal = proposals[f"{STORE}:zone-a"]
+    proposal = proposals["zone-a"]
     assert proposal.candidate_storage is final_storage
     assert proposal.job is next_jobs[0][0]
     start_return(robot)
@@ -236,7 +244,8 @@ def test_phase2_preservation():
     assert reservation is not None
     assert reservation.job is next_jobs[0][0]
     assert proposal.candidate_storage_id == reservation.selected_storage_id
-    assert state["committed_next_action_proposals"][f"{STORE}:zone-a"]["candidate_storage_id"] == reservation.selected_storage_id
+    assert state["committed_next_action_proposals"]["zone-a"]["candidate_storage_id"] == reservation.selected_storage_id
+    assert "regret_score" not in state["committed_next_action_proposals"]["zone-a"]
 
 
 def test_checkpoint_schema_rejection():

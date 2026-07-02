@@ -57,6 +57,8 @@ def validate_no_removed_placeholder_features(feature_names: Sequence[str]) -> No
         raise ValueError(f"removed RTS-RL placeholder/raw features are present: {sorted(present)}")
     if any(name.startswith("next_retrieval_zone_one_hot__") for name in names):
         raise ValueError("global next_retrieval one-hot features are no longer valid")
+    if any(name.startswith("next_pod_zone_one_hot__") for name in names):
+        raise ValueError("action feature zone one-hot fields are no longer valid")
 
 
 def validate_reward_result(result) -> None:

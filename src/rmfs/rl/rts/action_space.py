@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 STORE = "store"
 REPLENISH_STORE = "replenish_store"
 ACTION_BRANCHES = (STORE, REPLENISH_STORE)
+ACTION_BRANCH_ORDER_VERSION = "rts_action_branch_order.v1"
 
 
 @dataclass(frozen=True)
