@@ -504,6 +504,9 @@ class FixedSeedValidationCallback(BaseCallback):
         self.pbar = pbar
         self.validation_enabled = validation_enabled
 
+    def _on_step(self) -> bool:
+        return True
+
     def _on_rollout_end(self) -> None:
         # SB3 calls this after collecting rollout data and before PPO.train().
         self.policy_update_count += 1
