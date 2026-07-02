@@ -69,6 +69,22 @@ def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
         "RMFS_COMMITTED_NEXT_RESERVATIONS": "1" if spec.committed_next_reservations_enabled else "0",
         "RMFS_POD_LOCATION_MODE": spec.pod_location_mode,
     }
+    if spec.rts_policy_mode == "rts_rl_explicit":
+        torch_threads = spec.rts_torch_threads if spec.rts_torch_threads is not None else 1
+        torch_interop_threads = spec.rts_torch_interop_threads if spec.rts_torch_interop_threads is not None else 1
+        env["RMFS_RTS_TORCH_THREADS"] = str(torch_threads)
+        env["RMFS_RTS_TORCH_INTEROP_THREADS"] = str(torch_interop_threads)
+        env["OMP_NUM_THREADS"] = str(torch_threads)
+        env["MKL_NUM_THREADS"] = str(torch_threads)
+        env["OPENBLAS_NUM_THREADS"] = str(torch_threads)
+    else:
+        if spec.rts_torch_threads is not None:
+            env["RMFS_RTS_TORCH_THREADS"] = str(spec.rts_torch_threads)
+            env["OMP_NUM_THREADS"] = str(spec.rts_torch_threads)
+            env["MKL_NUM_THREADS"] = str(spec.rts_torch_threads)
+            env["OPENBLAS_NUM_THREADS"] = str(spec.rts_torch_threads)
+        if spec.rts_torch_interop_threads is not None:
+            env["RMFS_RTS_TORCH_INTEROP_THREADS"] = str(spec.rts_torch_interop_threads)
     if spec.regret_k is not None:
         env["RMFS_REGRET_K"] = str(spec.regret_k)
     if spec.rts_random_seed is not None:
@@ -250,6 +266,14 @@ def run_worker(spec: RunSpec):
             runtime_root=spec.runtime_root,
         )
 
+        if spec.rts_policy_mode == "rts_rl_explicit":
+            import torch
+            torch_threads = spec.rts_torch_threads if spec.rts_torch_threads is not None else 1
+            torch_interop_threads = spec.rts_torch_interop_threads if spec.rts_torch_interop_threads is not None else 1
+            torch.set_num_threads(torch_threads)
+            torch.set_num_interop_threads(torch_interop_threads)
+
+
         with timed("setup"):
             session = netlogo.HeadlessSimulationSession(persist_final_state=True)
             setup_result = session.setup()
@@ -414,6 +438,8 @@ def run_worker(spec: RunSpec):
             "regret_k": spec.regret_k,
             "task_allocator_scope": spec.task_allocator_scope,
             "committed_next_reservations_enabled": spec.committed_next_reservations_enabled,
+            "rts_torch_threads": spec.rts_torch_threads if spec.rts_torch_threads is not None else (1 if spec.rts_policy_mode == "rts_rl_explicit" else None),
+            "rts_torch_interop_threads": spec.rts_torch_interop_threads if spec.rts_torch_interop_threads is not None else (1 if spec.rts_policy_mode == "rts_rl_explicit" else None),
             "detail_db": spec.detail_db,
             "timing": spec.timing,
             "worker_status_cadence": spec.worker_status_cadence,
@@ -463,6 +489,8 @@ def run_controller(
     pod_location_mode: str | None = None,
     pod_location_seed: int | None = None,
     full_raw_order_replay: bool = False,
+    rts_torch_threads: int | None = None,
+    rts_torch_interop_threads: int | None = None,
 ):
     output_root.mkdir(parents=True, exist_ok=True)
     profile_cfg = resolve_run_profile(
@@ -625,6 +653,8 @@ def run_controller(
             full_raw_order_replay=profile_cfg.full_raw_order_replay,
             pod_location_mode=profile_cfg.pod_location_mode,
             pod_location_seed=profile_cfg.pod_location_seed if profile_cfg.pod_location_seed is not None else index,
+            rts_torch_threads=rts_torch_threads,
+            rts_torch_interop_threads=rts_torch_interop_threads,
         )
         specs.append(spec)
         write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())

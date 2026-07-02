@@ -19,9 +19,39 @@ def checkpoint_sort_index(policy_checkpoint_id: str) -> int:
 
 
 def select_best_checkpoint(candidates: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    if not candidates:
+        raise ValueError("no candidates provided")
+
+    # Extract configuration keys for comparison
+    def get_config_tuple(c: dict[str, Any]) -> tuple:
+        zones = c.get("zone_ids")
+        if isinstance(zones, (list, tuple)):
+            zones_normalized = tuple(sorted(str(z) for z in zones))
+        else:
+            zones_normalized = ()
+        return (
+            c.get("seed_pack_id"),
+            c.get("scenario_id"),
+            c.get("charging_mode"),
+            c.get("feature_ablation_hash"),
+            c.get("netlogo_steps_per_run"),
+            zones_normalized,
+            c.get("policy_action_mode"),
+        )
+
     valid = [row for row in candidates if _candidate_valid(row)]
     if not valid:
         raise ValueError("no valid evaluation candidates")
+
+    first_config = get_config_tuple(valid[0])
+    for index, c in enumerate(valid[1:], start=1):
+        config = get_config_tuple(c)
+        if config != first_config:
+            raise ValueError(
+                f"Candidate set contains mixed evaluation conditions! "
+                f"Candidate 0 config: {first_config}, "
+                f"Candidate {index} config: {config}"
+            )
 
     def get_metric(metrics: dict[str, Any], key_base: str, default: Any) -> Any:
         val = metrics.get(key_base)

@@ -1,11 +1,14 @@
 """PPS heuristic decision policies."""
 
 from __future__ import annotations
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from model.inventory import Inventory
     from model.pod import Pod
+
+logger = logging.getLogger(__name__)
 
 
 def find_best_pod(
@@ -29,8 +32,8 @@ def find_best_pod(
         and not getattr(pod, "must_replenish_before_pick", False)
     }
 
-    print(f"[DEBUG] Checking candidates for mode={mode} skus={relevant_skus}")
-    print(f"[DEBUG] pod_candidates={pod_candidates}")
+    logger.debug("Checking candidates for mode=%s skus=%s", mode, relevant_skus)
+    logger.debug("pod_candidates=%s", pod_candidates)
 
     if not pod_candidates:
         return None, -1
@@ -51,7 +54,7 @@ def find_best_pod(
         reverse=True
     )
 
-    print(f"[DEBUG] ranked_pods (mode={mode}) = {ranked_pods}")
+    logger.debug("ranked_pods (mode=%s) = %s", mode, ranked_pods)
     return ranked_pods[0]
 
 
@@ -62,8 +65,8 @@ def find_pod_with_the_highest_pile_on(universe: Inventory, sku_to_quantity: dict
     for sku in sku_list:
         pod_candidates.update(universe.pod_manager.sku_to_pods.get(sku, []))
 
-    print(f"checking candidate for sku {sku_list}")
-    print(f"pod_candidates {pod_candidates}")
+    logger.debug("checking candidate for sku %s", sku_list)
+    logger.debug("pod_candidates %s", pod_candidates)
 
     def pile_on_score(pod: Pod) -> int:
         if (
@@ -85,7 +88,7 @@ def find_pod_with_the_highest_pile_on(universe: Inventory, sku_to_quantity: dict
         key=lambda x: x[1],
         reverse=True
     )
-    print("ranked_pods", ranked_pods)
+    logger.debug("ranked_pods %s", ranked_pods)
     return ranked_pods[0]
 
 
@@ -106,8 +109,8 @@ def find_pod_with_the_highest_demand(
         and not getattr(po, "is_awaiting_replenishment", False)
         and not getattr(po, "must_replenish_before_pick", False)
     }
-    print(f"checking candidate for sku {station_unfinished_skus}")
-    print(f"pod_candidates {pod_candidates}")
+    logger.debug("checking candidate for sku %s", station_unfinished_skus)
+    logger.debug("pod_candidates %s", pod_candidates)
 
     if not pod_candidates:
         return None, -1
@@ -132,5 +135,5 @@ def find_pod_with_the_highest_demand(
         key=lambda x: x[1],
         reverse=True
     )
-    print("ranked_pods", ranked_pods)
+    logger.debug("ranked_pods %s", ranked_pods)
     return ranked_pods[0]

@@ -257,6 +257,8 @@ def run_on_policy_training_controller(
                     artifact_label=config.artifact_label,
                     batch_id=batch_id,
                     worker_id=worker_index + 1,
+                    rts_torch_threads=config.rts_torch_threads,
+                    rts_torch_interop_threads=config.rts_torch_interop_threads,
                     **scheduler,
                 )
                 worker_root.mkdir(parents=True, exist_ok=True)
@@ -542,6 +544,22 @@ def run_on_policy_training_controller(
                 expected_tick_to_second=0.15,
                 reward_normalizer_metadata=batch_reward_metadata,
             )
+            # --- Patch 2: Learning rate contract ---
+            checkpoint_lr = _learning_rate_from_checkpoint(active_checkpoint_dir)
+            if config.learning_rate is not None and checkpoint_lr is not None:
+                if abs(float(config.learning_rate) - float(checkpoint_lr)) > 1e-12:
+                    raise RuntimeError(
+                        f"CLI --learning-rate={config.learning_rate} differs from "
+                        f"checkpoint learning_rate={checkpoint_lr}. "
+                        f"To resume an existing training line, omit --learning-rate "
+                        f"or supply the exact checkpoint value."
+                    )
+            effective_lr = checkpoint_lr if checkpoint_lr is not None else float(config.learning_rate or 1e-4)
+            lr_diagnostics = {
+                "requested_learning_rate": config.learning_rate,
+                "effective_learning_rate": effective_lr,
+                "learning_rate_source": "checkpoint" if checkpoint_lr is not None else "config_default",
+            }
             if dataset.summary["trainable_step_count"] < config.min_trainable_steps:
                 summary = {
                     "experiment_id": experiment_id,
@@ -570,7 +588,7 @@ def run_on_policy_training_controller(
 
             update_start = time.perf_counter()
             loaded = load_policy_from_checkpoint(active_checkpoint_dir, device=_controller_device(config.device))
-            optimizer = torch.optim.Adam(loaded.model.parameters(), lr=_learning_rate(loaded.metadata))
+            optimizer = torch.optim.Adam(loaded.model.parameters(), lr=effective_lr)
             load_training_checkpoint(active_checkpoint_dir, model=loaded.model, optimizer=optimizer, device=_controller_device(config.device))
             train_config = _ppo_training_config(config, loaded.metadata)
             ppo_batch = build_on_policy_ppo_batch(dataset, gamma=train_config.gamma, gae_lambda=train_config.gae_lambda)
@@ -587,7 +605,7 @@ def run_on_policy_training_controller(
                 action_feature_names=ppo_batch.action_feature_names,
                 stock_feature_names=ppo_batch.stock_feature_names,
                 cycle_reference_path=reward_reference_path,
-                reward_normalizer_metadata=derived_reward_metadata,
+                reward_normalizer_metadata=batch_reward_metadata,
                 lineage_metadata={
                     "experiment_id": experiment_id,
                     "scenario_id": scenario_id,
@@ -602,6 +620,7 @@ def run_on_policy_training_controller(
                     "feature_ablation_hash": ablation.hash,
                     "charging_mode": config.charging_mode,
                     **batch_reward_metadata,
+                    **lr_diagnostics,
                 },
                 checkpoint_id_before=active_checkpoint_id,
             )
@@ -626,13 +645,15 @@ def run_on_policy_training_controller(
                 "checkpoint_dir": str(checkpoint_dir),
                 "latest_updated": True,
                 "zone_ids": list(active_zone_ids or ()),
-                "derived_reward_normalizer": derived_reward_metadata,
+                "reward_normalizer_used": batch_reward_metadata,
+                "reward_normalizer_derived": derived_reward_metadata,
                 **scheduler,
                 **proposal_metadata,
                 "feature_ablation": ablation.name,
                 "feature_ablation_hash": ablation.hash,
                 "charging_mode": config.charging_mode,
                 **batch_reward_metadata,
+                **lr_diagnostics,
             }
             atomic_write_json(batch_dir / "batch_summary.json", summary)
             append_jsonl(run_root / "training_events.jsonl", {"event_type": "batch_updated", **summary})
@@ -800,13 +821,30 @@ def _learning_rate(metadata: dict[str, Any]) -> float:
     return float((metadata.get("training_config") or {}).get("learning_rate", 1e-4))
 
 
+def _learning_rate_from_checkpoint(checkpoint_dir: Path | None) -> float | None:
+    """Read learning rate from checkpoint metadata.json without loading the model."""
+    if checkpoint_dir is None:
+        return None
+    metadata_path = Path(checkpoint_dir) / "metadata.json"
+    if not metadata_path.exists():
+        return None
+    try:
+        with metadata_path.open() as fh:
+            metadata = json.load(fh)
+        return _learning_rate(metadata)
+    except Exception:
+        return None
+
+
 def _ppo_training_config(config: RTSOnPolicyTrainingConfig, metadata: dict[str, Any]) -> RTSTrainingConfig:
     base = metadata.get("training_config") or {}
+    # Patch 2: Always use checkpoint learning rate for existing training lines
+    checkpoint_lr = float(base.get("learning_rate", 1e-4))
     return RTSTrainingConfig(
         artifact_label=config.artifact_label,
         output_root=config.output_root,
         seed=config.seed,
-        learning_rate=float(config.learning_rate if config.learning_rate is not None else base.get("learning_rate", 1e-4)),
+        learning_rate=checkpoint_lr,
         gamma=float(base.get("gamma", 0.99)),
         gae_lambda=float(base.get("gae_lambda", 0.95)),
         ppo_epochs=config.ppo_epochs,

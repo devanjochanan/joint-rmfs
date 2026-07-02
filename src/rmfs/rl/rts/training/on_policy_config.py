@@ -27,7 +27,7 @@ class RTSOnPolicyTrainingConfig:
     min_trainable_steps: int = 1
     ppo_epochs: int = 4
     minibatch_size: int = 64
-    learning_rate: float = 1e-4
+    learning_rate: float | None = None
     zone_ids: tuple[str, ...] = ()
     feature_ablation: str = "full"
     ledger_path: Path | None = None
@@ -43,6 +43,8 @@ class RTSOnPolicyTrainingConfig:
     task_allocator_scope: str = TASK_ALLOCATOR_SCOPE
     committed_next_reservations_enabled: bool = True
     debug_worker_logs: bool = False
+    rts_torch_threads: int | None = None
+    rts_torch_interop_threads: int | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -111,7 +113,7 @@ def validate_on_policy_training_config(
         raise ValueError("ppo_epochs must be >= 1")
     if int(config.minibatch_size) < 1:
         raise ValueError("minibatch_size must be >= 1")
-    if float(config.learning_rate) <= 0.0:
+    if config.learning_rate is not None and float(config.learning_rate) <= 0.0:
         raise ValueError("learning_rate must be positive")
     from src.rmfs.rl.rts.ablation import resolve_ablation
     resolve_ablation(config.feature_ablation)

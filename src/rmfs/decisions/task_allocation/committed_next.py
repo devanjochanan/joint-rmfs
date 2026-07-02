@@ -419,6 +419,13 @@ class CommittedNextRegistry:
     def _proposal_from_decision(self, inventory: Any, robot: Any, decision: Any) -> CommittedNextProposal | None:
         storage = getattr(decision, "storage", None)
         zone_id = str(getattr(decision, "zone_id", "") or "")
+        if storage is not None and not zone_id:
+            try:
+                registry = build_zone_registry(inventory, zone_ids=getattr(getattr(getattr(inventory, "rts_rollout_runtime", None), "config", None), "zone_ids", ()) or ())
+                if registry is not None:
+                    zone_id = registry.zone_id_for_storage(storage)
+            except Exception:
+                zone_id = ""
         if storage is None or not zone_id:
             return None
         return self._build_proposal_for_storage(inventory, robot, zone_id, storage)

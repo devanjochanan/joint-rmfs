@@ -243,6 +243,7 @@ class RTSRolloutRuntime:
         row.update(
             {
                 "action_context_id": getattr(decision, "action_context_id", None) or metadata.get("action_context_id"),
+                "rts_decision_timing": metadata.get("rts_decision_timing"),
                 "action_context_version": getattr(decision, "action_context_version", None)
                 or metadata.get("action_context_version"),
                 "candidate_storage_id": metadata.get("candidate_storage_id"),

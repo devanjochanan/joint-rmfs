@@ -218,6 +218,26 @@ def save_training_checkpoint(
     reloaded = load_policy_from_checkpoint(checkpoint_dir, device="cpu")
     if reloaded.policy_checkpoint_id != checkpoint_id_after:
         raise RuntimeError("checkpoint reload validation returned unexpected policy checkpoint id")
+
+    # 2. Construct a fresh Adam optimizer with the effective checkpoint learning rate
+    effective_lr = float(getattr(config, "learning_rate", 1e-4))
+    import torch.optim
+    optimizer_to_verify = torch.optim.Adam(reloaded.model.parameters(), lr=effective_lr)
+
+    # 3. Load optimizer.pt through the production training-checkpoint loader
+    load_training_checkpoint(checkpoint_dir, model=reloaded.model, optimizer=optimizer_to_verify, device="cpu")
+
+    # 4. Compute the optimizer-state fingerprint
+    post_load_fingerprint = optimizer_state_fingerprint(optimizer_to_verify.state_dict())
+
+    # 5. Compare it with the pre-save fingerprint
+    if post_load_fingerprint.get("sha256") != optimizer_fingerprint.get("sha256"):
+        raise RuntimeError(
+            f"Optimizer state fingerprint mismatch after reload validation! "
+            f"Pre-save fingerprint SHA-256: {optimizer_fingerprint.get('sha256')}, "
+            f"Post-load fingerprint SHA-256: {post_load_fingerprint.get('sha256')}"
+        )
+
     write_latest_pointer(root, batch_id=batch_id, checkpoint_dir=checkpoint_dir, policy_checkpoint_id=checkpoint_id_after)
     
     append_checkpoint_history(

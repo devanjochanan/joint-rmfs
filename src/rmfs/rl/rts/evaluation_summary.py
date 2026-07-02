@@ -31,6 +31,7 @@ class RolloutSummaryAccumulator:
         self.paper_cycle_status_counts: dict[str, int] = {}
         self.selected_action_counts: dict[str, int] = {}
         self.invalid_action_selected_count = 0
+        self._timing_rows: list[Mapping[str, Any]] = []
 
     def add_event(self, event: Mapping[str, Any]) -> None:
         row = dict(event)
@@ -57,6 +58,9 @@ class RolloutSummaryAccumulator:
                 self.invalid_action_selected_count += 1
         except Exception:
             self.invalid_action_selected_count += 1
+        timing = row.get("rts_decision_timing")
+        if timing is not None:
+            self._timing_rows.append(timing)
 
     def _add_outcome(self, row: Mapping[str, Any]) -> None:
         self.outcome_count += 1
@@ -82,6 +86,22 @@ class RolloutSummaryAccumulator:
             self.reward_computed_count += 1
 
     def to_summary(self) -> dict[str, Any]:
+        timing_count = len(self._timing_rows)
+        if timing_count > 0:
+            mean_build_state = sum(float(r.get("build_state_ms") or 0.0) for r in self._timing_rows) / timing_count
+            mean_feature_bundle = sum(float(r.get("build_feature_bundle_ms") or 0.0) for r in self._timing_rows) / timing_count
+            mean_forward = sum(float(r.get("tensor_and_forward_ms") or 0.0) for r in self._timing_rows) / timing_count
+            mean_revalidation = sum(float(r.get("selected_context_revalidation_ms") or 0.0) for r in self._timing_rows) / timing_count
+            mean_total = sum(float(r.get("total_select_destination_ms") or 0.0) for r in self._timing_rows) / timing_count
+            max_total = max(float(r.get("total_select_destination_ms") or 0.0) for r in self._timing_rows)
+        else:
+            mean_build_state = None
+            mean_feature_bundle = None
+            mean_forward = None
+            mean_revalidation = None
+            mean_total = None
+            max_total = None
+
         return {
             "schema_version": SUMMARY_SCHEMA_VERSION,
             "policy_mode": self.policy_mode,
@@ -105,6 +125,13 @@ class RolloutSummaryAccumulator:
             "paper_cycle_status_counts": dict(self.paper_cycle_status_counts),
             "selected_action_counts": dict(self.selected_action_counts),
             "invalid_action_selected_count": self.invalid_action_selected_count,
+            "decision_timing_count": timing_count,
+            "mean_build_state_ms": mean_build_state,
+            "mean_feature_bundle_ms": mean_feature_bundle,
+            "mean_forward_ms": mean_forward,
+            "mean_revalidation_ms": mean_revalidation,
+            "mean_total_decision_ms": mean_total,
+            "max_total_decision_ms": max_total,
         }
 
 
@@ -153,6 +180,28 @@ def summarize_rollout_events(events: Iterable[Mapping[str, Any]], policy_mode: s
     detected_mode = policy_mode
     if detected_mode is None and decisions:
         detected_mode = str(decisions[0].get("policy_name", "unknown"))
+
+    timing_rows = [
+        row.get("rts_decision_timing")
+        for row in decisions
+        if row.get("rts_decision_timing") is not None
+    ]
+    timing_count = len(timing_rows)
+    if timing_count > 0:
+        mean_build_state = sum(float(r.get("build_state_ms") or 0.0) for r in timing_rows) / timing_count
+        mean_feature_bundle = sum(float(r.get("build_feature_bundle_ms") or 0.0) for r in timing_rows) / timing_count
+        mean_forward = sum(float(r.get("tensor_and_forward_ms") or 0.0) for r in timing_rows) / timing_count
+        mean_revalidation = sum(float(r.get("selected_context_revalidation_ms") or 0.0) for r in timing_rows) / timing_count
+        mean_total = sum(float(r.get("total_select_destination_ms") or 0.0) for r in timing_rows) / timing_count
+        max_total = max(float(r.get("total_select_destination_ms") or 0.0) for r in timing_rows)
+    else:
+        mean_build_state = None
+        mean_feature_bundle = None
+        mean_forward = None
+        mean_revalidation = None
+        mean_total = None
+        max_total = None
+
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
         "policy_mode": detected_mode or "unknown",
@@ -168,6 +217,13 @@ def summarize_rollout_events(events: Iterable[Mapping[str, Any]], policy_mode: s
         "paper_cycle_status_counts": paper_status_counts,
         "selected_action_counts": counts,
         "invalid_action_selected_count": invalid,
+        "decision_timing_count": timing_count,
+        "mean_build_state_ms": mean_build_state,
+        "mean_feature_bundle_ms": mean_feature_bundle,
+        "mean_forward_ms": mean_forward,
+        "mean_revalidation_ms": mean_revalidation,
+        "mean_total_decision_ms": mean_total,
+        "max_total_decision_ms": max_total,
     }
 
 

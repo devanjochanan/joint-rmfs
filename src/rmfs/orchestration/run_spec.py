@@ -54,6 +54,8 @@ class RunSpec:
     regret_k: int | None = 2
     task_allocator_scope: str = "active_job_queue"
     committed_next_reservations_enabled: bool = False
+    rts_torch_threads: int | None = None
+    rts_torch_interop_threads: int | None = None
 
     @property
     def netlogo_steps_requested(self) -> int:

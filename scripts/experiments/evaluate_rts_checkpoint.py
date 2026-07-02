@@ -30,7 +30,8 @@ def main(argv=None):
     charging.add_argument("--charging-enabled", action="store_const", const="enabled", dest="charging_mode")
     charging.add_argument("--charging-disabled", action="store_const", const="disabled", dest="charging_mode")
     charging.add_argument("--charging-inherit-default", action="store_const", const="inherit", dest="charging_mode")
-    parser.set_defaults(charging_mode="inherit")
+    parser.add_argument("--rts-torch-threads", type=int, default=None)
+    parser.add_argument("--rts-torch-interop-threads", type=int, default=None)
     args = parser.parse_args(argv)
     summary = run_rts_evaluation(
         repo_root=REPO_ROOT,
@@ -45,6 +46,8 @@ def main(argv=None):
         dry_run=not args.execute or args.dry_run,
         min_completed_cycles=args.min_completed_cycles,
         ledger_path=Path(args.ledger_path).resolve() if args.ledger_path else None,
+        rts_torch_threads=args.rts_torch_threads,
+        rts_torch_interop_threads=args.rts_torch_interop_threads,
     )
     print(summary["eval_run_id"])
 

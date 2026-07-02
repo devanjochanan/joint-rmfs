@@ -45,8 +45,19 @@ class RTSOnPolicyActor:
         self.config = config
 
     def select_destination(self, context: Any) -> RTSDecision:
+        import time
+        t_total_start = time.perf_counter()
+
         zones = self.zone_ids
+
+        # 1. build_state_ms
+        t_state_start = time.perf_counter()
         state = build_state(context, zones)
+        t_state_end = time.perf_counter()
+        build_state_ms = max(0.0, (t_state_end - t_state_start) * 1000.0)
+
+        # 2. build_feature_bundle_ms
+        t_feature_start = time.perf_counter()
         action_mask = build_action_mask_from_contexts(zones, state.action_contexts)
         validate_action_mask(zones, action_mask, require_valid=True)
         features = build_feature_bundle(zones, action_mask, state.state_json)
@@ -59,6 +70,11 @@ class RTSOnPolicyActor:
             zone_ids=zones,
             ablation=self.ablation,
         )
+        t_feature_end = time.perf_counter()
+        build_feature_bundle_ms = max(0.0, (t_feature_end - t_feature_start) * 1000.0)
+
+        # 3. tensor_and_forward_ms
+        t_forward_start = time.perf_counter()
         device_str = resolve_rts_torch_device(self.config.policy_device)
         device = torch.device(device_str)
         with torch.no_grad():
@@ -76,6 +92,11 @@ class RTSOnPolicyActor:
             old_log_prob = float(dist.log_prob(selected_tensor).item())
             old_value = float(values.squeeze(0).item())
             policy_entropy = float(dist.entropy().squeeze(0).item())
+        t_forward_end = time.perf_counter()
+        tensor_and_forward_ms = max(0.0, (t_forward_end - t_forward_start) * 1000.0)
+
+        # 4. selected_context_revalidation_ms
+        t_reval_start = time.perf_counter()
         action = decode_action(selected, zones)
         action_context = revalidate_selected_context(context, selected_context_by_index(state.action_contexts, selected))
         storage = action_context.candidate_storage
@@ -87,6 +108,20 @@ class RTSOnPolicyActor:
             if getattr(action_context, "cycle_estimate", None) is not None
             else None
         )
+        t_reval_end = time.perf_counter()
+        selected_context_revalidation_ms = max(0.0, (t_reval_end - t_reval_start) * 1000.0)
+
+        t_total_end = time.perf_counter()
+        total_select_destination_ms = max(0.0, (t_total_end - t_total_start) * 1000.0)
+
+        timing = {
+            "build_state_ms": build_state_ms,
+            "build_feature_bundle_ms": build_feature_bundle_ms,
+            "tensor_and_forward_ms": tensor_and_forward_ms,
+            "selected_context_revalidation_ms": selected_context_revalidation_ms,
+            "total_select_destination_ms": total_select_destination_ms,
+        }
+
         return RTSDecision(
             storage=storage,
             destination=NetLogoCoordinate(storage.pos_x, storage.pos_y),
@@ -126,6 +161,6 @@ class RTSOnPolicyActor:
                 "feature_ablation": self.ablation.name,
                 "feature_ablation_hash": self.ablation.hash,
                 "feature_ablation_specification": self.ablation.to_json_dict(),
+                "rts_decision_timing": timing,
             },
         )
-

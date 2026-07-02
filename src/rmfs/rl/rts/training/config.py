@@ -30,6 +30,8 @@ class RTSTrainingConfig:
     keep_all_batch_checkpoints: bool = True
     use_latest_only_for_resume: bool = True
     tensorboard_enabled: bool = True
+    rts_torch_threads: int | None = None
+    rts_torch_interop_threads: int | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         data = asdict(self)

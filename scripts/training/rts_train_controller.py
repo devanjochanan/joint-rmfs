@@ -34,7 +34,7 @@ def main(argv=None):
     parser.add_argument("--min-trainable-steps", type=int, default=1)
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--minibatch-size", type=int, default=64)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--feature-ablation", default="full")
     parser.add_argument("--ledger-path", default=None)
     charging = parser.add_mutually_exclusive_group()
@@ -52,6 +52,8 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", default=False, help="Deprecated no-op flag. Dry run is default.")
     parser.add_argument("--execute", action="store_true", default=False, help="Run real training instead of a dry run.")
     parser.add_argument("--debug-worker-logs", action="store_true", default=False, help="Persist worker stdout/stderr logs for diagnosis.")
+    parser.add_argument("--rts-torch-threads", type=int, default=None)
+    parser.add_argument("--rts-torch-interop-threads", type=int, default=None)
     parser.set_defaults(charging_mode="inherit")
     args = parser.parse_args(argv)
 
@@ -90,6 +92,8 @@ def main(argv=None):
         robot_task_allocator=args.robot_task_allocator,
         regret_k=args.regret_k if args.robot_task_allocator == "regret_k" else None,
         debug_worker_logs=args.debug_worker_logs,
+        rts_torch_threads=args.rts_torch_threads,
+        rts_torch_interop_threads=args.rts_torch_interop_threads,
     )
     result = run_on_policy_training_controller(
         config=config,
