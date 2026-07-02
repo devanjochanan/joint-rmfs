@@ -173,25 +173,39 @@ class RTSRolloutRuntime:
         if not zones:
             raise RuntimeError("RTS rollout requires configured or inferable zone_ids when a decision occurs")
         metadata = dict(getattr(decision, "metadata", {}) or {})
-        captured_state = metadata.get("state_json")
-        if isinstance(captured_state, dict):
-            state_json = captured_state
-            captured_mask = metadata.get("action_mask")
-            mask = list(captured_mask) if captured_mask is not None else [
-                int(row.get("mask_value", 0))
-                for row in sorted(
-                    state_json.get("rts_action_contexts", []) or [],
-                    key=lambda row: int(row.get("action_index", 0)),
-                )
-            ]
-        else:
-            state = build_state(context, zones)
-            state_json = state.state_json
-            mask = build_action_mask_from_contexts(zones, state.action_contexts)
         selected = _selected_action(decision, zones)
-        selected_context_payload = _selected_action_context_payload(state_json, selected["index"])
-        selected_cycle_estimate = dict(selected_context_payload.get("cycle_estimate") or {})
-        features = build_feature_bundle(zones, mask, state_json)
+        capture_mode = _resolve_state_capture_mode(self.config)
+        state_json = None
+        mask = None
+        feature_shapes: dict[str, Any] = {}
+        selected_cycle_estimate: dict[str, Any] = {}
+        if capture_mode == "full":
+            captured_state = metadata.get("state_json")
+            if isinstance(captured_state, dict):
+                state_json = captured_state
+                captured_mask = metadata.get("action_mask")
+                mask = list(captured_mask) if captured_mask is not None else [
+                    int(row.get("mask_value", 0))
+                    for row in sorted(
+                        state_json.get("rts_action_contexts", []) or [],
+                        key=lambda row: int(row.get("action_index", 0)),
+                    )
+                ]
+            else:
+                state = build_state(context, zones)
+                state_json = state.state_json
+                mask = build_action_mask_from_contexts(zones, state.action_contexts)
+            selected_context_payload = _selected_action_context_payload(state_json, selected["index"])
+            selected_cycle_estimate = dict(selected_context_payload.get("cycle_estimate") or {})
+            features = build_feature_bundle(zones, mask, state_json)
+            feature_shapes = {
+                "X_actions": list(features.X_actions.shape),
+                "M_actions": list(features.M_actions.shape),
+                "X_stock": list(features.X_stock.shape),
+                "M_stock": list(features.M_stock.shape),
+            }
+        else:
+            selected_cycle_estimate = dict(metadata.get("selected_cycle_estimate") or {})
         warehouse = getattr(context, "warehouse", None)
         tick = getattr(warehouse, "_tick", None)
         tick_to_second = getattr(warehouse, "tick_to_second", None)
@@ -203,6 +217,8 @@ class RTSRolloutRuntime:
         pod_id = _text(getattr(getattr(job, "pod", None), "pod_id", getattr(context.pod, "pod_id", "")))
         decision_event_id = make_decision_event_id(robot_id=robot_id, job_id=job_id, pod_id=pod_id, tick=tick)
         committed_next = _committed_next_payload(context, robot)
+        trainable = bool(capture_mode == "full" and metadata.get("actor_kind") == "rts_rl_explicit")
+        nontrainable_reason = None if trainable else ("minimal_state_capture" if capture_mode == "minimal" else "non_on_policy_capture")
         row = build_decision_event(
             decision_event_id=decision_event_id,
             tick=tick,
@@ -219,12 +235,7 @@ class RTSRolloutRuntime:
             selected_zone_id=selected["zone_id"],
             selected_storage=getattr(decision, "storage", None),
             state_json=state_json,
-            feature_shapes={
-                "X_actions": list(features.X_actions.shape),
-                "M_actions": list(features.M_actions.shape),
-                "X_stock": list(features.X_stock.shape),
-                "M_stock": list(features.M_stock.shape),
-            },
+            feature_shapes=feature_shapes,
             actor_kind=metadata.get("actor_kind"),
             policy_checkpoint_id=metadata.get("policy_checkpoint_id"),
             policy_mode=metadata.get("policy_mode") or self.config.policy_mode,
@@ -238,12 +249,21 @@ class RTSRolloutRuntime:
             netlogo_step=netlogo_step,
             warehouse_time=warehouse_time,
             tick_to_second=tick_to_second,
+            state_capture_mode=capture_mode,
+            state_available=(capture_mode == "full"),
+            trainable=trainable,
+            nontrainable_reason=nontrainable_reason,
         )
         row.update(committed_next)
+        row.update(_proposal_diagnostics_payload(context, robot))
         row.update(
             {
                 "action_context_id": getattr(decision, "action_context_id", None) or metadata.get("action_context_id"),
                 "rts_decision_timing": metadata.get("rts_decision_timing"),
+                "state_capture_mode": capture_mode,
+                "state_available": capture_mode == "full",
+                "trainable": trainable,
+                "nontrainable_reason": nontrainable_reason,
                 "action_context_version": getattr(decision, "action_context_version", None)
                 or metadata.get("action_context_version"),
                 "candidate_storage_id": metadata.get("candidate_storage_id"),
@@ -609,6 +629,27 @@ def _committed_next_payload(context: Any, robot: Any) -> dict[str, Any]:
     }
 
 
+def _proposal_diagnostics_payload(context: Any, robot: Any) -> dict[str, Any]:
+    warehouse = getattr(context, "warehouse", None)
+    registry = getattr(warehouse, "committed_next_registry", None)
+    diagnostics = {}
+    if registry is not None:
+        try:
+            diagnostics = registry.last_action_proposal_diagnostics(robot)
+        except Exception:
+            diagnostics = {}
+    return {
+        "eligible_job_pool_size": _int_or_zero(diagnostics.get("eligible_job_pool_size")),
+        "proposal_queue_scan_count": _int_or_zero(diagnostics.get("queue_scan_count")),
+        "loaded_distance_lookup_count": _int_or_zero(diagnostics.get("loaded_distance_lookup_count")),
+        "empty_distance_lookup_count": _int_or_zero(diagnostics.get("empty_distance_lookup_count")),
+        "proposal_construction_count": _int_or_zero(diagnostics.get("proposal_construction_count")),
+        "eligible_pool_build_ms": 1000.0 * float(diagnostics.get("eligible_pool_build_seconds") or 0.0),
+        "all_zone_proposals_ms": 1000.0 * float(diagnostics.get("all_zone_proposals_seconds") or 0.0),
+        "proposal_build_ms": 1000.0 * float(diagnostics.get("proposal_build_seconds") or 0.0),
+    }
+
+
 def _pending_committed_next_payload(pending: PendingRTSDecision) -> dict[str, Any]:
     return {
         "committed_next_reservation_id": pending.committed_next_reservation_id,
@@ -733,3 +774,22 @@ def _netlogo_step_or_none(warehouse_time: Any, tick_to_second: Any) -> int | Non
         return warehouse_time_to_netlogo_steps(float(warehouse_time), float(tick_to_second))
     except Exception:
         return None
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
+def _resolve_state_capture_mode(config: RTSRuntimeConfig) -> str:
+    requested = str(getattr(config, "state_capture_mode", "auto") or "auto")
+    if requested in {"full", "minimal"}:
+        return requested
+    policy_mode = str(getattr(config, "policy_mode", "") or "")
+    if policy_mode in {"rts_rl_explicit", "current_probe"}:
+        return "full"
+    if policy_mode in {"current", "random_valid"}:
+        return "minimal"
+    return "full"

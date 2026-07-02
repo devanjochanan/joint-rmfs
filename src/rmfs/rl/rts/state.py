@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+import time
+from typing import Any, Mapping, Sequence
 
 from .action_context import ACTION_CONTEXT_VERSION, build_action_contexts, build_physical_zone_contexts
 from .cycle_estimator import CYCLE_ESTIMATE_VERSION, SEMANTICS_HOST_STRUCTURAL
 from .macro_region import macro_region_metadata
 from .replenishment_snapshot import build_replenishment_snapshot
 from .static_state_context import get_or_build_static_state_context
-from .static_runtime_index import get_or_build_static_runtime_index, resolve_runtime_zone_ids
+from .static_runtime_index import get_or_build_static_runtime_index, get_static_runtime_index, resolve_runtime_zone_ids
 from .stock_features import stock_rows_from_pod
 from .zone_features import build_zone_registry_metadata, build_zone_rows
 
@@ -26,6 +27,7 @@ class RTSStateBundle:
     zone_ids: tuple[str, ...]
     warnings: tuple[str, ...]
     action_contexts: tuple[Any, ...] = ()
+    timing: Mapping[str, float] | None = None
 
 
 def build_default_feature_fidelity() -> dict[str, str]:
@@ -50,11 +52,19 @@ def build_default_feature_fidelity() -> dict[str, str]:
 
 
 def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
+    t_total_start = time.perf_counter()
+    timing: dict[str, float] = {}
     warehouse = getattr(context, "warehouse", None)
-    try:
-        static_index = get_or_build_static_runtime_index(warehouse)
-    except Exception:
-        static_index = None
+    t_static_start = time.perf_counter()
+    static_index = get_static_runtime_index(warehouse)
+    if static_index is None:
+        if _static_index_required(warehouse):
+            raise RuntimeError("RTS static runtime index is required but is not installed for this headless RTS run")
+        try:
+            static_index = get_or_build_static_runtime_index(warehouse)
+        except Exception:
+            static_index = None
+    timing["static_index_lookup_ms"] = _elapsed_ms(t_static_start)
     zones = resolve_runtime_zone_ids(warehouse, zone_ids) if static_index is not None else tuple(str(zone_id) for zone_id in zone_ids)
     if not zones:
         raise ValueError("RTS-RL state requires at least one zone")
@@ -67,10 +77,13 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
     static_context = get_or_build_static_state_context(warehouse)
 
     stock_rows = stock_rows_from_pod(pod, warehouse, strict_global=True)
+    t_replenishment_start = time.perf_counter()
     replenishment_snapshot = build_replenishment_snapshot(warehouse, pod)
+    timing["replenishment_snapshot_ms"] = _elapsed_ms(t_replenishment_start)
     repl_signal_active = bool(replenishment_snapshot.eligible)
     repl_station_available = _station_count(warehouse, "replenishment") > 0
 
+    t_zone_start = time.perf_counter()
     zone_rows, warnings = build_zone_rows(
         context,
         zones,
@@ -80,42 +93,49 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
     )
     zone_metadata = build_zone_registry_metadata(context, zones, static_index=static_index)
     rows_by_zone = {str(row.get("zone_id")): dict(row) for row in zone_rows}
+    timing["zone_dynamic_features_ms"] = _elapsed_ms(t_zone_start)
+    t_physical_start = time.perf_counter()
     physical_contexts = build_physical_zone_contexts(
         context,
         zones,
         rows_by_zone=rows_by_zone,
         static_index=static_index,
     )
-    base_action_contexts = build_action_contexts(
-        context,
-        zones,
-        zone_rows=zone_rows,
-        replenishment_snapshot=replenishment_snapshot,
-        static_index=static_index,
-        physical_contexts=physical_contexts,
-        include_cycle_estimates=False,
-    )
+    timing["physical_zone_contexts_ms"] = _elapsed_ms(t_physical_start)
     action_proposals = {}
     if warehouse is not None and robot is not None and getattr(warehouse, "committed_next_reservations_enabled", False):
         try:
+            t_proposal_start = time.perf_counter()
             action_proposals = {
                 key: proposal.to_state_json()
                 for key, proposal in warehouse.ensure_committed_next_action_proposals(
                     robot,
                     context,
                     zones,
-                    action_contexts=base_action_contexts,
+                    physical_contexts=physical_contexts,
                 ).items()
             }
+            proposal_diag = _proposal_diagnostics(warehouse, robot)
+            timing["eligible_job_pool_ms"] = 1000.0 * float(proposal_diag.get("eligible_pool_build_seconds") or 0.0)
+            timing["all_zone_proposals_ms"] = 1000.0 * float(proposal_diag.get("all_zone_proposals_seconds") or 0.0)
+            timing["proposal_generation_ms"] = _elapsed_ms(t_proposal_start)
         except Exception as exc:
             warnings.append(f"committed_next_action_proposals_unavailable:{exc}")
             action_proposals = {}
+            timing.setdefault("eligible_job_pool_ms", 0.0)
+            timing.setdefault("all_zone_proposals_ms", 0.0)
+            timing.setdefault("proposal_generation_ms", 0.0)
+    else:
+        timing["eligible_job_pool_ms"] = 0.0
+        timing["all_zone_proposals_ms"] = 0.0
+        timing["proposal_generation_ms"] = 0.0
     proposal_objects = {}
     if warehouse is not None and robot is not None and getattr(warehouse, "committed_next_registry", None) is not None:
         try:
             proposal_objects = warehouse.committed_next_registry.get_action_proposals_for_robot(robot)
         except Exception:
             proposal_objects = {}
+    t_final_action_start = time.perf_counter()
     action_contexts = build_action_contexts(
         context,
         zones,
@@ -125,6 +145,7 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         static_index=static_index,
         physical_contexts=physical_contexts,
     )
+    timing["final_action_contexts_ms"] = _elapsed_ms(t_final_action_start)
     rows = [float(row.get("zone_row_index", 0.0)) for row in zone_rows]
     cols = [float(row.get("zone_col_index", 0.0)) for row in zone_rows]
     station_id = str(getattr(station, "station_id", ""))
@@ -208,6 +229,7 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         zone_ids=zones,
         warnings=tuple(warnings),
         action_contexts=action_contexts,
+        timing={**timing, "build_state_ms": _elapsed_ms(t_total_start)},
     )
 
 
@@ -217,3 +239,26 @@ def _station_count(warehouse: Any, station_type: str) -> int:
 
 def _is_robot_object(obj: object) -> bool:
     return str(getattr(obj, "object_type", "")).lower() == "robot"
+
+
+def _static_index_required(warehouse: Any) -> bool:
+    runtime = getattr(warehouse, "rts_rollout_runtime", None)
+    config = getattr(runtime, "config", None)
+    policy_mode = str(getattr(config, "policy_mode", "") or "")
+    if policy_mode in {"random_valid", "rts_rl_explicit"}:
+        return True
+    return False
+
+
+def _proposal_diagnostics(warehouse: Any, robot: Any) -> dict[str, Any]:
+    registry = getattr(warehouse, "committed_next_registry", None)
+    if registry is None:
+        return {}
+    try:
+        return registry.last_action_proposal_diagnostics(robot)
+    except Exception:
+        return {}
+
+
+def _elapsed_ms(start: float) -> float:
+    return max(0.0, (time.perf_counter() - start) * 1000.0)

@@ -15,6 +15,7 @@ SUPPORTED_RTS_POLICY_MODES = (
     "random_valid",
     "rts_rl_explicit",
 )
+SUPPORTED_RTS_STATE_CAPTURE_MODES = ("auto", "full", "minimal")
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class RTSRuntimeConfig:
     committed_next_reservations_enabled: bool = False
     cycle_estimate_semantics: str = SEMANTICS_HOST_STRUCTURAL
     cycle_estimate_allow_metric_fallback: bool = True
+    state_capture_mode: str = "auto"
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> "RTSRuntimeConfig":
@@ -61,10 +63,14 @@ def validate_rts_runtime_config(config: RTSRuntimeConfig) -> None:
         raise ValueError(f"unsupported RTS policy mode: {config.policy_mode!r}")
     if config.policy_mode in {"current_probe", "random_valid"} and not config.rollout_enabled:
         raise ValueError(f"{config.policy_mode} requires rollout_enabled=True")
+    if config.policy_mode == "current_probe" and config.state_capture_mode == "minimal":
+        raise ValueError("current_probe requires full RTS state capture")
     if config.policy_action_mode not in {"sample", "greedy"}:
         raise ValueError("rts policy_action_mode must be sample or greedy")
     if config.policy_device not in {"cpu", "cuda", "auto"}:
         raise ValueError("rts policy_device must be cpu, cuda, or auto")
+    if config.state_capture_mode not in SUPPORTED_RTS_STATE_CAPTURE_MODES:
+        raise ValueError(f"rts state_capture_mode must be one of {SUPPORTED_RTS_STATE_CAPTURE_MODES}")
     from .ablation import resolve_ablation
     ablation = resolve_ablation(config.feature_ablation)
     if config.feature_ablation_hash is not None and config.feature_ablation_hash != ablation.hash:
@@ -75,6 +81,8 @@ def validate_rts_runtime_config(config: RTSRuntimeConfig) -> None:
             f"{sorted(SUPPORTED_CYCLE_ESTIMATE_SEMANTICS)}"
         )
     if config.policy_mode == "rts_rl_explicit":
+        if config.state_capture_mode == "minimal":
+            raise ValueError("rts_rl_explicit requires full RTS state capture")
         if not config.rollout_enabled:
             raise ValueError("rts_rl_explicit requires rollout_enabled=True")
         if not config.committed_next_reservations_enabled:

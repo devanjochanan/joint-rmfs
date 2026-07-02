@@ -84,6 +84,8 @@ def build_on_policy_training_steps(
         "rejected_missing_old_value_count": 0,
         "rejected_invalid_selected_action_count": 0,
         "rejected_missing_state_count": 0,
+        "rejected_minimal_capture_count": 0,
+        "rejected_nontrainable_capture_count": 0,
         "rejected_feature_error_count": 0,
         "rejected_feature_schema_mismatch_count": 0,
         "rejected_feature_ablation_mismatch_count": 0,
@@ -231,6 +233,10 @@ def _build_step(
     required_feature_ablation_hash: str | None,
     expected_tick_to_second: float,
 ):
+    if str(decision.get("state_capture_mode") or "full") == "minimal":
+        return None, "rejected_minimal_capture_count"
+    if decision.get("trainable") is False:
+        return None, "rejected_nontrainable_capture_count"
     if decision.get("actor_kind") != "rts_rl_explicit":
         return None, "rejected_non_on_policy_count"
     if decision.get("policy_checkpoint_id") != required_policy_checkpoint_id:

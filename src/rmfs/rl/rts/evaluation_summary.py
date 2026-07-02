@@ -32,6 +32,23 @@ class RolloutSummaryAccumulator:
         self.selected_action_counts: dict[str, int] = {}
         self.invalid_action_selected_count = 0
         self._timing_rows: list[Mapping[str, Any]] = []
+        self.decisions_with_valid_candidate_storage = 0
+        self.decisions_with_nonempty_eligible_job_pool = 0
+        self.decisions_with_known_proposed_next_job = 0
+        self.proposals_selected_for_commitment = 0
+        self.reservations_committed = 0
+        self.reservations_activated = 0
+        self.trainable_transition_count = 0
+        self._reservation_ids: set[str] = set()
+        self._activated_reservation_ids: set[str] = set()
+        self._eligible_pool_size_total = 0.0
+        self._eligible_pool_size_max = 0
+        self._proposal_candidate_count_total = 0.0
+        self._proposal_candidate_count_seen = 0
+        self._proposal_build_ms_total = 0.0
+        self._eligible_pool_build_ms_total = 0.0
+        self._proposal_build_seen = 0
+        self.cancellation_counts_by_reason: dict[str, int] = {}
 
     def add_event(self, event: Mapping[str, Any]) -> None:
         row = dict(event)
@@ -50,11 +67,41 @@ class RolloutSummaryAccumulator:
         zone = row.get("selected_zone_id")
         key = f"{branch}:{zone}" if branch and zone else "unselected"
         self.selected_action_counts[key] = self.selected_action_counts.get(key, 0) + 1
+        if row.get("selected_storage") is not None or row.get("candidate_storage_id"):
+            self.decisions_with_valid_candidate_storage += 1
+        pool_size = _int(row.get("eligible_job_pool_size"))
+        if pool_size is not None:
+            self._eligible_pool_size_total += float(pool_size)
+            self._eligible_pool_size_max = max(self._eligible_pool_size_max, int(pool_size))
+            if pool_size > 0:
+                self.decisions_with_nonempty_eligible_job_pool += 1
+        candidate_count = _int(row.get("committed_next_candidate_count"))
+        if candidate_count is not None:
+            self._proposal_candidate_count_total += float(candidate_count)
+            self._proposal_candidate_count_seen += 1
+        proposal_ms = _float(row.get("proposal_build_ms"))
+        eligible_ms = _float(row.get("eligible_pool_build_ms"))
+        if proposal_ms is not None or eligible_ms is not None:
+            self._proposal_build_seen += 1
+            self._proposal_build_ms_total += float(proposal_ms or 0.0)
+            self._eligible_pool_build_ms_total += float(eligible_ms or 0.0)
+        if row.get("next_job_proposal_id") or row.get("committed_next_job_id"):
+            self.decisions_with_known_proposed_next_job += 1
+        if row.get("next_job_proposal_id"):
+            self.proposals_selected_for_commitment += 1
+        reservation_id = row.get("committed_next_reservation_id")
+        if reservation_id:
+            self._reservation_ids.add(str(reservation_id))
+            self.reservations_committed = len(self._reservation_ids)
+        if row.get("trainable") is True:
+            self.trainable_transition_count += 1
         try:
             index = row.get("selected_action_index")
             zone_ids = row.get("zone_ids") or []
             mask = row.get("action_mask") or []
-            if index is not None and action_mask_entry(int(index), zone_ids, mask) != 1:
+            if row.get("state_capture_mode") == "minimal" or not mask:
+                pass
+            elif index is not None and action_mask_entry(int(index), zone_ids, mask) != 1:
                 self.invalid_action_selected_count += 1
         except Exception:
             self.invalid_action_selected_count += 1
@@ -81,12 +128,19 @@ class RolloutSummaryAccumulator:
             self.pending_paper_cycle_count += 1
         elif status.startswith("censored"):
             self.censored_paper_cycle_count += 1
+            reason = str(row.get("paper_cycle_censor_reason") or status).strip() or status
+            self.cancellation_counts_by_reason[reason] = self.cancellation_counts_by_reason.get(reason, 0) + 1
+        reservation_id = row.get("committed_next_reservation_id")
+        if reservation_id and row.get("committed_next_activation_time_seconds") is not None:
+            self._activated_reservation_ids.add(str(reservation_id))
+            self.reservations_activated = len(self._activated_reservation_ids)
         reward = row.get("reward_json")
         if isinstance(reward, Mapping) and reward.get("reward_computed"):
             self.reward_computed_count += 1
 
     def to_summary(self) -> dict[str, Any]:
         timing_count = len(self._timing_rows)
+        timing_summary = _timing_summary(self._timing_rows)
         if timing_count > 0:
             mean_build_state = sum(float(r.get("build_state_ms") or 0.0) for r in self._timing_rows) / timing_count
             mean_feature_bundle = sum(float(r.get("build_feature_bundle_ms") or 0.0) for r in self._timing_rows) / timing_count
@@ -102,6 +156,22 @@ class RolloutSummaryAccumulator:
             mean_total = None
             max_total = None
 
+        mean_pool_size = self._eligible_pool_size_total / self.decision_count if self.decision_count else None
+        mean_candidate_count = (
+            self._proposal_candidate_count_total / self._proposal_candidate_count_seen
+            if self._proposal_candidate_count_seen
+            else None
+        )
+        mean_proposal_ms = (
+            self._proposal_build_ms_total / self._proposal_build_seen
+            if self._proposal_build_seen
+            else None
+        )
+        mean_eligible_pool_ms = (
+            self._eligible_pool_build_ms_total / self._proposal_build_seen
+            if self._proposal_build_seen
+            else None
+        )
         return {
             "schema_version": SUMMARY_SCHEMA_VERSION,
             "policy_mode": self.policy_mode,
@@ -125,7 +195,27 @@ class RolloutSummaryAccumulator:
             "paper_cycle_status_counts": dict(self.paper_cycle_status_counts),
             "selected_action_counts": dict(self.selected_action_counts),
             "invalid_action_selected_count": self.invalid_action_selected_count,
+            "decisions_with_valid_candidate_storage": self.decisions_with_valid_candidate_storage,
+            "decisions_with_nonempty_eligible_job_pool": self.decisions_with_nonempty_eligible_job_pool,
+            "decisions_with_known_proposed_next_job": self.decisions_with_known_proposed_next_job,
+            "proposals_selected_for_commitment": self.proposals_selected_for_commitment,
+            "reservations_committed": self.reservations_committed,
+            "reservations_activated": self.reservations_activated,
+            "reservations_cancelled": sum(self.cancellation_counts_by_reason.values()),
+            "cancellation_counts_by_reason": dict(self.cancellation_counts_by_reason),
+            "trainable_transition_count": self.trainable_transition_count,
+            "proposal_availability_rate": _rate(self.decisions_with_known_proposed_next_job, self.decision_count),
+            "reservation_success_rate": _rate(self.reservations_committed, self.decision_count),
+            "activation_rate": _rate(self.reservations_activated, self.reservations_committed),
+            "completed_cycle_rate": _rate(self.completed_paper_cycle_count, self.decision_count),
+            "trainable_transition_rate": _rate(self.trainable_transition_count, self.decision_count),
+            "mean_eligible_job_pool_size": mean_pool_size,
+            "maximum_eligible_job_pool_size": self._eligible_pool_size_max,
+            "mean_proposal_candidate_count": mean_candidate_count,
+            "mean_proposal_build_ms": mean_proposal_ms,
+            "mean_eligible_pool_build_ms": mean_eligible_pool_ms,
             "decision_timing_count": timing_count,
+            "decision_timing_ms_summary": timing_summary,
             "mean_build_state_ms": mean_build_state,
             "mean_feature_bundle_ms": mean_feature_bundle,
             "mean_forward_ms": mean_forward,
@@ -136,6 +226,10 @@ class RolloutSummaryAccumulator:
 
 
 def summarize_rollout_events(events: Iterable[Mapping[str, Any]], policy_mode: str | None = None) -> dict[str, Any]:
+    accumulator = RolloutSummaryAccumulator(policy_mode=policy_mode)
+    for event in events:
+        accumulator.add_event(event)
+    return accumulator.to_summary()
     rows = [dict(event) for event in events]
     decisions = [row for row in rows if row.get("event_type") == DECISION_EVENT]
     outcomes = [row for row in rows if row.get("event_type") == OUTCOME_EVENT]
@@ -246,3 +340,34 @@ def _float(value: Any) -> float | None:
         return float(value)
     except Exception:
         return None
+
+
+def _int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0
+
+
+def _timing_summary(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, float]]:
+    accum: dict[str, dict[str, float]] = {}
+    for row in rows:
+        for key, value in dict(row).items():
+            number = _float(value)
+            if number is None:
+                continue
+            slot = accum.setdefault(str(key), {"count": 0.0, "total": 0.0, "max": float("-inf")})
+            slot["count"] += 1.0
+            slot["total"] += float(number)
+            slot["max"] = max(slot["max"], float(number))
+    return {
+        key: {
+            "mean": values["total"] / values["count"] if values["count"] else 0.0,
+            "max": 0.0 if values["max"] == float("-inf") else values["max"],
+        }
+        for key, values in sorted(accum.items())
+    }

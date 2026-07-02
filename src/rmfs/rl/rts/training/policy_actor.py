@@ -114,13 +114,14 @@ class RTSOnPolicyActor:
         t_total_end = time.perf_counter()
         total_select_destination_ms = max(0.0, (t_total_end - t_total_start) * 1000.0)
 
-        timing = {
-            "build_state_ms": build_state_ms,
-            "build_feature_bundle_ms": build_feature_bundle_ms,
-            "tensor_and_forward_ms": tensor_and_forward_ms,
-            "selected_context_revalidation_ms": selected_context_revalidation_ms,
-            "total_select_destination_ms": total_select_destination_ms,
-        }
+        timing = dict(state.timing or {})
+        timing["build_state_ms"] = build_state_ms
+        timing["feature_bundle_ms"] = build_feature_bundle_ms
+        timing["build_feature_bundle_ms"] = build_feature_bundle_ms
+        timing["tensor_and_forward_ms"] = tensor_and_forward_ms
+        timing["selected_revalidation_ms"] = selected_context_revalidation_ms
+        timing["selected_context_revalidation_ms"] = selected_context_revalidation_ms
+        timing["total_select_destination_ms"] = total_select_destination_ms
 
         return RTSDecision(
             storage=storage,

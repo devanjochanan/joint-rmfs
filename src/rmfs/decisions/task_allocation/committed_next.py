@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+import time
+from typing import Any, Mapping
 
 from src.rmfs.rl.rts.graph_distance import graph_distance_or_fallback
 from src.rmfs.rl.rts.static_runtime_index import get_static_runtime_index
@@ -102,6 +103,35 @@ class CommittedNextProposal:
         }
 
 
+@dataclass(frozen=True)
+class CommittedNextEligibleJob:
+    queue_index: int
+    job_id: str
+    pod_id: str
+    job: Any
+    pod: Any
+    pod_coordinate: Any
+    picking_station: Any
+    picking_station_id: str
+    next_pod_zone_id: str
+    loaded_pod_to_picker_distance: float
+    loaded_distance_source: str
+    loaded_distance_status: str
+    loaded_fallback_used: bool
+
+
+@dataclass(frozen=True)
+class CommittedNextEligibleJobPool:
+    jobs: tuple[CommittedNextEligibleJob, ...]
+    build_seconds: float
+    queue_scan_count: int
+    loaded_distance_lookup_count: int
+
+    @property
+    def size(self) -> int:
+        return len(self.jobs)
+
+
 class CommittedNextRegistry:
     def __init__(self):
         self.reservations_by_id: dict[str, CommittedNextReservation] = {}
@@ -109,6 +139,8 @@ class CommittedNextRegistry:
         self.pod_id_to_reservation: dict[str, str] = {}
         self.job_id_to_reservation: dict[str, str] = {}
         self.robot_id_to_action_proposals: dict[str, dict[str, CommittedNextProposal]] = {}
+        self._last_action_proposal_diagnostics_by_robot: dict[str, dict[str, Any]] = {}
+        self._last_selected_refresh_diagnostics_by_robot: dict[str, dict[str, Any]] = {}
         self._counter = 0
 
     def rebuild_indexes(self) -> None:
@@ -142,36 +174,78 @@ class CommittedNextRegistry:
         context: Any,
         zone_ids: tuple[str, ...],
         action_contexts: tuple[Any, ...] | None = None,
+        physical_contexts: Mapping[str, Any] | None = None,
+        candidate_storage_by_zone: Mapping[str, Any] | None = None,
+        eligible_pool: CommittedNextEligibleJobPool | None = None,
     ) -> dict[str, CommittedNextProposal]:
+        start = time.perf_counter()
         owner_id = robot_id(robot)
         proposals: dict[str, CommittedNextProposal] = {}
+        diagnostics: dict[str, Any] = {
+            "queue_scan_count": 0,
+            "eligible_job_pool_size": 0,
+            "loaded_distance_lookup_count": 0,
+            "empty_distance_lookup_count": 0,
+            "proposal_construction_count": 0,
+            "proposal_build_seconds": 0.0,
+            "eligible_pool_build_seconds": 0.0,
+            "all_zone_proposals_seconds": 0.0,
+        }
         if self.get_for_robot(robot) is not None:
             self.robot_id_to_action_proposals[owner_id] = proposals
+            self._last_action_proposal_diagnostics_by_robot[owner_id] = diagnostics
             return proposals
         registry = _runtime_zone_registry(inventory, zone_ids)
+        if eligible_pool is None:
+            eligible_pool = self.build_eligible_job_pool(inventory, registry=registry)
+        diagnostics["queue_scan_count"] = eligible_pool.queue_scan_count
+        diagnostics["eligible_job_pool_size"] = eligible_pool.size
+        diagnostics["loaded_distance_lookup_count"] = eligible_pool.loaded_distance_lookup_count
+        diagnostics["eligible_pool_build_seconds"] = eligible_pool.build_seconds
         contexts_by_zone = {}
         for action_context in action_contexts or ():
             zone_id = str(getattr(action_context, "zone_id", ""))
             contexts_by_zone.setdefault(zone_id, action_context)
+        physical_by_zone = {str(key): value for key, value in dict(physical_contexts or {}).items()}
+        storage_by_zone = {str(key): value for key, value in dict(candidate_storage_by_zone or {}).items()}
+        proposal_start = time.perf_counter()
         for zone_id in zone_ids:
-            action_context = contexts_by_zone.get(str(zone_id))
-            storage = getattr(action_context, "candidate_storage", None)
+            zone_key = str(zone_id)
+            physical = physical_by_zone.get(zone_key)
+            storage = getattr(physical, "storage", None)
+            if storage is None and zone_key in storage_by_zone:
+                storage = storage_by_zone[zone_key]
             if storage is None:
-                storage = self._candidate_storage_for_action(context, registry, str(zone_id))
+                action_context = contexts_by_zone.get(zone_key)
+                storage = getattr(action_context, "candidate_storage", None)
+            if storage is None:
+                storage = self._candidate_storage_for_action(context, registry, zone_key)
             if storage is None:
                 continue
             proposal = self._build_proposal_for_storage(
                 inventory=inventory,
                 robot=robot,
-                zone_id=str(zone_id),
+                zone_id=zone_key,
                 storage=storage,
+                eligible_pool=eligible_pool,
+                diagnostics=diagnostics,
             )
-            proposals[proposal_key("", zone_id)] = proposal
+            proposals[proposal_key("", zone_key)] = proposal
+            diagnostics["proposal_construction_count"] += 1
+        diagnostics["all_zone_proposals_seconds"] = max(0.0, time.perf_counter() - proposal_start)
+        diagnostics["proposal_build_seconds"] = max(0.0, time.perf_counter() - start)
         self.robot_id_to_action_proposals[owner_id] = proposals
+        self._last_action_proposal_diagnostics_by_robot[owner_id] = diagnostics
         return proposals
 
     def get_action_proposals_for_robot(self, robot: Any) -> dict[str, CommittedNextProposal]:
         return dict(self.robot_id_to_action_proposals.get(robot_id(robot), {}))
+
+    def last_action_proposal_diagnostics(self, robot: Any) -> dict[str, Any]:
+        return dict(self._last_action_proposal_diagnostics_by_robot.get(robot_id(robot), {}))
+
+    def last_selected_refresh_diagnostics(self, robot: Any) -> dict[str, Any]:
+        return dict(self._last_selected_refresh_diagnostics_by_robot.get(robot_id(robot), {}))
 
     def get_action_proposal(self, robot: Any, branch: str, zone_id: str) -> CommittedNextProposal | None:
         return self.robot_id_to_action_proposals.get(robot_id(robot), {}).get(proposal_key(branch, zone_id))
@@ -183,7 +257,18 @@ class CommittedNextRegistry:
         context: Any,
         zone_id: str,
         storage: Any | None = None,
+        eligible_pool: CommittedNextEligibleJobPool | None = None,
     ) -> CommittedNextProposal | None:
+        start = time.perf_counter()
+        diagnostics: dict[str, Any] = {
+            "queue_scan_count": 0,
+            "eligible_job_pool_size": 0,
+            "loaded_distance_lookup_count": 0,
+            "empty_distance_lookup_count": 0,
+            "selected_zone_refresh_seconds": 0.0,
+            "eligible_pool_build_seconds": 0.0,
+        }
+        registry = None
         if storage is None:
             try:
                 registry = _runtime_zone_registry(inventory, (str(zone_id),))
@@ -191,14 +276,32 @@ class CommittedNextRegistry:
                 registry = None
             storage = self._candidate_storage_for_action(context, registry, str(zone_id)) if registry is not None else None
         if storage is None:
+            self._last_selected_refresh_diagnostics_by_robot[robot_id(robot)] = diagnostics
             return None
+        if eligible_pool is None:
+            if registry is None:
+                try:
+                    runtime = getattr(inventory, "rts_rollout_runtime", None)
+                    config = getattr(runtime, "config", None)
+                    registry = _runtime_zone_registry(inventory, getattr(config, "zone_ids", ()) or ())
+                except Exception:
+                    registry = None
+            eligible_pool = self.build_eligible_job_pool(inventory, registry=registry)
+        diagnostics["queue_scan_count"] = eligible_pool.queue_scan_count
+        diagnostics["eligible_job_pool_size"] = eligible_pool.size
+        diagnostics["loaded_distance_lookup_count"] = eligible_pool.loaded_distance_lookup_count
+        diagnostics["eligible_pool_build_seconds"] = eligible_pool.build_seconds
         proposal = self._build_proposal_for_storage(
             inventory=inventory,
             robot=robot,
             zone_id=str(zone_id),
             storage=storage,
+            eligible_pool=eligible_pool,
+            diagnostics=diagnostics,
         )
         self.robot_id_to_action_proposals.setdefault(robot_id(robot), {})[proposal_key("", zone_id)] = proposal
+        diagnostics["selected_zone_refresh_seconds"] = max(0.0, time.perf_counter() - start)
+        self._last_selected_refresh_diagnostics_by_robot[robot_id(robot)] = diagnostics
         return proposal
 
     def clear_action_proposals_for_robot(self, robot: Any) -> None:
@@ -319,8 +422,18 @@ class CommittedNextRegistry:
         robot: Any,
         zone_id: str,
         storage: Any,
+        eligible_pool: CommittedNextEligibleJobPool | None = None,
+        diagnostics: dict[str, Any] | None = None,
     ) -> CommittedNextProposal:
-        candidates = self._eligible_candidates_from_storage(inventory, storage)
+        if eligible_pool is None:
+            runtime = getattr(inventory, "rts_rollout_runtime", None)
+            config = getattr(runtime, "config", None)
+            try:
+                registry = _runtime_zone_registry(inventory, getattr(config, "zone_ids", ()) or ())
+            except Exception:
+                registry = None
+            eligible_pool = self.build_eligible_job_pool(inventory, registry=registry)
+        candidates = self._eligible_candidates_from_storage(inventory, storage, eligible_pool, diagnostics=diagnostics)
         candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
         best = candidates[0] if candidates else None
         if best is None:
@@ -371,14 +484,57 @@ class CommittedNextRegistry:
         self,
         inventory: Any,
         storage: Any,
+        eligible_pool: CommittedNextEligibleJobPool,
+        diagnostics: dict[str, Any] | None = None,
     ) -> list[tuple[float, int, str, str, Any, str, str, float, float, str, str, str, str, bool]]:
         candidates = []
-        runtime = getattr(inventory, "rts_rollout_runtime", None)
-        config = getattr(runtime, "config", None)
-        try:
-            registry = _runtime_zone_registry(inventory, getattr(config, "zone_ids", ()) or ())
-        except Exception:
-            registry = None
+        if diagnostics is None:
+            diagnostics = {}
+        for item in eligible_pool.jobs:
+            try:
+                diagnostics["empty_distance_lookup_count"] = int(diagnostics.get("empty_distance_lookup_count", 0)) + 1
+                empty_leg = graph_distance_or_fallback(inventory, storage, item.pod_coordinate, topology=EMPTY_ROBOT)
+                if empty_leg.distance is None:
+                    continue
+                storage_to_pod = float(empty_leg.distance)
+            except Exception:
+                continue
+            pod_to_picker = float(item.loaded_pod_to_picker_distance)
+            cost = storage_to_pod + pod_to_picker
+            candidates.append((
+                cost,
+                item.queue_index,
+                item.job_id,
+                item.pod_id,
+                item.job,
+                item.picking_station_id,
+                item.next_pod_zone_id,
+                storage_to_pod,
+                pod_to_picker,
+                empty_leg.source,
+                empty_leg.status,
+                item.loaded_distance_source,
+                item.loaded_distance_status,
+                bool(empty_leg.fallback_used or item.loaded_fallback_used),
+            ))
+        return candidates
+
+    def build_eligible_job_pool(
+        self,
+        inventory: Any,
+        *,
+        registry: Any | None = None,
+    ) -> CommittedNextEligibleJobPool:
+        start = time.perf_counter()
+        candidates: list[CommittedNextEligibleJob] = []
+        loaded_distance_lookup_count = 0
+        if registry is None:
+            runtime = getattr(inventory, "rts_rollout_runtime", None)
+            config = getattr(runtime, "config", None)
+            try:
+                registry = _runtime_zone_registry(inventory, getattr(config, "zone_ids", ()) or ())
+            except Exception:
+                registry = None
         for queue_index, job in enumerate(getattr(inventory, "job_queue", []) or []):
             eligible, station, pod, zone_id = self._candidate_context(inventory, job, registry)
             if not eligible:
@@ -390,32 +546,36 @@ class CommittedNextRegistry:
             if _active_robot_has_job_or_pod(inventory, job, pod):
                 continue
             try:
-                empty_leg = graph_distance_or_fallback(inventory, storage, job.pod_coordinate, topology=EMPTY_ROBOT)
+                loaded_distance_lookup_count += 1
                 loaded_leg = graph_distance_or_fallback(inventory, job.pod_coordinate, station, topology=LOADED_ROBOT)
-                if empty_leg.distance is None or loaded_leg.distance is None:
+                if loaded_leg.distance is None:
                     continue
-                storage_to_pod = float(empty_leg.distance)
                 pod_to_picker = float(loaded_leg.distance)
             except Exception:
                 continue
-            cost = storage_to_pod + pod_to_picker
-            candidates.append((
-                cost,
-                queue_index,
-                job_id(job),
-                pod_id(pod),
-                job,
-                station.station_id,
-                zone_id,
-                storage_to_pod,
-                pod_to_picker,
-                empty_leg.source,
-                empty_leg.status,
-                loaded_leg.source,
-                loaded_leg.status,
-                bool(empty_leg.fallback_used or loaded_leg.fallback_used),
-            ))
-        return candidates
+            candidates.append(
+                CommittedNextEligibleJob(
+                    queue_index=int(queue_index),
+                    job_id=job_id(job),
+                    pod_id=pod_id(pod),
+                    job=job,
+                    pod=pod,
+                    pod_coordinate=getattr(job, "pod_coordinate", None),
+                    picking_station=station,
+                    picking_station_id=str(getattr(station, "station_id", "")),
+                    next_pod_zone_id=str(zone_id),
+                    loaded_pod_to_picker_distance=pod_to_picker,
+                    loaded_distance_source=loaded_leg.source,
+                    loaded_distance_status=loaded_leg.status,
+                    loaded_fallback_used=bool(loaded_leg.fallback_used),
+                )
+            )
+        return CommittedNextEligibleJobPool(
+            jobs=tuple(candidates),
+            build_seconds=max(0.0, time.perf_counter() - start),
+            queue_scan_count=1,
+            loaded_distance_lookup_count=loaded_distance_lookup_count,
+        )
 
     def _proposal_from_decision(self, inventory: Any, robot: Any, decision: Any) -> CommittedNextProposal | None:
         storage = getattr(decision, "storage", None)

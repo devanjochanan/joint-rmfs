@@ -238,6 +238,7 @@ def run_on_policy_training_controller(
                     rts_policy_device=config.worker_device,
                     rts_feature_ablation=ablation.name,
                     rts_feature_ablation_hash=ablation.hash,
+                    rts_state_capture_mode="full",
                     rts_charging_mode=config.charging_mode,
                     experiment_id=experiment_id,
                     scenario_id=scenario_id,

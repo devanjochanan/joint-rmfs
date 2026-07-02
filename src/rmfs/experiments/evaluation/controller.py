@@ -87,6 +87,7 @@ def run_rts_evaluation(
     ledger_path: Path | None = None,
     rts_torch_threads: int | None = None,
     rts_torch_interop_threads: int | None = None,
+    state_capture_mode: str = "auto",
 ) -> dict[str, Any]:
     repo_root = Path(repo_root)
     with Path(seed_pack_path).open() as fh:
@@ -116,6 +117,7 @@ def run_rts_evaluation(
         "feature_ablation": ablation.name,
         "feature_ablation_hash": ablation.hash,
         "charging_mode": charging_mode,
+        "state_capture_mode": state_capture_mode,
         "rts_torch_threads": rts_torch_threads if rts_torch_threads is not None else (1 if policy_mode == "rts_rl_explicit" else None),
         "rts_torch_interop_threads": rts_torch_interop_threads if rts_torch_interop_threads is not None else (1 if policy_mode == "rts_rl_explicit" else None),
         "run_profile": "training",
@@ -153,6 +155,7 @@ def run_rts_evaluation(
             rts_policy_device="cpu",
             rts_feature_ablation=ablation.name,
             rts_feature_ablation_hash=ablation.hash,
+            rts_state_capture_mode=state_capture_mode,
             rts_charging_mode=charging_mode,
             committed_next_reservations_enabled=(policy_mode in {"rts_rl_explicit", "current", "random_valid"}),
             experiment_id=eval_run_id,

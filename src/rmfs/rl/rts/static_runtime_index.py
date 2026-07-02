@@ -21,6 +21,43 @@ STATIC_RUNTIME_INDEX_VERSION = "rts_static_runtime_index.v1"
 _INDEX_BY_WAREHOUSE: "weakref.WeakKeyDictionary[Any, RTSStaticRuntimeIndex]" = weakref.WeakKeyDictionary()
 
 
+@dataclass
+class RTSStaticRuntimeIndexDiagnostics:
+    install_count: int = 0
+    build_count: int = 0
+    rebuild_count: int = 0
+    invalidation_count: int = 0
+    cached_retrieval_count: int = 0
+    missing_retrieval_count: int = 0
+    identity_validation_count: int = 0
+    layout_hash_count: int = 0
+    storage_hash_count: int = 0
+    graph_hash_count: int = 0
+    graph_matrix_build_count: int = 0
+    empty_matrix_build_count: int = 0
+    loaded_matrix_build_count: int = 0
+
+    def to_json_dict(self) -> dict[str, int]:
+        return {
+            "install_count": int(self.install_count),
+            "build_count": int(self.build_count),
+            "rebuild_count": int(self.rebuild_count),
+            "invalidation_count": int(self.invalidation_count),
+            "cached_retrieval_count": int(self.cached_retrieval_count),
+            "missing_retrieval_count": int(self.missing_retrieval_count),
+            "identity_validation_count": int(self.identity_validation_count),
+            "layout_hash_count": int(self.layout_hash_count),
+            "storage_hash_count": int(self.storage_hash_count),
+            "graph_hash_count": int(self.graph_hash_count),
+            "graph_matrix_build_count": int(self.graph_matrix_build_count),
+            "empty_matrix_build_count": int(self.empty_matrix_build_count),
+            "loaded_matrix_build_count": int(self.loaded_matrix_build_count),
+        }
+
+
+_DIAGNOSTICS = RTSStaticRuntimeIndexDiagnostics()
+
+
 @dataclass(frozen=True)
 class RTSGraphDistanceIndex:
     topology: str
@@ -134,40 +171,88 @@ class RTSStaticRuntimeIndex:
 
 
 def get_or_build_static_runtime_index(warehouse: Any) -> RTSStaticRuntimeIndex:
+    """Return the installed run-local index, building it only when absent.
+
+    This is intentionally O(1) after setup: it does not rehash layout, storage,
+    or graph identities. Call validate_static_runtime_index_identity() in
+    diagnostics/tests when an identity audit is required.
+    """
     if warehouse is None:
         raise ValueError("warehouse is required to build RTS static runtime index")
-    try:
-        cached = _INDEX_BY_WAREHOUSE.get(warehouse)
-    except TypeError as exc:
-        raise TypeError("warehouse object must support weak references for runtime RTS index") from exc
-    if cached is not None and runtime_index_identity_matches(warehouse, cached):
+    cached = get_static_runtime_index(warehouse)
+    if cached is not None:
         return cached
-    index = build_static_runtime_index(warehouse)
-    _INDEX_BY_WAREHOUSE[warehouse] = index
-    _clear_pair_distance_cache(warehouse)
-    return index
+    return install_static_runtime_index(warehouse)
 
 
 def get_static_runtime_index(warehouse: Any) -> RTSStaticRuntimeIndex | None:
     if warehouse is None:
         return None
     try:
-        return _INDEX_BY_WAREHOUSE.get(warehouse)
-    except TypeError:
+        index = _INDEX_BY_WAREHOUSE.get(warehouse)
+    except TypeError as exc:
+        raise TypeError("warehouse object must support weak references for runtime RTS index") from exc
+    if index is None:
+        _DIAGNOSTICS.missing_retrieval_count += 1
         return None
+    _DIAGNOSTICS.cached_retrieval_count += 1
+    return index
+
+
+def install_static_runtime_index(warehouse: Any) -> RTSStaticRuntimeIndex:
+    """Install exactly one active static index for this warehouse object."""
+    if warehouse is None:
+        raise ValueError("warehouse is required to install RTS static runtime index")
+    cached = get_static_runtime_index(warehouse)
+    if cached is not None:
+        return cached
+    index = build_static_runtime_index(warehouse)
+    _INDEX_BY_WAREHOUSE[warehouse] = index
+    _clear_pair_distance_cache(warehouse)
+    _DIAGNOSTICS.install_count += 1
+    return index
+
+
+def invalidate_static_runtime_index(warehouse: Any) -> None:
+    """Drop the active static index; the next install/rebuild creates fresh matrices."""
+    if warehouse is None:
+        return
+    try:
+        _INDEX_BY_WAREHOUSE.pop(warehouse, None)
+    except TypeError as exc:
+        raise TypeError("warehouse object must support weak references for runtime RTS index") from exc
+    _clear_pair_distance_cache(warehouse)
+    _DIAGNOSTICS.invalidation_count += 1
 
 
 def rebuild_static_runtime_index(warehouse: Any) -> RTSStaticRuntimeIndex:
     """Replace the worker-local index for a warehouse; old matrices become collectible."""
     if warehouse is None:
         raise ValueError("warehouse is required to rebuild RTS static runtime index")
+    invalidate_static_runtime_index(warehouse)
     index = build_static_runtime_index(warehouse)
     _INDEX_BY_WAREHOUSE[warehouse] = index
     _clear_pair_distance_cache(warehouse)
+    _DIAGNOSTICS.rebuild_count += 1
     return index
 
 
-def runtime_index_identity_matches(warehouse: Any, index: RTSStaticRuntimeIndex) -> bool:
+def validate_or_rebuild_static_runtime_index(warehouse: Any) -> RTSStaticRuntimeIndex:
+    """Debug/lifecycle helper: audit identity once and rebuild if it changed."""
+    cached = get_static_runtime_index(warehouse)
+    if cached is not None and validate_static_runtime_index_identity(warehouse, cached):
+        return cached
+    if cached is None:
+        return install_static_runtime_index(warehouse)
+    return rebuild_static_runtime_index(warehouse)
+
+
+def validate_static_runtime_index_identity(warehouse: Any, index: RTSStaticRuntimeIndex | None = None) -> bool:
+    _DIAGNOSTICS.identity_validation_count += 1
+    if index is None:
+        index = get_static_runtime_index(warehouse)
+    if index is None:
+        return False
     try:
         storage_manager = getattr(warehouse, "storage_manager", None)
         storages = tuple(getattr(storage_manager, "storages", []) or ())
@@ -187,7 +272,12 @@ def runtime_index_identity_matches(warehouse: Any, index: RTSStaticRuntimeIndex)
         return False
 
 
+def runtime_index_identity_matches(warehouse: Any, index: RTSStaticRuntimeIndex) -> bool:
+    return validate_static_runtime_index_identity(warehouse, index)
+
+
 def build_static_runtime_index(warehouse: Any) -> RTSStaticRuntimeIndex:
+    _DIAGNOSTICS.build_count += 1
     start = time.perf_counter()
     registry = build_zone_registry(warehouse)
     validate_no_col_zone_ids(registry.zone_ids, context="runtime RTS zone manifest")
@@ -285,6 +375,11 @@ def stable_storage_id(storage: Any) -> str:
 
 
 def _build_graph_distance_index(warehouse: Any, topology: str) -> RTSGraphDistanceIndex:
+    _DIAGNOSTICS.graph_matrix_build_count += 1
+    if str(topology) == EMPTY_ROBOT:
+        _DIAGNOSTICS.empty_matrix_build_count += 1
+    elif str(topology) == LOADED_ROBOT:
+        _DIAGNOSTICS.loaded_matrix_build_count += 1
     graph_wrapper = graph_wrapper_for_topology(warehouse, topology)
     graph = getattr(graph_wrapper, "graph", None)
     if graph is None:
@@ -329,6 +424,7 @@ def _validate_nonnegative_finite_weights(graph: Any, topology: str) -> None:
 
 
 def _graph_identity_hash(graph: Any, topology: str) -> str:
+    _DIAGNOSTICS.graph_hash_count += 1
     if graph is None:
         return ""
     payload = {
@@ -348,6 +444,7 @@ def _graph_identity_hash(graph: Any, topology: str) -> str:
 
 
 def _layout_identity_hash(warehouse: Any) -> str:
+    _DIAGNOSTICS.layout_hash_count += 1
     layout = getattr(warehouse, "layout", None)
     storage_manager = getattr(warehouse, "storage_manager", None)
     storages = tuple(getattr(storage_manager, "storages", []) or ())
@@ -362,6 +459,7 @@ def _layout_identity_hash(warehouse: Any) -> str:
 
 
 def _storage_coordinate_hash(storages: tuple[Any, ...]) -> str:
+    _DIAGNOSTICS.storage_hash_count += 1
     payload = [
         [stable_storage_id(storage), *(coordinate_pair(storage) or (None, None))]
         for storage in sorted(storages, key=stable_storage_id)
@@ -411,3 +509,12 @@ def _clear_pair_distance_cache(warehouse: Any) -> None:
         cache._cache.clear()
     except Exception:
         pass
+
+
+def static_runtime_index_diagnostics() -> dict[str, int]:
+    return _DIAGNOSTICS.to_json_dict()
+
+
+def reset_static_runtime_index_diagnostics() -> None:
+    global _DIAGNOSTICS
+    _DIAGNOSTICS = RTSStaticRuntimeIndexDiagnostics()

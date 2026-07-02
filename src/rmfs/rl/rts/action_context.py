@@ -16,7 +16,7 @@ from .action_space import REPLENISH_STORE, STORE, decode_action, normalize_zone_
 from .graph_distance import graph_distance_or_fallback
 from .macro_region import macro_region_pressures
 from .replenishment_snapshot import RTSReplenishmentSnapshot, build_replenishment_snapshot
-from .static_runtime_index import get_or_build_static_runtime_index
+from .static_runtime_index import get_or_build_static_runtime_index, get_static_runtime_index
 from .zone_registry import build_zone_registry
 
 
@@ -275,7 +275,12 @@ def selected_context_by_index(action_contexts: Sequence[RTSActionContext], actio
 
 
 def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTSActionContext:
-    static_index = _optional_static_index(context)
+    warehouse = getattr(context, "warehouse", None)
+    static_index = get_static_runtime_index(warehouse)
+    if static_index is None:
+        if _static_index_required(warehouse):
+            raise RuntimeError("RTS static runtime index is required for selected-action revalidation")
+        static_index = _optional_static_index(context)
     storage, storage_feasibility = select_candidate_storage(context, selected.zone_id, static_index=static_index)
     if storage is None or not storage_feasibility.available or not storage_feasibility.reachable:
         raise RuntimeError(
@@ -310,9 +315,15 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
     robot = getattr(context, "robot", None)
     if registry is not None and robot is not None:
         current = registry.get_action_proposal(robot, selected.branch, selected.zone_id)
-        if current is None or storage_id(getattr(current, "candidate_storage", None)) != storage_id(storage):
+        proposal_valid = False
+        if current is not None and storage_id(getattr(current, "candidate_storage", None)) == storage_id(storage):
+            try:
+                proposal_valid, _ = registry._validate_proposal_for_commit(warehouse, current)
+            except Exception:
+                proposal_valid = False
+        if not proposal_valid:
             current = registry.refresh_action_proposal_for_zone(
-                getattr(context, "warehouse", None),
+                warehouse,
                 robot,
                 context,
                 selected.zone_id,
@@ -527,6 +538,15 @@ def _optional_static_index(context: Any) -> Any | None:
         return get_or_build_static_runtime_index(warehouse)
     except Exception:
         return None
+
+
+def _static_index_required(warehouse: Any) -> bool:
+    runtime = getattr(warehouse, "rts_rollout_runtime", None)
+    config = getattr(runtime, "config", None)
+    policy_mode = str(getattr(config, "policy_mode", "") or "")
+    if policy_mode in {"random_valid", "rts_rl_explicit"}:
+        return True
+    return False
 
 
 def _distance_from_source(context: Any, storage: Any) -> float:

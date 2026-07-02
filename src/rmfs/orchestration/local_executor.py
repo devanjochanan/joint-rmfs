@@ -261,13 +261,17 @@ def finalize_rts_static_runtime_after_setup(warehouse, requested_zone_ids) -> di
     config = getattr(runtime, "config", None)
     policy = getattr(warehouse, "rts_policy", None)
     policy_mode = getattr(config, "policy_mode", None)
-    if policy_mode not in {"random_valid", "rts_rl_explicit"}:
+    if policy_mode not in {"current", "current_probe", "random_valid", "rts_rl_explicit"} or not bool(getattr(config, "rollout_enabled", False)):
         return None
     from dataclasses import replace
-    from src.rmfs.rl.rts.static_runtime_index import get_or_build_static_runtime_index, resolve_runtime_zone_ids
+    from src.rmfs.rl.rts.static_runtime_index import (
+        install_static_runtime_index,
+        resolve_runtime_zone_ids,
+        static_runtime_index_diagnostics,
+    )
     from src.rmfs.rl.rts.runtime_config import validate_rts_runtime_config
 
-    index = get_or_build_static_runtime_index(warehouse)
+    index = install_static_runtime_index(warehouse)
     requested = tuple(requested_zone_ids or getattr(config, "zone_ids", ()) or ())
     resolved_zone_ids = resolve_runtime_zone_ids(warehouse, requested)
     if policy is not None and hasattr(policy, "zone_ids"):
@@ -279,6 +283,7 @@ def finalize_rts_static_runtime_after_setup(warehouse, requested_zone_ids) -> di
     return {
         "runtime_zone_manifest": index.manifest.to_json_dict(),
         "rts_static_runtime_index": index.to_summary_dict(),
+        "rts_static_runtime_index_lifecycle": static_runtime_index_diagnostics(),
         "resolved_zone_ids": list(resolved_zone_ids),
     }
 
@@ -342,6 +347,7 @@ def run_worker(spec: RunSpec):
         from src.rmfs.runtime_io.detail_db import configure_detail_db
         from src.rmfs.rl.rts.runtime_config import RTSRuntimeConfig
         from src.rmfs.rl.rts.runtime_registry import configure_rts_runtime, reset_rts_runtime
+        from src.rmfs.rl.rts.static_runtime_index import reset_static_runtime_index_diagnostics
         import netlogo
 
         netlogo_module = netlogo
@@ -368,10 +374,12 @@ def run_worker(spec: RunSpec):
                 policy_device=spec.rts_policy_device,
                 feature_ablation=spec.rts_feature_ablation,
                 feature_ablation_hash=spec.rts_feature_ablation_hash,
+                state_capture_mode=spec.rts_state_capture_mode,
                 committed_next_reservations_enabled=spec.committed_next_reservations_enabled,
             ),
             runtime_root=spec.runtime_root,
         )
+        reset_static_runtime_index_diagnostics()
 
         if spec.rts_policy_mode == "rts_rl_explicit":
             import torch
@@ -548,6 +556,12 @@ def run_worker(spec: RunSpec):
         rts_summary_path = spec.runtime_root / "rts_rollout_summary.json"
         if rts_summary_path.exists():
             summary["rts_rollout_summary_path"] = str(rts_summary_path)
+        try:
+            from src.rmfs.rl.rts.static_runtime_index import static_runtime_index_diagnostics
+
+            summary["rts_static_runtime_index_lifecycle"] = static_runtime_index_diagnostics()
+        except Exception:
+            pass
         if spec.timing:
             timing_summary_path = write_timing_summary()
             if timing_summary_path is not None:
@@ -569,6 +583,7 @@ def run_worker(spec: RunSpec):
             "committed_next_reservations_enabled": spec.committed_next_reservations_enabled,
             "rts_torch_threads": spec.rts_torch_threads if spec.rts_torch_threads is not None else (1 if spec.rts_policy_mode == "rts_rl_explicit" else None),
             "rts_torch_interop_threads": spec.rts_torch_interop_threads if spec.rts_torch_interop_threads is not None else (1 if spec.rts_policy_mode == "rts_rl_explicit" else None),
+            "rts_state_capture_mode": spec.rts_state_capture_mode,
             "detail_db": spec.detail_db,
             "timing": spec.timing,
             "worker_status_cadence": spec.worker_status_cadence,
@@ -607,6 +622,7 @@ def run_controller(
     rts_policy_checkpoint_id: str | None = None,
     rts_policy_action_mode: str = "sample",
     rts_policy_device: str = "cpu",
+    rts_state_capture_mode: str = "auto",
     keep_runtime_artifacts: bool = False,
     detail_db: bool | None = None,
     timing: bool = False,
@@ -703,6 +719,7 @@ def run_controller(
         "rts_policy_checkpoint_id": rts_policy_checkpoint_id,
         "rts_policy_action_mode": rts_policy_action_mode,
         "rts_policy_device": rts_policy_device,
+        "rts_state_capture_mode": rts_state_capture_mode,
         "committed_next_reservations_enabled": committed_next_reservations_enabled,
         "keep_runtime_artifacts": keep_runtime_artifacts,
         "detail_db": detail_db,
@@ -727,6 +744,7 @@ def run_controller(
             "rts_rollout_enabled": rts_rollout_enabled,
             "rts_policy_checkpoint_id": rts_policy_checkpoint_id,
             "rts_policy_action_mode": rts_policy_action_mode,
+            "rts_state_capture_mode": rts_state_capture_mode,
         }
 
     write_run_manifest(
@@ -776,6 +794,7 @@ def run_controller(
             rts_policy_checkpoint_id=rts_policy_checkpoint_id,
             rts_policy_action_mode=rts_policy_action_mode,
             rts_policy_device=rts_policy_device,
+            rts_state_capture_mode=rts_state_capture_mode,
             committed_next_reservations_enabled=committed_next_reservations_enabled,
             keep_runtime_artifacts=keep_runtime_artifacts,
             detail_db=detail_db,
@@ -986,6 +1005,7 @@ def run_controller(
         "rts_policy_checkpoint_id": rts_policy_checkpoint_id,
         "rts_policy_action_mode": rts_policy_action_mode,
         "rts_policy_device": rts_policy_device,
+        "rts_state_capture_mode": rts_state_capture_mode,
         "keep_runtime_artifacts": keep_runtime_artifacts,
         "detail_db": detail_db,
         "timing": timing,
@@ -1039,6 +1059,9 @@ def main(argv=None):
     controller_parser.add_argument("--rts-policy-checkpoint-id", default=None)
     controller_parser.add_argument("--rts-policy-action-mode", choices=("sample", "greedy"), default="sample")
     controller_parser.add_argument("--rts-policy-device", choices=("cpu", "cuda", "auto"), default="cpu")
+    controller_parser.add_argument("--rts-state-capture-mode", choices=("auto", "full", "minimal"), default="auto")
+    controller_parser.add_argument("--rts-torch-threads", type=int, default=None)
+    controller_parser.add_argument("--rts-torch-interop-threads", type=int, default=None)
 
     args = parser.parse_args(argv)
 
@@ -1091,6 +1114,7 @@ def main(argv=None):
         rts_policy_checkpoint_id=args.rts_policy_checkpoint_id,
         rts_policy_action_mode=args.rts_policy_action_mode,
         rts_policy_device=args.rts_policy_device,
+        rts_state_capture_mode=args.rts_state_capture_mode,
         keep_runtime_artifacts=args.keep_runtime_artifacts,
         detail_db=args.detail_db,
         timing=args.timing,
@@ -1103,6 +1127,8 @@ def main(argv=None):
         pod_location_mode=args.pod_location_mode,
         pod_location_seed=args.pod_location_seed,
         full_raw_order_replay=args.full_raw_order_replay,
+        rts_torch_threads=args.rts_torch_threads,
+        rts_torch_interop_threads=args.rts_torch_interop_threads,
     )
     return 0
 

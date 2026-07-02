@@ -532,7 +532,15 @@ class Inventory(Universe):
             self.committed_next_registry = registry
         return registry.reserve_for_robot(self, robot)
 
-    def ensure_committed_next_action_proposals(self, robot: Robot, context, zone_ids, action_contexts=None):
+    def ensure_committed_next_action_proposals(
+        self,
+        robot: Robot,
+        context,
+        zone_ids,
+        action_contexts=None,
+        physical_contexts=None,
+        candidate_storage_by_zone=None,
+    ):
         if not self.committed_next_reservations_enabled:
             return {}
         registry = self.committed_next_registry
@@ -545,6 +553,8 @@ class Inventory(Universe):
             context,
             tuple(str(zone_id) for zone_id in zone_ids),
             action_contexts=action_contexts,
+            physical_contexts=physical_contexts,
+            candidate_storage_by_zone=candidate_storage_by_zone,
         )
 
     def commit_committed_next_decision(self, robot: Robot, decision):

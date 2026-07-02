@@ -22,6 +22,7 @@ def main(argv=None):
     parser.add_argument("--output-root", default="data/runtime/rts_evaluation")
     parser.add_argument("--policy-action-mode", choices=("greedy", "sample"), default="greedy")
     parser.add_argument("--feature-ablation", default="full")
+    parser.add_argument("--state-capture-mode", choices=("auto", "full", "minimal"), default="auto")
     parser.add_argument("--min-completed-cycles", type=int, default=1)
     parser.add_argument("--ledger-path", default=None)
     parser.add_argument("--execute", action="store_true", default=False)
@@ -42,6 +43,7 @@ def main(argv=None):
         output_root=Path(args.output_root),
         policy_action_mode=args.policy_action_mode,
         feature_ablation=args.feature_ablation,
+        state_capture_mode=args.state_capture_mode,
         charging_mode=args.charging_mode,
         dry_run=not args.execute or args.dry_run,
         min_completed_cycles=args.min_completed_cycles,

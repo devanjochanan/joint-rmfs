@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 
-ROLLOUT_SCHEMA_VERSION = "rts_rollout.v1"
+ROLLOUT_SCHEMA_VERSION = "rts_rollout.v2"
 DECISION_EVENT = "decision"
 OUTCOME_EVENT = "outcome"
 
@@ -25,13 +25,13 @@ def build_decision_event(
     source_station_type: Any,
     policy_name: str,
     zone_ids: Sequence[str],
-    action_mask: Sequence[int],
+    action_mask: Sequence[int] | None,
     selected_action_index: int | None,
     selected_action_branch: str | None,
     selected_zone_id: str | None,
     selected_storage: Any,
-    state_json: Mapping[str, Any],
-    feature_shapes: Mapping[str, Any],
+    state_json: Mapping[str, Any] | None,
+    feature_shapes: Mapping[str, Any] | None,
     actor_kind: str | None = None,
     policy_checkpoint_id: str | None = None,
     policy_mode: str | None = None,
@@ -45,7 +45,13 @@ def build_decision_event(
     netlogo_step: Any = None,
     warehouse_time: Any = None,
     tick_to_second: Any = None,
+    state_capture_mode: str = "full",
+    state_available: bool = True,
+    trainable: bool = True,
+    nontrainable_reason: str | None = None,
 ) -> dict[str, Any]:
+    mask = [] if action_mask is None else [int(value) for value in action_mask]
+    state_payload = None if state_json is None else dict(state_json)
     return _json_safe(
         {
             "schema_version": ROLLOUT_SCHEMA_VERSION,
@@ -59,13 +65,17 @@ def build_decision_event(
             "source_station_type": _text(source_station_type),
             "policy_name": str(policy_name),
             "zone_ids": list(zone_ids),
-            "action_mask": [int(value) for value in action_mask],
+            "action_mask": mask,
             "selected_action_index": selected_action_index,
             "selected_action_branch": selected_action_branch,
             "selected_zone_id": selected_zone_id,
             "selected_storage": _storage_json(selected_storage),
-            "state_json": dict(state_json),
-            "feature_shapes": dict(feature_shapes),
+            "state_json": state_payload,
+            "feature_shapes": dict(feature_shapes or {}),
+            "state_capture_mode": str(state_capture_mode),
+            "state_available": bool(state_available),
+            "trainable": bool(trainable),
+            "nontrainable_reason": nontrainable_reason,
             "actor_kind": actor_kind,
             "policy_checkpoint_id": policy_checkpoint_id,
             "policy_mode": policy_mode,
