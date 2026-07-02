@@ -247,8 +247,39 @@ class CommittedNextRegistry:
     def last_selected_refresh_diagnostics(self, robot: Any) -> dict[str, Any]:
         return dict(self._last_selected_refresh_diagnostics_by_robot.get(robot_id(robot), {}))
 
+    def record_selected_revalidation_diagnostics(self, robot: Any, diagnostics: Mapping[str, Any]) -> None:
+        self._last_selected_refresh_diagnostics_by_robot[robot_id(robot)] = dict(diagnostics)
+
     def get_action_proposal(self, robot: Any, branch: str, zone_id: str) -> CommittedNextProposal | None:
         return self.robot_id_to_action_proposals.get(robot_id(robot), {}).get(proposal_key(branch, zone_id))
+
+    def validate_selected_action_proposal(
+        self,
+        inventory: Any,
+        robot: Any,
+        proposal: CommittedNextProposal | None,
+        *,
+        zone_id: str,
+        storage: Any | None,
+    ) -> tuple[bool, str]:
+        if proposal is None:
+            return False, "missing_proposal"
+        if proposal.owner_robot_id != robot_id(robot):
+            return False, "owner_changed"
+        if str(proposal.zone_id) != str(zone_id):
+            return False, "zone_changed"
+        if storage_id(getattr(proposal, "candidate_storage", None)) != storage_id(storage):
+            return False, "storage_changed"
+        if not proposal.has_next_job:
+            try:
+                current_time = float(getattr(inventory, "_tick", 0.0))
+                proposal_time = float(proposal.created_time_seconds)
+            except Exception:
+                return False, "created_time_unknown"
+            if abs(current_time - proposal_time) > 1e-9:
+                return False, "proposal_stale_time"
+            return True, ""
+        return self._validate_proposal_for_commit(inventory, proposal)
 
     def refresh_action_proposal_for_zone(
         self,
@@ -262,6 +293,8 @@ class CommittedNextRegistry:
         start = time.perf_counter()
         diagnostics: dict[str, Any] = {
             "queue_scan_count": 0,
+            "selected_revalidation_queue_scan_count": 0,
+            "selected_proposal_refresh_count": 1,
             "eligible_job_pool_size": 0,
             "loaded_distance_lookup_count": 0,
             "empty_distance_lookup_count": 0,
@@ -288,6 +321,7 @@ class CommittedNextRegistry:
                     registry = None
             eligible_pool = self.build_eligible_job_pool(inventory, registry=registry)
         diagnostics["queue_scan_count"] = eligible_pool.queue_scan_count
+        diagnostics["selected_revalidation_queue_scan_count"] = eligible_pool.queue_scan_count
         diagnostics["eligible_job_pool_size"] = eligible_pool.size
         diagnostics["loaded_distance_lookup_count"] = eligible_pool.loaded_distance_lookup_count
         diagnostics["eligible_pool_build_seconds"] = eligible_pool.build_seconds

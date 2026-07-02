@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pickle
 import traceback
@@ -157,6 +158,47 @@ def load_pps_rl_model():
         print("[PPS_RL] Failed to load PPO model. Using heuristic PPS.")
         traceback.print_exc()
         return None
+
+
+def load_pps_rl_model_strict(
+    model_path: str | os.PathLike[str],
+    expected_sha256: Optional[str] = None,
+) -> object:
+    """Load a PPS PPO model with zero silent fallback.
+
+    Raises on missing file, SHA-256 mismatch, observation-shape mismatch,
+    or any load error — never falls back to heuristic.
+    """
+    path = Path(model_path)
+    if not path.exists():
+        raise FileNotFoundError(f"PPS model not found: {path}")
+
+    if expected_sha256 is not None:
+        sha256 = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(8192), b""):
+                sha256.update(chunk)
+        actual = sha256.hexdigest()
+        if actual != expected_sha256:
+            raise ValueError(
+                f"SHA-256 mismatch for {path}: "
+                f"expected {expected_sha256}, got {actual}"
+            )
+
+    from stable_baselines3 import PPO
+
+    _ensure_numpy_pickle_compat()
+    model = PPO.load(str(path), device="cpu")
+
+    if not _pps_rl_model_matches_current_observation(model):
+        raise ValueError(
+            f"Observation space mismatch: model from {path} does not match "
+            f"current PPS constants (pods={PPS_RL_MAX_PODS}, "
+            f"features={PPS_RL_POD_FEATURE_DIM}, stations={PPS_RL_NUM_STATIONS}, "
+            f"zones={PPS_RL_NUM_TRAFFIC_ZONES})"
+        )
+
+    return model
 
 
 def build_pps_rl_sku_index(

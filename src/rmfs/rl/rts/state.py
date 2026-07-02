@@ -120,6 +120,11 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
             timing["all_zone_proposals_ms"] = 1000.0 * float(proposal_diag.get("all_zone_proposals_seconds") or 0.0)
             timing["proposal_generation_ms"] = _elapsed_ms(t_proposal_start)
         except Exception as exc:
+            if _proposal_generation_failure_is_fatal(warehouse):
+                raise RuntimeError(
+                    "RTS committed-next proposal generation failed for "
+                    f"{_runtime_policy_mode(warehouse)!r}: {type(exc).__name__}: {exc}"
+                ) from exc
             warnings.append(f"committed_next_action_proposals_unavailable:{exc}")
             action_proposals = {}
             timing.setdefault("eligible_job_pool_ms", 0.0)
@@ -242,12 +247,20 @@ def _is_robot_object(obj: object) -> bool:
 
 
 def _static_index_required(warehouse: Any) -> bool:
-    runtime = getattr(warehouse, "rts_rollout_runtime", None)
-    config = getattr(runtime, "config", None)
-    policy_mode = str(getattr(config, "policy_mode", "") or "")
+    policy_mode = _runtime_policy_mode(warehouse)
     if policy_mode in {"random_valid", "rts_rl_explicit"}:
         return True
     return False
+
+
+def _proposal_generation_failure_is_fatal(warehouse: Any) -> bool:
+    return _runtime_policy_mode(warehouse) in {"rts_rl_explicit", "current_probe"}
+
+
+def _runtime_policy_mode(warehouse: Any) -> str:
+    runtime = getattr(warehouse, "rts_rollout_runtime", None)
+    config = getattr(runtime, "config", None)
+    return str(getattr(config, "policy_mode", "") or "")
 
 
 def _proposal_diagnostics(warehouse: Any, robot: Any) -> dict[str, Any]:

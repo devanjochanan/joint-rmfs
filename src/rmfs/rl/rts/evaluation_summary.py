@@ -38,9 +38,11 @@ class RolloutSummaryAccumulator:
         self.proposals_selected_for_commitment = 0
         self.reservations_committed = 0
         self.reservations_activated = 0
-        self.trainable_transition_count = 0
+        self.reservations_cancelled = 0
+        self.on_policy_candidate_decision_count = 0
         self._reservation_ids: set[str] = set()
         self._activated_reservation_ids: set[str] = set()
+        self._cancelled_reservation_ids: set[str] = set()
         self._eligible_pool_size_total = 0.0
         self._eligible_pool_size_max = 0
         self._proposal_candidate_count_total = 0.0
@@ -48,7 +50,8 @@ class RolloutSummaryAccumulator:
         self._proposal_build_ms_total = 0.0
         self._eligible_pool_build_ms_total = 0.0
         self._proposal_build_seen = 0
-        self.cancellation_counts_by_reason: dict[str, int] = {}
+        self.paper_cycle_censor_counts_by_reason: dict[str, int] = {}
+        self.reservation_cancellation_counts_by_reason: dict[str, int] = {}
 
     def add_event(self, event: Mapping[str, Any]) -> None:
         row = dict(event)
@@ -75,7 +78,9 @@ class RolloutSummaryAccumulator:
             self._eligible_pool_size_max = max(self._eligible_pool_size_max, int(pool_size))
             if pool_size > 0:
                 self.decisions_with_nonempty_eligible_job_pool += 1
-        candidate_count = _int(row.get("committed_next_candidate_count"))
+        candidate_count = _int(row.get("selected_proposal_candidate_count"))
+        if candidate_count is None:
+            candidate_count = _int(row.get("committed_next_candidate_count"))
         if candidate_count is not None:
             self._proposal_candidate_count_total += float(candidate_count)
             self._proposal_candidate_count_seen += 1
@@ -85,16 +90,28 @@ class RolloutSummaryAccumulator:
             self._proposal_build_seen += 1
             self._proposal_build_ms_total += float(proposal_ms or 0.0)
             self._eligible_pool_build_ms_total += float(eligible_ms or 0.0)
-        if row.get("next_job_proposal_id") or row.get("committed_next_job_id"):
+        if "selected_proposal_has_next_job" in row:
+            has_next_job = (
+                row.get("selected_proposal_has_next_job") is True
+                and bool(row.get("selected_proposal_job_id"))
+                and bool(row.get("selected_proposal_pod_id"))
+                and bool(row.get("selected_proposal_picker_id"))
+            )
+        else:
+            has_next_job = (
+                bool(row.get("committed_next_job_id"))
+                and bool(row.get("committed_next_pod_id"))
+                and bool(row.get("committed_next_station_id"))
+            )
+        if has_next_job:
             self.decisions_with_known_proposed_next_job += 1
-        if row.get("next_job_proposal_id"):
             self.proposals_selected_for_commitment += 1
+        if row.get("trainable") is True:
+            self.on_policy_candidate_decision_count += 1
         reservation_id = row.get("committed_next_reservation_id")
         if reservation_id:
             self._reservation_ids.add(str(reservation_id))
             self.reservations_committed = len(self._reservation_ids)
-        if row.get("trainable") is True:
-            self.trainable_transition_count += 1
         try:
             index = row.get("selected_action_index")
             zone_ids = row.get("zone_ids") or []
@@ -129,11 +146,20 @@ class RolloutSummaryAccumulator:
         elif status.startswith("censored"):
             self.censored_paper_cycle_count += 1
             reason = str(row.get("paper_cycle_censor_reason") or status).strip() or status
-            self.cancellation_counts_by_reason[reason] = self.cancellation_counts_by_reason.get(reason, 0) + 1
+            self.paper_cycle_censor_counts_by_reason[reason] = self.paper_cycle_censor_counts_by_reason.get(reason, 0) + 1
         reservation_id = row.get("committed_next_reservation_id")
         if reservation_id and row.get("committed_next_activation_time_seconds") is not None:
             self._activated_reservation_ids.add(str(reservation_id))
             self.reservations_activated = len(self._activated_reservation_ids)
+        if reservation_id and row.get("committed_next_cancelled") is True:
+            already_seen = str(reservation_id) in self._cancelled_reservation_ids
+            self._cancelled_reservation_ids.add(str(reservation_id))
+            self.reservations_cancelled = len(self._cancelled_reservation_ids)
+            if not already_seen:
+                reason = str(row.get("committed_next_cancellation_reason") or "unknown").strip() or "unknown"
+                self.reservation_cancellation_counts_by_reason[reason] = (
+                    self.reservation_cancellation_counts_by_reason.get(reason, 0) + 1
+                )
         reward = row.get("reward_json")
         if isinstance(reward, Mapping) and reward.get("reward_computed"):
             self.reward_computed_count += 1
@@ -193,6 +219,7 @@ class RolloutSummaryAccumulator:
             "pending_paper_cycle_count": self.pending_paper_cycle_count,
             "censored_paper_cycle_count": self.censored_paper_cycle_count,
             "paper_cycle_status_counts": dict(self.paper_cycle_status_counts),
+            "paper_cycle_censor_counts_by_reason": dict(self.paper_cycle_censor_counts_by_reason),
             "selected_action_counts": dict(self.selected_action_counts),
             "invalid_action_selected_count": self.invalid_action_selected_count,
             "decisions_with_valid_candidate_storage": self.decisions_with_valid_candidate_storage,
@@ -201,14 +228,17 @@ class RolloutSummaryAccumulator:
             "proposals_selected_for_commitment": self.proposals_selected_for_commitment,
             "reservations_committed": self.reservations_committed,
             "reservations_activated": self.reservations_activated,
-            "reservations_cancelled": sum(self.cancellation_counts_by_reason.values()),
-            "cancellation_counts_by_reason": dict(self.cancellation_counts_by_reason),
-            "trainable_transition_count": self.trainable_transition_count,
+            "reservations_cancelled": self.reservations_cancelled,
+            "reservation_cancellation_counts_by_reason": dict(self.reservation_cancellation_counts_by_reason),
+            "cancellation_counts_by_reason": dict(self.reservation_cancellation_counts_by_reason),
+            "on_policy_candidate_decision_count": self.on_policy_candidate_decision_count,
+            "trainable_transition_count": None,
             "proposal_availability_rate": _rate(self.decisions_with_known_proposed_next_job, self.decision_count),
             "reservation_success_rate": _rate(self.reservations_committed, self.decision_count),
             "activation_rate": _rate(self.reservations_activated, self.reservations_committed),
             "completed_cycle_rate": _rate(self.completed_paper_cycle_count, self.decision_count),
-            "trainable_transition_rate": _rate(self.trainable_transition_count, self.decision_count),
+            "on_policy_candidate_decision_rate": _rate(self.on_policy_candidate_decision_count, self.decision_count),
+            "trainable_transition_rate": None,
             "mean_eligible_job_pool_size": mean_pool_size,
             "maximum_eligible_job_pool_size": self._eligible_pool_size_max,
             "mean_proposal_candidate_count": mean_candidate_count,

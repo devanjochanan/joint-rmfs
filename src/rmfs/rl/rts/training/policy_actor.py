@@ -103,6 +103,7 @@ class RTSOnPolicyActor:
         if storage is None:
             raise RuntimeError(f"rts_rl_explicit selected {action.branch}:{action.zone_id}, but no storage resolved")
         proposal = action_context.next_job_proposal
+        proposal_has_next_job = bool(getattr(proposal, "has_next_job", False))
         cycle_estimate = (
             action_context.cycle_estimate.to_json_dict()
             if getattr(action_context, "cycle_estimate", None) is not None
@@ -156,8 +157,15 @@ class RTSOnPolicyActor:
                 "selected_replenishment_station_id": action_context.replenishment_station_id,
                 "validity_reason_codes": list(action_context.invalid_reason_codes),
                 "next_job_proposal_id": getattr(proposal, "proposal_id", None),
+                "selected_proposal_id": getattr(proposal, "proposal_id", None),
+                "selected_proposal_has_next_job": proposal_has_next_job,
+                "selected_proposal_job_id": getattr(proposal, "job_id", None) if proposal_has_next_job else None,
+                "selected_proposal_pod_id": getattr(proposal, "pod_id", None) if proposal_has_next_job else None,
+                "selected_proposal_picker_id": getattr(proposal, "picking_station_id", None) if proposal_has_next_job else None,
+                "selected_proposal_candidate_count": int(getattr(proposal, "candidate_count", 0) or 0),
                 "selected_cycle_estimate": cycle_estimate,
                 "state_json": state.state_json,
+                "state_capture_timing": "actor_decision_state",
                 "feature_schema_id": self.config.feature_schema_id or self.config.policy_checkpoint_id,
                 "feature_ablation": self.ablation.name,
                 "feature_ablation_hash": self.ablation.hash,

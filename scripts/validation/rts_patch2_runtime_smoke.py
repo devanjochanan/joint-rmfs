@@ -176,9 +176,16 @@ def test_minimal_dataset_rejection_and_funnel_summary() -> None:
             "eligible_job_pool_size": 3,
             "committed_next_candidate_count": 2,
             "next_job_proposal_id": "cnp-1",
+            "selected_proposal_id": "cnp-1",
+            "selected_proposal_has_next_job": True,
+            "selected_proposal_job_id": "job-next",
+            "selected_proposal_pod_id": "pod-next",
+            "selected_proposal_picker_id": "picker-1",
+            "selected_proposal_candidate_count": 2,
             "committed_next_reservation_id": "cnr-1",
             "committed_next_job_id": "job-next",
             "committed_next_pod_id": "pod-next",
+            "committed_next_station_id": "picker-1",
             "committed_next_activation_time_seconds": 2.0,
             "proposal_build_ms": 4.0,
             "eligible_pool_build_ms": 1.5,
@@ -213,7 +220,7 @@ def test_minimal_dataset_rejection_and_funnel_summary() -> None:
     assert summary["reservations_committed"] == 1, summary
     assert summary["reservations_activated"] == 1, summary
     assert summary["completed_paper_cycle_count"] == 1, summary
-    assert summary["trainable_transition_count"] == 0, summary
+    assert summary["trainable_transition_count"] is None, summary
 
 
 def _warehouse():

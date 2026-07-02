@@ -483,6 +483,10 @@ def run_worker(spec: RunSpec):
                     "job_queue_len": tick_res[2],
                     "stop_and_go": tick_res[3],
                     "total_turning": tick_res[4],
+                    "warehouse_orders_completed": None,
+                    "warehouse_orders_completed_available": False,
+                    "warehouse_average_order_cycle_time": None,
+                    "warehouse_average_order_cycle_time_available": False,
                 }
 
         finalization = session.finalize(

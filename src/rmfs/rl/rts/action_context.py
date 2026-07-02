@@ -318,7 +318,13 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
         proposal_valid = False
         if current is not None and storage_id(getattr(current, "candidate_storage", None)) == storage_id(storage):
             try:
-                proposal_valid, _ = registry._validate_proposal_for_commit(warehouse, current)
+                proposal_valid, _ = registry.validate_selected_action_proposal(
+                    warehouse,
+                    robot,
+                    current,
+                    zone_id=selected.zone_id,
+                    storage=storage,
+                )
             except Exception:
                 proposal_valid = False
         if not proposal_valid:
@@ -329,6 +335,18 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
                 selected.zone_id,
                 storage,
             )
+        else:
+            try:
+                registry.record_selected_revalidation_diagnostics(
+                    robot,
+                    {
+                        "queue_scan_count": 0,
+                        "selected_revalidation_queue_scan_count": 0,
+                        "selected_proposal_refresh_count": 0,
+                    },
+                )
+            except Exception:
+                pass
         proposal = current
     refreshed = refreshed.with_next_job_proposal(proposal)
     return _with_cycle_estimate(context, refreshed)

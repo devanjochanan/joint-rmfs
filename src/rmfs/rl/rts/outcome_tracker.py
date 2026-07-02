@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -55,6 +55,9 @@ class PendingRTSDecision:
     committed_next_zone_id: str | None = None
     committed_next_created_time_seconds: float | None = None
     committed_next_activation_time_seconds: float | None = None
+    committed_next_reservation_status: str | None = None
+    committed_next_cancelled: bool = False
+    committed_next_cancellation_reason: str | None = None
     cycle_estimate_known: bool = False
     estimated_cycle_time_at_decision: float | None = None
     estimated_queue_time_at_decision: float | None = None
@@ -170,6 +173,8 @@ class RTSRolloutRuntime:
         if not self.config.rollout_enabled:
             return None
         zones = self.config.zone_ids or infer_zone_ids_from_context(context)
+        if zones == ("auto",):
+            zones = infer_zone_ids_from_context(context)
         if not zones:
             raise RuntimeError("RTS rollout requires configured or inferable zone_ids when a decision occurs")
         metadata = dict(getattr(decision, "metadata", {}) or {})
@@ -191,21 +196,25 @@ class RTSRolloutRuntime:
                         key=lambda row: int(row.get("action_index", 0)),
                     )
                 ]
+                feature_shapes = dict(metadata.get("feature_shapes") or {})
             else:
                 state = build_state(context, zones)
                 state_json = state.state_json
                 mask = build_action_mask_from_contexts(zones, state.action_contexts)
             selected_context_payload = _selected_action_context_payload(state_json, selected["index"])
             selected_cycle_estimate = dict(selected_context_payload.get("cycle_estimate") or {})
-            features = build_feature_bundle(zones, mask, state_json)
-            feature_shapes = {
-                "X_actions": list(features.X_actions.shape),
-                "M_actions": list(features.M_actions.shape),
-                "X_stock": list(features.X_stock.shape),
-                "M_stock": list(features.M_stock.shape),
-            }
+            selected_proposal = _selected_proposal_payload(selected_context_payload, metadata)
+            if not feature_shapes:
+                features = build_feature_bundle(zones, mask, state_json)
+                feature_shapes = {
+                    "X_actions": list(features.X_actions.shape),
+                    "M_actions": list(features.M_actions.shape),
+                    "X_stock": list(features.X_stock.shape),
+                    "M_stock": list(features.M_stock.shape),
+                }
         else:
             selected_cycle_estimate = dict(metadata.get("selected_cycle_estimate") or {})
+            selected_proposal = _selected_proposal_payload({}, metadata)
         warehouse = getattr(context, "warehouse", None)
         tick = getattr(warehouse, "_tick", None)
         tick_to_second = getattr(warehouse, "tick_to_second", None)
@@ -253,6 +262,13 @@ class RTSRolloutRuntime:
             state_available=(capture_mode == "full"),
             trainable=trainable,
             nontrainable_reason=nontrainable_reason,
+            selected_proposal_id=selected_proposal["selected_proposal_id"],
+            selected_proposal_has_next_job=selected_proposal["selected_proposal_has_next_job"],
+            selected_proposal_job_id=selected_proposal["selected_proposal_job_id"],
+            selected_proposal_pod_id=selected_proposal["selected_proposal_pod_id"],
+            selected_proposal_picker_id=selected_proposal["selected_proposal_picker_id"],
+            selected_proposal_candidate_count=selected_proposal["selected_proposal_candidate_count"],
+            state_capture_timing=metadata.get("state_capture_timing"),
         )
         row.update(committed_next)
         row.update(_proposal_diagnostics_payload(context, robot))
@@ -293,6 +309,9 @@ class RTSRolloutRuntime:
                 committed_next_station_id=committed_next["committed_next_station_id"],
                 committed_next_zone_id=committed_next["committed_next_zone_id"],
                 committed_next_created_time_seconds=committed_next["committed_next_created_time_seconds"],
+                committed_next_reservation_status=committed_next["committed_next_reservation_status"],
+                committed_next_cancelled=bool(committed_next["committed_next_cancelled"]),
+                committed_next_cancellation_reason=committed_next["committed_next_cancellation_reason"],
                 cycle_estimate_known=bool(selected_cycle_estimate.get("known", False)),
                 estimated_cycle_time_at_decision=_float_or_none(
                     selected_cycle_estimate.get("estimated_cycle_seconds")
@@ -308,6 +327,52 @@ class RTSRolloutRuntime:
         )
         self._write_summary()
         return decision_event_id
+
+    def capture_precommit_decision_state(self, *, robot: Any, context: Any, decision: Any) -> Any:
+        if not self.config.rollout_enabled:
+            return decision
+        if _resolve_state_capture_mode(self.config) != "full":
+            return decision
+        if str(getattr(decision, "mode", "") or "") == "rl":
+            return decision
+        metadata = dict(getattr(decision, "metadata", {}) or {})
+        if isinstance(metadata.get("state_json"), dict):
+            metadata.setdefault("state_capture_timing", "pre_commit_decision_state")
+            return replace(decision, metadata=metadata)
+        zones = self.config.zone_ids or infer_zone_ids_from_context(context)
+        if zones == ("auto",):
+            zones = infer_zone_ids_from_context(context)
+        state = build_state(context, zones)
+        mask = build_action_mask_from_contexts(zones, state.action_contexts)
+        selected = _selected_action(decision, tuple(zones))
+        selected_context_payload = _selected_action_context_payload(state.state_json, selected["index"])
+        selected_proposal = _selected_proposal_payload(selected_context_payload, metadata)
+        features = build_feature_bundle(zones, mask, state.state_json)
+        metadata.update(
+            {
+                "state_json": state.state_json,
+                "action_mask": [int(value) for value in mask],
+                "selected_action_index": selected["index"],
+                "selected_action_branch": selected["branch"],
+                "selected_zone_id": selected["zone_id"],
+                "selected_cycle_estimate": dict(selected_context_payload.get("cycle_estimate") or {}),
+                "selected_proposal_id": selected_proposal["selected_proposal_id"],
+                "selected_proposal_has_next_job": selected_proposal["selected_proposal_has_next_job"],
+                "selected_proposal_job_id": selected_proposal["selected_proposal_job_id"],
+                "selected_proposal_pod_id": selected_proposal["selected_proposal_pod_id"],
+                "selected_proposal_picker_id": selected_proposal["selected_proposal_picker_id"],
+                "selected_proposal_candidate_count": selected_proposal["selected_proposal_candidate_count"],
+                "feature_shapes": {
+                    "X_actions": list(features.X_actions.shape),
+                    "M_actions": list(features.M_actions.shape),
+                    "X_stock": list(features.X_stock.shape),
+                    "M_stock": list(features.M_stock.shape),
+                },
+                "rts_decision_timing": dict(state.timing or {}),
+                "state_capture_timing": "pre_commit_decision_state",
+            }
+        )
+        return replace(decision, metadata=metadata)
 
     def on_return_completed(self, *, robot: Any) -> None:
         if not self.config.rollout_enabled:
@@ -372,6 +437,7 @@ class RTSRolloutRuntime:
             paper_cycle_completion_rule="",
         )
         row.update(_pending_committed_next_payload(pending))
+        row.update(_reservation_status_payload(getattr(robot, "warehouse", None), pending))
         row.update(_pending_cycle_estimate_payload(pending, realized_cycle_time=None))
         self.writer.write_outcome(row)
         self.summary.add_event(row)
@@ -418,6 +484,9 @@ class RTSRolloutRuntime:
         pending.committed_next_activation_time_seconds = _float_or_none(
             getattr(reservation, "activation_time_seconds", None)
         )
+        pending.committed_next_reservation_status = _text(getattr(reservation, "status", "")) or None
+        pending.committed_next_cancelled = bool(_text(getattr(reservation, "status", "")) == "cancelled")
+        pending.committed_next_cancellation_reason = _text(getattr(reservation, "cancellation_reason", "")) or None
 
     def censor_pending_for_robot(self, *, robot: Any, status: str, reason: str) -> None:
         if not self.config.rollout_enabled:
@@ -448,6 +517,8 @@ class RTSRolloutRuntime:
     def _matches_committed_next_arrival(self, *, robot: Any, station: Any, pending: PendingRTSDecision) -> bool:
         job = getattr(robot, "job", None)
         if pending.committed_next_reservation_id is None:
+            return False
+        if _robot_id(robot) != pending.robot_id:
             return False
         if _text(getattr(job, "committed_next_activated_by_robot_id", "")) != pending.robot_id:
             return False
@@ -508,6 +579,7 @@ class RTSRolloutRuntime:
             paper_cycle_completion_rule=PAPER_CYCLE_COMPLETION_RULE_NEXT_ORDER_RETRIEVAL_ARRIVAL,
         )
         row.update(_pending_committed_next_payload(completed))
+        row.update(_reservation_status_payload(getattr(robot, "warehouse", None), completed))
         row.update(_pending_cycle_estimate_payload(completed, realized_cycle_time=duration))
         self.writer.write_outcome(row)
         self.summary.add_event(row)
@@ -553,6 +625,7 @@ class RTSRolloutRuntime:
             paper_cycle_completion_rule=status,
         )
         row.update(_pending_committed_next_payload(censored))
+        row.update(_reservation_status_payload(getattr(robot, "warehouse", None), censored))
         row.update(_pending_cycle_estimate_payload(censored, realized_cycle_time=None))
         self.writer.write_outcome(row)
         self.summary.add_event(row)
@@ -626,6 +699,9 @@ def _committed_next_payload(context: Any, robot: Any) -> dict[str, Any]:
         ),
         "committed_next_candidate_count": getattr(reservation, "candidate_count", None),
         "committed_next_retrieval_cost": _float_or_none(getattr(reservation, "retrieval_cost", None)),
+        "committed_next_reservation_status": _text(getattr(reservation, "status", "")) or None,
+        "committed_next_cancelled": _text(getattr(reservation, "status", "")) == "cancelled",
+        "committed_next_cancellation_reason": _text(getattr(reservation, "cancellation_reason", "")) or None,
     }
 
 
@@ -638,6 +714,12 @@ def _proposal_diagnostics_payload(context: Any, robot: Any) -> dict[str, Any]:
             diagnostics = registry.last_action_proposal_diagnostics(robot)
         except Exception:
             diagnostics = {}
+        try:
+            refresh_diagnostics = registry.last_selected_refresh_diagnostics(robot)
+        except Exception:
+            refresh_diagnostics = {}
+    else:
+        refresh_diagnostics = {}
     return {
         "eligible_job_pool_size": _int_or_zero(diagnostics.get("eligible_job_pool_size")),
         "proposal_queue_scan_count": _int_or_zero(diagnostics.get("queue_scan_count")),
@@ -647,6 +729,10 @@ def _proposal_diagnostics_payload(context: Any, robot: Any) -> dict[str, Any]:
         "eligible_pool_build_ms": 1000.0 * float(diagnostics.get("eligible_pool_build_seconds") or 0.0),
         "all_zone_proposals_ms": 1000.0 * float(diagnostics.get("all_zone_proposals_seconds") or 0.0),
         "proposal_build_ms": 1000.0 * float(diagnostics.get("proposal_build_seconds") or 0.0),
+        "selected_revalidation_queue_scan_count": _int_or_zero(
+            refresh_diagnostics.get("selected_revalidation_queue_scan_count", refresh_diagnostics.get("queue_scan_count"))
+        ),
+        "selected_proposal_refresh_count": _int_or_zero(refresh_diagnostics.get("selected_proposal_refresh_count")),
     }
 
 
@@ -659,7 +745,28 @@ def _pending_committed_next_payload(pending: PendingRTSDecision) -> dict[str, An
         "committed_next_zone_id": pending.committed_next_zone_id,
         "committed_next_created_time_seconds": pending.committed_next_created_time_seconds,
         "committed_next_activation_time_seconds": pending.committed_next_activation_time_seconds,
+        "committed_next_reservation_status": pending.committed_next_reservation_status,
+        "committed_next_cancelled": pending.committed_next_cancelled,
+        "committed_next_cancellation_reason": pending.committed_next_cancellation_reason,
     }
+
+
+def _reservation_status_payload(warehouse: Any, pending: PendingRTSDecision) -> dict[str, Any]:
+    if warehouse is None or not pending.committed_next_reservation_id:
+        return _pending_committed_next_payload(pending)
+    registry = getattr(warehouse, "committed_next_registry", None)
+    reservation = getattr(registry, "reservations_by_id", {}).get(pending.committed_next_reservation_id) if registry is not None else None
+    if reservation is None:
+        return _pending_committed_next_payload(pending)
+    status = _text(getattr(reservation, "status", "")) or pending.committed_next_reservation_status
+    reason = _text(getattr(reservation, "cancellation_reason", "")) or pending.committed_next_cancellation_reason
+    pending.committed_next_reservation_status = status
+    pending.committed_next_cancelled = bool(status == "cancelled")
+    pending.committed_next_cancellation_reason = reason or None
+    activation_time = _float_or_none(getattr(reservation, "activation_time_seconds", None))
+    if activation_time is not None:
+        pending.committed_next_activation_time_seconds = activation_time
+    return _pending_committed_next_payload(pending)
 
 
 def _selected_action_context_payload(state_json: Mapping[str, Any], action_index: Any) -> dict[str, Any]:
@@ -676,6 +783,27 @@ def _selected_action_context_payload(state_json: Mapping[str, Any], action_index
         except Exception:
             continue
     return {}
+
+
+def _selected_proposal_payload(selected_context_payload: Mapping[str, Any], metadata: Mapping[str, Any]) -> dict[str, Any]:
+    proposal = dict(selected_context_payload.get("next_job_proposal") or {})
+    proposal_id = metadata.get("selected_proposal_id") or metadata.get("next_job_proposal_id") or proposal.get("proposal_id")
+    has_next_job = bool(metadata.get("selected_proposal_has_next_job", proposal.get("next_job_known") or proposal.get("proposed_next_job_known")))
+    job_id = metadata.get("selected_proposal_job_id") or proposal.get("job_id")
+    pod_id = metadata.get("selected_proposal_pod_id") or proposal.get("pod_id")
+    picker_id = metadata.get("selected_proposal_picker_id") or proposal.get("picking_station_id")
+    if not has_next_job:
+        job_id = None
+        pod_id = None
+        picker_id = None
+    return {
+        "selected_proposal_id": _text(proposal_id) or None,
+        "selected_proposal_has_next_job": bool(has_next_job and _text(job_id) and _text(pod_id) and _text(picker_id)),
+        "selected_proposal_job_id": _text(job_id) or None,
+        "selected_proposal_pod_id": _text(pod_id) or None,
+        "selected_proposal_picker_id": _text(picker_id) or None,
+        "selected_proposal_candidate_count": _int_or_zero(metadata.get("selected_proposal_candidate_count", proposal.get("candidate_count"))),
+    }
 
 
 def _cycle_estimate_payload(cycle_estimate: Mapping[str, Any]) -> dict[str, Any]:
@@ -727,6 +855,9 @@ def _empty_committed_next_payload() -> dict[str, Any]:
         "committed_next_activation_time_seconds": None,
         "committed_next_candidate_count": 0,
         "committed_next_retrieval_cost": None,
+        "committed_next_reservation_status": None,
+        "committed_next_cancelled": False,
+        "committed_next_cancellation_reason": None,
     }
 
 

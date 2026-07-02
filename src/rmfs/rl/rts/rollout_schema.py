@@ -49,6 +49,13 @@ def build_decision_event(
     state_available: bool = True,
     trainable: bool = True,
     nontrainable_reason: str | None = None,
+    selected_proposal_id: Any = None,
+    selected_proposal_has_next_job: Any = False,
+    selected_proposal_job_id: Any = None,
+    selected_proposal_pod_id: Any = None,
+    selected_proposal_picker_id: Any = None,
+    selected_proposal_candidate_count: Any = None,
+    state_capture_timing: str | None = None,
 ) -> dict[str, Any]:
     mask = [] if action_mask is None else [int(value) for value in action_mask]
     state_payload = None if state_json is None else dict(state_json)
@@ -76,6 +83,14 @@ def build_decision_event(
             "state_available": bool(state_available),
             "trainable": bool(trainable),
             "nontrainable_reason": nontrainable_reason,
+            "on_policy_candidate": bool(trainable),
+            "selected_proposal_id": _text(selected_proposal_id) or None,
+            "selected_proposal_has_next_job": bool(selected_proposal_has_next_job),
+            "selected_proposal_job_id": _text(selected_proposal_job_id) or None,
+            "selected_proposal_pod_id": _text(selected_proposal_pod_id) or None,
+            "selected_proposal_picker_id": _text(selected_proposal_picker_id) or None,
+            "selected_proposal_candidate_count": _number_or_text(selected_proposal_candidate_count),
+            "state_capture_timing": state_capture_timing,
             "actor_kind": actor_kind,
             "policy_checkpoint_id": policy_checkpoint_id,
             "policy_mode": policy_mode,

@@ -208,8 +208,8 @@ def run_on_policy_training_controller(
             wait_time = 0.0
             update_time = 0.0
             energy_avg = 0.0
-            orders_completed_total = 0
-            avg_order_cycle_time = 0.0
+            completed_paper_cycles = 0
+            avg_paper_cycle_duration = 0.0
             cuda_memory_allocated = 0.0
             if torch.cuda.is_available():
                 cuda_memory_allocated = float(torch.cuda.memory_allocated())
@@ -321,8 +321,15 @@ def run_on_policy_training_controller(
                         "worker/failure_count": 0,
                         "worker/elapsed_wall_time_avg_sec": 0.0,
                         "worker/controller_wait_time_sec": 0.0,
-                        "warehouse/orders_completed_total": 0,
+                        "rts/completed_paper_cycles": 0,
+                        "rts/average_paper_cycle_duration": 0.0,
+                        "rts/censored_paper_cycles": 0,
+                        "rts/on_policy_candidate_decisions": 0,
+                        "rts/trainable_transitions": 0,
+                        "warehouse/orders_completed": 0.0,
+                        "warehouse/orders_completed_available": 0.0,
                         "warehouse/avg_order_cycle_time": 0.0,
+                        "warehouse/avg_order_cycle_time_available": 0.0,
                         "warehouse/avg_energy": 0.0,
                         "warehouse/congestion_rate": 0.0,
                         "warehouse/robot_idle_time": 0.0,
@@ -518,9 +525,11 @@ def run_on_policy_training_controller(
             import numpy as np
             worker_elapsed_avg = float(np.mean([s.get("worker_wall_time_elapsed", 0.0) for s in worker_summaries])) if worker_summaries else 0.0
             energy_avg = float(np.mean([s.get("final_metrics", {}).get("total_energy", 0.0) for s in worker_summaries if s.get("final_metrics")])) if worker_summaries else 0.0
-            orders_completed_total = sum(s.get("completed_paper_cycle_count", 0) for s in rollout_summaries)
+            completed_paper_cycles = sum(s.get("completed_paper_cycle_count", 0) for s in rollout_summaries)
+            censored_paper_cycles = sum(s.get("censored_paper_cycle_count", 0) for s in rollout_summaries)
+            on_policy_candidate_decisions = sum(s.get("on_policy_candidate_decision_count", 0) for s in rollout_summaries)
             cycle_times = [s.get("avg_paper_cycle_duration") for s in rollout_summaries if s.get("avg_paper_cycle_duration") is not None]
-            avg_order_cycle_time = float(np.mean(cycle_times)) if cycle_times else 0.0
+            avg_paper_cycle_duration = float(np.mean(cycle_times)) if cycle_times else 0.0
 
             cuda_memory_allocated = 0.0
             if torch.cuda.is_available():
@@ -689,12 +698,19 @@ def run_on_policy_training_controller(
                     "rollout/avg_reward": dataset.summary["avg_reward"],
                     "rollout/reward_mean": dataset.summary.get("reward_mean", 0.0),
                     "rollout/reward_std": dataset.summary.get("reward_std", 0.0),
+                    "rts/completed_paper_cycles": completed_paper_cycles,
+                    "rts/average_paper_cycle_duration": avg_paper_cycle_duration,
+                    "rts/censored_paper_cycles": censored_paper_cycles,
+                    "rts/on_policy_candidate_decisions": on_policy_candidate_decisions,
+                    "rts/trainable_transitions": dataset.summary["trainable_step_count"],
                     "worker/success_count": worker_successes,
                     "worker/failure_count": worker_failures,
                     "worker/elapsed_wall_time_avg_sec": worker_elapsed_avg,
                     "worker/controller_wait_time_sec": wait_time,
-                    "warehouse/orders_completed_total": orders_completed_total,
-                    "warehouse/avg_order_cycle_time": avg_order_cycle_time,
+                    "warehouse/orders_completed": 0.0,
+                    "warehouse/orders_completed_available": 0.0,
+                    "warehouse/avg_order_cycle_time": 0.0,
+                    "warehouse/avg_order_cycle_time_available": 0.0,
                     "warehouse/avg_energy": energy_avg,
                     "warehouse/congestion_rate": 0.0,
                     "warehouse/robot_idle_time": 0.0,

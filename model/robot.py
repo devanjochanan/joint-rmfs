@@ -1122,8 +1122,6 @@ class Robot(Object):
             self.set_move(self.destination, self.warehouse.graph_pod, need_neutralize_robot=False)
 
     def _record_rts_decision(self, context, decision):
-        if getattr(self.warehouse, "committed_next_reservations_enabled", False) and decision.mode != "rl":
-            self.warehouse.commit_committed_next_decision(self, decision)
         decision_event_id = self.warehouse.rts_rollout_runtime.on_decision(
             robot=self,
             context=context,
@@ -1131,6 +1129,13 @@ class Robot(Object):
         )
         self.warehouse.link_committed_next_decision(self, decision_event_id)
         return decision_event_id
+
+    def _capture_rts_precommit_decision_state_if_needed(self, context, decision):
+        runtime = getattr(self.warehouse, "rts_rollout_runtime", None)
+        capture = getattr(runtime, "capture_precommit_decision_state", None)
+        if capture is None:
+            return decision
+        return capture(robot=self, context=context, decision=decision)
 
     def _validate_rts_rl_decision(self, decision):
         if decision.storage is None:
@@ -1203,6 +1208,7 @@ class Robot(Object):
         storage = None
         try:
             storage = self._reserve_rts_storage(decision)
+            decision = self._capture_rts_precommit_decision_state_if_needed(context, decision)
             decision = self._commit_selected_next_for_rts_decision(decision)
             self._begin_rts_return_ownership(
                 decision=decision,
@@ -1232,6 +1238,7 @@ class Robot(Object):
         replenishment_station = None
         try:
             storage = self._reserve_rts_storage(decision)
+            decision = self._capture_rts_precommit_decision_state_if_needed(context, decision)
             decision = self._commit_selected_next_for_rts_decision(decision)
             self._begin_rts_return_ownership(
                 decision=decision,
