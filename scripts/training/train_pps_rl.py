@@ -27,6 +27,8 @@ import inspect
 import json
 import os
 import random
+import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -153,8 +155,36 @@ MODEL_DIR = os.path.join("data", "models", "pps")
 LOG_DIR = os.path.join(MODEL_DIR, "runs")
 METRICS_DIR = os.path.join(MODEL_DIR, "metrics")
 BEST_MODEL = str(DEFAULT_PPS_MODEL_PATH.with_suffix(""))
+BEST_THROUGHPUT_MODEL = os.path.join(MODEL_DIR, "pps_rl_best_throughput")
 CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")
 TRAIN_STATE_FILE = os.path.join(MODEL_DIR, "train_state.json")
+VALIDATION_DIR = os.path.join(MODEL_DIR, "validation")
+DEFAULT_VALIDATION_SEEDS = [20260701, 20260702, 20260703, 20260704, 20260705]
+
+
+def parse_seed_list(seed_text: str | None) -> List[int]:
+    """Parse a comma-separated seed list."""
+    if not seed_text:
+        return list(DEFAULT_VALIDATION_SEEDS)
+    seeds: List[int] = []
+    for part in seed_text.split(","):
+        part = part.strip()
+        if part:
+            seeds.append(int(part))
+    if not seeds:
+        raise ValueError("At least one validation seed is required.")
+    return seeds
+
+
+def _model_zip_path(path: str | Path) -> Path:
+    model_path = Path(path)
+    if model_path.suffix != ".zip":
+        model_path = model_path.with_suffix(".zip")
+    return model_path
+
+
+def _mean(values: List[float]) -> float:
+    return float(np.mean(values)) if values else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +240,110 @@ class MetricsRecorder:
         ]
         with open(self.filepath, "a", newline="") as f:
             csv.writer(f).writerow(row)
+
+
+class ValidationRecorder:
+    """Records fixed-seed validation summaries to CSV."""
+
+    HEADER = [
+        "policy_update", "timestamp", "model_timesteps", "validation_seeds",
+        "mean_total_flow_time_cost", "mean_total_reward", "mean_throughput",
+        "mean_avg_order_completion_time", "mean_total_energy",
+        "mean_pod_visits", "mean_pile_on_rate",
+    ]
+
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+        with open(filepath, "w", newline="") as f:
+            csv.writer(f).writerow(self.HEADER)
+
+    def record(self, summary: Dict[str, Any]) -> None:
+        row = [
+            summary.get("policy_update", 0),
+            datetime.now().isoformat(),
+            summary.get("model_timesteps", 0),
+            ",".join(str(seed) for seed in summary.get("seeds", [])),
+            summary.get("mean_total_flow_time_cost", 0.0),
+            summary.get("mean_total_reward", 0.0),
+            summary.get("mean_throughput", 0.0),
+            summary.get("mean_avg_order_completion_time", 0.0),
+            summary.get("mean_total_energy", 0.0),
+            summary.get("mean_pod_visits", 0.0),
+            summary.get("mean_pile_on_rate", 0.0),
+        ]
+        with open(self.filepath, "a", newline="") as f:
+            csv.writer(f).writerow(row)
+
+
+def run_fixed_seed_validation(
+    model_path: str,
+    seeds: List[int],
+    max_episode_ticks: int,
+    picked_qty_weight: float,
+    reward_alpha: float,
+    visit_penalty: float,
+    run_profile: str,
+    bootstrap_n_orders: int | None,
+    demand_horizon_ticks: int | None,
+    demand_buffer_ticks: int | None,
+    pod_location_mode: str | None,
+    pod_location_seed: int | None,
+    full_raw_order_replay: bool,
+) -> Dict[str, Any]:
+    """Evaluate one saved policy on fixed seeds in the current process.
+
+    This function is called from a child process during training so the
+    validation environments cannot disturb the active PPO rollout state.
+    """
+    ensure_numpy_pickle_compat()
+    model = PPO.load(model_path, device="cpu")
+    env_kwargs = make_pps_env_kwargs(
+        max_episode_ticks,
+        picked_qty_weight,
+        reward_alpha,
+        visit_penalty,
+        run_profile=run_profile,
+        bootstrap_n_orders=bootstrap_n_orders,
+        demand_horizon_ticks=demand_horizon_ticks,
+        demand_buffer_ticks=demand_buffer_ticks,
+        pod_location_mode=pod_location_mode,
+        pod_location_seed=pod_location_seed,
+        full_raw_order_replay=full_raw_order_replay,
+    )
+    env = PPSEnv(**env_kwargs)
+    results: List[Dict[str, Any]] = []
+    try:
+        for seed in seeds:
+            obs, info = env.reset(seed=int(seed))
+            done = False
+            total_reward = 0.0
+            steps = 0
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, info = env.step(action)
+                total_reward += float(reward)
+                done = bool(terminated or truncated)
+                steps += 1
+            episode_result = dict(info)
+            episode_result["seed"] = int(seed)
+            episode_result["total_reward"] = float(total_reward)
+            episode_result["episode_steps"] = int(steps)
+            results.append(episode_result)
+    finally:
+        env.close()
+
+    return {
+        "seeds": [int(seed) for seed in seeds],
+        "episodes": results,
+        "mean_total_flow_time_cost": _mean([float(r.get("total_flow_time_cost", 0.0)) for r in results]),
+        "mean_total_reward": _mean([float(r.get("total_reward", 0.0)) for r in results]),
+        "mean_throughput": _mean([float(r.get("throughput", 0.0)) for r in results]),
+        "mean_avg_order_completion_time": _mean([float(r.get("avg_order_completion_time", 0.0)) for r in results]),
+        "mean_total_energy": _mean([float(r.get("total_energy", 0.0)) for r in results]),
+        "mean_pod_visits": _mean([float(r.get("pile_on_visits", 0.0)) for r in results]),
+        "mean_pile_on_rate": _mean([float(r.get("pile_on_rate", 0.0)) for r in results]),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -306,15 +440,6 @@ class PPSMetricsCallback(BaseCallback):
                         "t": f"{ep_elapsed:.1f}s",
                     })
 
-                # Save best model
-                if throughput > self._best_throughput:
-                    self._best_throughput = throughput
-                    self.model.save(BEST_MODEL)
-                    if self._pbar is not None:
-                        self._pbar.write(
-                            f"  >> ep {ep}: new best throughput {throughput} - model saved"
-                        )
-
                 # Periodic checkpoint
                 if ep % 10 == 0:
                     cp_path = os.path.join(CHECKPOINT_DIR, f"pps_ppo_ep{ep}")
@@ -326,6 +451,195 @@ class PPSMetricsCallback(BaseCallback):
                 self._env_start[i] = time.time()
 
         return True
+
+
+class FixedSeedValidationCallback(BaseCallback):
+    """Evaluate the current policy on fixed seeds before PPO updates it."""
+
+    def __init__(
+        self,
+        validation_seeds: List[int],
+        validation_every_updates: int,
+        validation_recorder: ValidationRecorder | None,
+        tb_writer: SummaryWriter | None,
+        max_episode_ticks: int,
+        picked_qty_weight: float,
+        reward_alpha: float,
+        visit_penalty: float,
+        run_profile: str,
+        bootstrap_n_orders: int | None,
+        demand_horizon_ticks: int | None,
+        demand_buffer_ticks: int | None,
+        pod_location_mode: str | None,
+        pod_location_seed: int | None,
+        full_raw_order_replay: bool,
+        order_cycle_time: int,
+        best_flow_time_cost: float,
+        best_validation_throughput: float,
+        policy_update_offset: int = 0,
+        pbar: tqdm | None = None,
+        validation_enabled: bool = True,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.validation_seeds = validation_seeds
+        self.validation_every_updates = max(1, int(validation_every_updates))
+        self.validation_recorder = validation_recorder
+        self.tb_writer = tb_writer
+        self.max_episode_ticks = max_episode_ticks
+        self.picked_qty_weight = picked_qty_weight
+        self.reward_alpha = reward_alpha
+        self.visit_penalty = visit_penalty
+        self.run_profile = run_profile
+        self.bootstrap_n_orders = bootstrap_n_orders
+        self.demand_horizon_ticks = demand_horizon_ticks
+        self.demand_buffer_ticks = demand_buffer_ticks
+        self.pod_location_mode = pod_location_mode
+        self.pod_location_seed = pod_location_seed
+        self.full_raw_order_replay = full_raw_order_replay
+        self.order_cycle_time = order_cycle_time
+        self.best_flow_time_cost = best_flow_time_cost
+        self.best_validation_throughput = best_validation_throughput
+        self.policy_update_count = int(policy_update_offset)
+        self.pbar = pbar
+        self.validation_enabled = validation_enabled
+
+    def _on_rollout_end(self) -> None:
+        # SB3 calls this after collecting rollout data and before PPO.train().
+        self.policy_update_count += 1
+        if self.pbar is not None:
+            self.pbar.update(1)
+
+        if not self.validation_enabled:
+            return
+        if self.policy_update_count % self.validation_every_updates != 0:
+            return
+
+        summary = self._run_validation()
+        if not summary:
+            return
+
+        summary["policy_update"] = self.policy_update_count
+        summary["model_timesteps"] = int(self.model.num_timesteps)
+        if self.validation_recorder is not None:
+            self.validation_recorder.record(summary)
+
+        mean_flow = float(summary.get("mean_total_flow_time_cost", 0.0))
+        mean_reward = float(summary.get("mean_total_reward", 0.0))
+        mean_tp = float(summary.get("mean_throughput", 0.0))
+        mean_oct = float(summary.get("mean_avg_order_completion_time", 0.0))
+        mean_energy = float(summary.get("mean_total_energy", 0.0))
+        mean_visits = float(summary.get("mean_pod_visits", 0.0))
+        mean_pile_on = float(summary.get("mean_pile_on_rate", 0.0))
+
+        if self.tb_writer is not None:
+            step = self.policy_update_count
+            self.tb_writer.add_scalar("pps_validation/mean_total_flow_time_cost", mean_flow, step)
+            self.tb_writer.add_scalar("pps_validation/mean_total_reward", mean_reward, step)
+            self.tb_writer.add_scalar("pps_validation/mean_throughput", mean_tp, step)
+            self.tb_writer.add_scalar("pps_validation/mean_avg_order_completion_time", mean_oct, step)
+            self.tb_writer.add_scalar("pps_validation/mean_total_energy", mean_energy, step)
+            self.tb_writer.add_scalar("pps_validation/mean_pod_visits", mean_visits, step)
+            self.tb_writer.add_scalar("pps_validation/mean_pile_on_rate", mean_pile_on, step)
+            self.tb_writer.flush()
+
+        if self.pbar is not None:
+            self.pbar.set_postfix({
+                "val_flow": f"{mean_flow:.0f}",
+                "val_tp": f"{mean_tp:.1f}",
+            })
+            self.pbar.write(
+                f"  >> update {self.policy_update_count}: "
+                f"validation flow={mean_flow:.1f}, tp={mean_tp:.1f}"
+            )
+
+        candidate_zip = self._candidate_zip_path()
+        if mean_flow < self.best_flow_time_cost:
+            self.best_flow_time_cost = mean_flow
+            shutil.copyfile(candidate_zip, _model_zip_path(BEST_MODEL))
+            if self.pbar is not None:
+                self.pbar.write(
+                    f"  >> update {self.policy_update_count}: "
+                    f"new best validation flow {mean_flow:.1f} - {BEST_MODEL}.zip saved"
+                )
+
+        if mean_tp > self.best_validation_throughput:
+            self.best_validation_throughput = mean_tp
+            shutil.copyfile(candidate_zip, _model_zip_path(BEST_THROUGHPUT_MODEL))
+            if self.pbar is not None:
+                self.pbar.write(
+                    f"  >> update {self.policy_update_count}: "
+                    f"new best validation throughput {mean_tp:.1f} - "
+                    f"{BEST_THROUGHPUT_MODEL}.zip saved"
+                )
+
+    def _candidate_model_path(self) -> Path:
+        os.makedirs(VALIDATION_DIR, exist_ok=True)
+        return Path(VALIDATION_DIR) / "pps_validation_candidate"
+
+    def _candidate_zip_path(self) -> Path:
+        return _model_zip_path(self._candidate_model_path())
+
+    def _run_validation(self) -> Dict[str, Any] | None:
+        candidate_path = self._candidate_model_path()
+        self.model.save(str(candidate_path))
+        cmd = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--_validation-only",
+            "--validation-model-path",
+            str(self._candidate_zip_path()),
+            "--validation-seeds",
+            ",".join(str(seed) for seed in self.validation_seeds),
+            "--max-ticks",
+            str(self.max_episode_ticks),
+            "--order-cycle-time",
+            str(self.order_cycle_time),
+            "--profile",
+            self.run_profile,
+            "--picked-qty-weight",
+            str(self.picked_qty_weight),
+            "--reward-alpha",
+            str(self.reward_alpha),
+            "--visit-penalty",
+            str(self.visit_penalty),
+        ]
+        if self.bootstrap_n_orders is not None:
+            cmd.extend(["--bootstrap-n-orders", str(self.bootstrap_n_orders)])
+        if self.demand_horizon_ticks is not None:
+            cmd.extend(["--demand-horizon-ticks", str(self.demand_horizon_ticks)])
+        if self.demand_buffer_ticks is not None:
+            cmd.extend(["--demand-buffer-ticks", str(self.demand_buffer_ticks)])
+        if self.pod_location_mode is not None:
+            cmd.extend(["--pod-location-mode", self.pod_location_mode])
+        if self.pod_location_seed is not None:
+            cmd.extend(["--pod-location-seed", str(self.pod_location_seed)])
+        if self.full_raw_order_replay:
+            cmd.append("--full-raw-order-replay")
+
+        env = os.environ.copy()
+        env["RMFS_ORDER_CYCLE_TIME"] = str(self.order_cycle_time)
+        env.setdefault("RMFS_DETAIL_DB", "0")
+        result = subprocess.run(
+            cmd,
+            cwd=_REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            if self.pbar is not None:
+                self.pbar.write("  >> validation failed:")
+                self.pbar.write((result.stderr or result.stdout)[-2000:])
+            return None
+        marker = "VALIDATION_JSON:"
+        for line in reversed(result.stdout.splitlines()):
+            if line.startswith(marker):
+                return json.loads(line[len(marker):])
+        if self.pbar is not None:
+            self.pbar.write("  >> validation output did not include JSON summary")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +753,10 @@ def train(
     n_steps: int = 8192,
     n_envs: int = 1,
     seed: int | None = None,
+    policy_updates: int | None = None,
+    validation_seeds: List[int] | None = None,
+    validation_every_updates: int = 1,
+    disable_validation: bool = False,
     run_profile: str = "training",
     bootstrap_n_orders: int | None = None,
     demand_horizon_ticks: int | None = None,
@@ -480,11 +798,16 @@ def train(
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(METRICS_DIR, exist_ok=True)
+    os.makedirs(VALIDATION_DIR, exist_ok=True)
 
     # Load previous training state before env creation so resumed runs can keep
     # the original seed sequence.
     prev_episode_count = 0
     prev_best_throughput = 0
+    prev_best_validation_flow = float("inf")
+    prev_best_validation_throughput = 0.0
+    prev_policy_update_count = 0
+    state_validation_seeds = None
     run_name = None
     prev_plan_total_timesteps = None
     state_training_seed = None
@@ -494,15 +817,32 @@ def train(
             state = json.load(f)
         prev_episode_count = state.get("episode_count", 0)
         prev_best_throughput = state.get("best_throughput", 0)
+        prev_best_validation_flow = state.get("best_validation_total_flow_time_cost", float("inf"))
+        prev_best_validation_throughput = state.get(
+            "best_validation_throughput",
+            float(prev_best_throughput),
+        )
+        prev_policy_update_count = state.get("policy_update_count", 0)
+        state_validation_seeds = state.get("validation_seeds", None)
         run_name = state.get("run_name", None)
         prev_plan_total_timesteps = state.get("plan_total_timesteps", None)
         state_training_seed = state.get("training_seed", None)
-        print(f"Restoring training state: {prev_episode_count} episodes, best throughput {prev_best_throughput}")
+        print(
+            f"Restoring training state: {prev_episode_count} episodes, "
+            f"{prev_policy_update_count} policy updates, "
+            f"best validation flow {prev_best_validation_flow}"
+        )
         if prev_plan_total_timesteps is not None:
             print(f"  Restored LR decay plan: {prev_plan_total_timesteps} timesteps")
 
     training_seed = int(seed if seed is not None else (state_training_seed if state_training_seed is not None else generate_training_seed()))
     session_base_seed = training_seed + prev_episode_count
+    if validation_seeds is None:
+        validation_seeds = (
+            [int(seed_value) for seed_value in state_validation_seeds]
+            if state_validation_seeds
+            else list(DEFAULT_VALIDATION_SEEDS)
+        )
     random.seed(training_seed)
     np.random.seed(training_seed)
     set_random_seed(training_seed)
@@ -569,7 +909,11 @@ def train(
     if prev_plan_total_timesteps is not None:
         plan_total_timesteps = prev_plan_total_timesteps
     else:
-        plan_episodes = lr_plan_episodes if lr_plan_episodes is not None else total_episodes
+        plan_episodes = (
+            lr_plan_episodes
+            if lr_plan_episodes is not None
+            else (policy_updates if policy_updates is not None else total_episodes)
+        )
         plan_total_timesteps = n_steps * plan_episodes
 
     # Final LR for linear decay (default: 10% of start LR)
@@ -581,7 +925,9 @@ def train(
     # TensorBoard + CSV (reuse same folder on resume for continuous graph)
     tb_writer = SummaryWriter(log_dir=os.path.join(LOG_DIR, run_name))
     csv_path = os.path.join(METRICS_DIR, f"metrics_{run_name}.csv")
+    validation_csv_path = os.path.join(METRICS_DIR, f"validation_{run_name}.csv")
     recorder = MetricsRecorder(csv_path)
+    validation_recorder = ValidationRecorder(validation_csv_path)
 
     if resume and os.path.exists(BEST_MODEL + ".zip"):
         print(f"Resuming from {BEST_MODEL}")
@@ -640,7 +986,9 @@ def train(
     # Pass total_timesteps so SB3's _total_timesteps equals plan_total_timesteps
     # (needed for the linear LR schedule to decay over the full plan horizon).
     # The StopAfterEpisodesCallback limits actual run length to `total_episodes`.
-    if resume:
+    if policy_updates is not None:
+        learn_total_timesteps = n_steps * int(policy_updates)
+    elif resume:
         learn_total_timesteps = max(1, plan_total_timesteps - model.num_timesteps)
     else:
         learn_total_timesteps = plan_total_timesteps
@@ -649,6 +997,8 @@ def train(
     print(f"PPS RL Training")
     print(f"{'='*60}")
     print(f"  Session episodes         : {total_episodes}")
+    if policy_updates is not None:
+        print(f"  Session policy updates   : {policy_updates}")
     print(f"  Parallel envs            : {n_envs}")
     print(f"  LR decay plan (ts total) : {plan_total_timesteps}")
     print(f"  LR decay plan (episodes) : {plan_total_timesteps // n_steps}")
@@ -669,6 +1019,11 @@ def train(
     print(f"  Demand horizon ticks     : {profile_cfg.demand_horizon_ticks}")
     print(f"  Pod location mode        : {profile_cfg.pod_location_mode}")
     print(f"  First episode seed       : {session_base_seed}")
+    print(f"  Validation seeds         : {', '.join(str(s) for s in validation_seeds)}")
+    print(
+        "  Validation cadence       : "
+        f"{'off' if disable_validation else f'every {validation_every_updates} policy update(s)'}"
+    )
     print(f"  Reward objective         : minimize assigned-order flow-time cost")
     print(f"  Fast training I/O        : {'on' if FAST_TRAIN_MODE else 'off'}")
     print(
@@ -681,13 +1036,15 @@ def train(
     print(f"  Max episode ticks        : {max_episode_ticks}")
     print(f"  TensorBoard              : python -m tensorboard.main --logdir \"{os.path.abspath(LOG_DIR)}\"")
     print(f"  CSV metrics              : {csv_path}")
+    print(f"  CSV validation           : {validation_csv_path}")
     print(f"{'='*60}\n")
 
-    # tqdm progress bar: one line per episode, auto-updating
+    # tqdm progress bar: one line per episode or policy update.
+    progress_by_updates = policy_updates is not None
     pbar = tqdm(
-        total=total_episodes,
-        desc="Training",
-        unit="ep",
+        total=policy_updates if progress_by_updates else total_episodes,
+        desc="Policy updates" if progress_by_updates else "Training",
+        unit="upd" if progress_by_updates else "ep",
         dynamic_ncols=True,
     )
 
@@ -699,17 +1056,44 @@ def train(
         episode_offset=prev_episode_count,
         best_throughput=prev_best_throughput,
         n_envs=n_envs,
-        pbar=pbar,
+        pbar=None if progress_by_updates else pbar,
         training_seed=training_seed,
     )
 
-    # Stop after `total_episodes` episodes in THIS session (across all envs)
+    validation_cb = FixedSeedValidationCallback(
+        validation_seeds=validation_seeds,
+        validation_every_updates=validation_every_updates,
+        validation_recorder=validation_recorder,
+        tb_writer=tb_writer,
+        max_episode_ticks=max_episode_ticks,
+        picked_qty_weight=picked_qty_weight,
+        reward_alpha=reward_alpha,
+        visit_penalty=visit_penalty,
+        run_profile=profile_cfg.profile,
+        bootstrap_n_orders=profile_cfg.bootstrap_n_orders,
+        demand_horizon_ticks=profile_cfg.demand_horizon_ticks,
+        demand_buffer_ticks=profile_cfg.demand_buffer_ticks,
+        pod_location_mode=profile_cfg.pod_location_mode,
+        pod_location_seed=profile_cfg.pod_location_seed,
+        full_raw_order_replay=profile_cfg.full_raw_order_replay,
+        order_cycle_time=int(os.environ.get("RMFS_ORDER_CYCLE_TIME", "500")),
+        best_flow_time_cost=prev_best_validation_flow,
+        best_validation_throughput=prev_best_validation_throughput,
+        policy_update_offset=prev_policy_update_count,
+        pbar=pbar if progress_by_updates else None,
+        validation_enabled=not disable_validation,
+    )
+
+    # Stop after `total_episodes` episodes in THIS session unless update count controls training.
     stop_cb = StopAfterEpisodesCallback(session_episodes=total_episodes, verbose=1)
+    callbacks = [metrics_cb, validation_cb]
+    if policy_updates is None:
+        callbacks.append(stop_cb)
 
     try:
         model.learn(
             total_timesteps=learn_total_timesteps,
-            callback=CallbackList([metrics_cb, stop_cb]),
+            callback=CallbackList(callbacks),
             reset_num_timesteps=not resume,
             tb_log_name="sb3",
         )
@@ -724,7 +1108,11 @@ def train(
     with open(TRAIN_STATE_FILE, "w") as f:
         json.dump({
             "episode_count": metrics_cb._episode_count,
-            "best_throughput": metrics_cb._best_throughput,
+            "best_throughput": validation_cb.best_validation_throughput,
+            "best_validation_total_flow_time_cost": validation_cb.best_flow_time_cost,
+            "best_validation_throughput": validation_cb.best_validation_throughput,
+            "policy_update_count": validation_cb.policy_update_count,
+            "validation_seeds": validation_seeds,
             "run_name": run_name,
             "plan_total_timesteps": plan_total_timesteps,
             "training_seed": training_seed,
@@ -732,7 +1120,9 @@ def train(
         }, f)
 
     print(f"\nTraining complete. Final model: {final_path}")
-    print(f"Best throughput: {metrics_cb._best_throughput}")
+    print(f"Best validation flow-time cost: {validation_cb.best_flow_time_cost}")
+    print(f"Best validation throughput: {validation_cb.best_validation_throughput}")
+    print(f"Total policy updates so far: {validation_cb.policy_update_count}")
     print(f"Total episodes so far: {metrics_cb._episode_count}")
 
     tb_writer.close()
@@ -824,6 +1214,10 @@ if __name__ == "__main__":
                         help="Number of episodes to run during --eval")
     parser.add_argument("--episodes", type=int, default=50,
                         help="Approximate number of episodes to train")
+    parser.add_argument("--policy-updates", type=int, default=None,
+                        help="Train for this many PPO rollout/policy-update cycles. "
+                             "When set, training is controlled by update count instead "
+                             "of completed episode count.")
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="Initial learning rate (start of linear decay)")
     parser.add_argument("--lr-end", type=float, default=None,
@@ -873,12 +1267,26 @@ if __name__ == "__main__":
                         help="Number of parallel envs (SubprocVecEnv). 1 = serial.")
     parser.add_argument("--seed", type=int, default=None,
                         help="Base random seed. If omitted, one is generated and saved.")
+    parser.add_argument("--validation-seeds", type=str,
+                        default=",".join(str(seed) for seed in DEFAULT_VALIDATION_SEEDS),
+                        help="Comma-separated fixed seeds used to select best models")
+    parser.add_argument("--validation-every-updates", type=int, default=1,
+                        help="Run fixed-seed validation every N policy updates")
+    parser.add_argument("--disable-validation", action="store_true", default=False,
+                        help="Disable fixed-seed validation during training")
+    parser.add_argument("--_validation-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--validation-model-path", type=str, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--detail-db", action="store_true", default=False,
                         help="Enable detail SQLite DB writes during PPS training/eval.")
 
     args = parser.parse_args()
     if args.order_cycle_time <= 0:
         parser.error("--order-cycle-time must be a positive orders-per-hour value")
+    if args.policy_updates is not None and args.policy_updates <= 0:
+        parser.error("--policy-updates must be positive when provided")
+    if args.validation_every_updates <= 0:
+        parser.error("--validation-every-updates must be positive")
+    validation_seeds = parse_seed_list(args.validation_seeds)
     os.environ["RMFS_ORDER_CYCLE_TIME"] = str(args.order_cycle_time)
     os.environ["RMFS_DETAIL_DB"] = "1" if args.detail_db else "0"
 
@@ -889,7 +1297,42 @@ if __name__ == "__main__":
         LOG_DIR = os.path.join(save_dir, "runs")
         METRICS_DIR = os.path.join(save_dir, "metrics")
         BEST_MODEL = os.path.splitext(args.save_path)[0] + "_best"
+        BEST_THROUGHPUT_MODEL = os.path.splitext(args.save_path)[0] + "_best_throughput"
         CHECKPOINT_DIR = os.path.join(save_dir, "checkpoints")
+        VALIDATION_DIR = os.path.join(save_dir, "validation")
+
+    if args._validation_only:
+        if not args.validation_model_path:
+            parser.error("--validation-model-path is required for internal validation")
+        validation_profile = resolve_run_profile(
+            args.profile,
+            run_horizon_ticks=args.max_ticks,
+            bootstrap_n_orders=args.bootstrap_n_orders,
+            demand_horizon_ticks=args.demand_horizon_ticks,
+            demand_buffer_ticks=args.demand_buffer_ticks,
+            full_raw_order_replay=args.full_raw_order_replay,
+            pod_location_mode=args.pod_location_mode,
+            pod_location_seed=args.pod_location_seed,
+            seed=validation_seeds[0] if validation_seeds else args.seed,
+        )
+        os.environ.update(validation_profile.env())
+        summary = run_fixed_seed_validation(
+            model_path=args.validation_model_path,
+            seeds=validation_seeds,
+            max_episode_ticks=int(validation_profile.run_horizon_ticks or 0),
+            picked_qty_weight=args.picked_qty_weight,
+            reward_alpha=args.reward_alpha,
+            visit_penalty=args.visit_penalty,
+            run_profile=validation_profile.profile,
+            bootstrap_n_orders=validation_profile.bootstrap_n_orders,
+            demand_horizon_ticks=validation_profile.demand_horizon_ticks,
+            demand_buffer_ticks=validation_profile.demand_buffer_ticks,
+            pod_location_mode=validation_profile.pod_location_mode,
+            pod_location_seed=validation_profile.pod_location_seed,
+            full_raw_order_replay=validation_profile.full_raw_order_replay,
+        )
+        print("VALIDATION_JSON:" + json.dumps(summary, sort_keys=True))
+        raise SystemExit(0)
 
     if args.eval:
         eval_profile = resolve_run_profile(
@@ -930,6 +1373,10 @@ if __name__ == "__main__":
             n_steps=args.n_steps,
             n_envs=args.n_envs,
             seed=args.seed,
+            policy_updates=args.policy_updates,
+            validation_seeds=validation_seeds,
+            validation_every_updates=args.validation_every_updates,
+            disable_validation=args.disable_validation,
             run_profile=args.profile,
             bootstrap_n_orders=args.bootstrap_n_orders,
             demand_horizon_ticks=args.demand_horizon_ticks,
