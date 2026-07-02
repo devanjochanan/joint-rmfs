@@ -155,21 +155,24 @@ def git_value(repo_root: Path, *args):
 
 def write_json(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as fh:
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    with tmp_path.open("w") as fh:
         json.dump(payload, fh, indent=2)
+    tmp_path.replace(path)
 
 
 def run_worker(spec: RunSpec):
     worker_start = time.perf_counter()
     original_cwd = Path.cwd()
     netlogo_module = None
+    session = None
     status_path = spec.runtime_root / "worker_status.json"
     ticks_done = 0
     last_status_tick = -1
 
     def write_worker_status(status: str, force: bool = False) -> None:
         nonlocal last_status_tick
-        cadence = max(1, int(getattr(spec, "worker_status_cadence", 10) or 10))
+        cadence = max(1, int(getattr(spec, "worker_status_cadence", 100) or 100))
         should_write = (
             force
             or spec.debug_trace
@@ -246,19 +249,14 @@ def run_worker(spec: RunSpec):
         )
 
         with timed("setup"):
-            setup_result = netlogo.setup()
+            session = netlogo.HeadlessSimulationSession(persist_final_state=True)
+            setup_result = session.setup()
         if isinstance(setup_result, str) and "An error occurred" in setup_result:
             raise RuntimeError(setup_result)
         summary["setup_digest"] = stable_digest(setup_result)
         summary["setup_signature"] = return_signature(setup_result)
 
-        warehouse = None
-        state_file = ctx.state_file
-        if state_file.exists():
-            with state_file.open("rb") as fh:
-                import pickle
-
-                warehouse = pickle.load(fh)
+        warehouse = session.warehouse
         tick_to_second = getattr(warehouse, "tick_to_second", 1.0)
         summary["warehouse_time_start"] = float(getattr(warehouse, "_tick", 0.0)) if warehouse is not None else 0.0
         summary["tick_to_second"] = tick_to_second
@@ -267,11 +265,12 @@ def run_worker(spec: RunSpec):
         final_result = None
         for index in range(spec.ticks):
             with timed("tick"):
-                tick_result = netlogo.tick()
-            if isinstance(tick_result, str) and "An error occurred" in tick_result:
-                raise RuntimeError(tick_result)
+                step_result = session.step()
+            tick_result = step_result.payload
+            if tick_result is None:
+                raise RuntimeError(f"worker stopped without a tick payload: {step_result.status}")
             
-            ticks_done += 1
+            ticks_done += step_result.steps_executed
             digest = stable_digest(tick_result)
             sig = return_signature(tick_result)
             
@@ -323,13 +322,12 @@ def run_worker(spec: RunSpec):
                     "total_turning": tick_res[4],
                 }
 
-        # Refresh the pickled warehouse because netlogo.tick() owns state mutation.
-        final_warehouse = warehouse
-        if state_file.exists():
-            with state_file.open("rb") as fh:
-                import pickle
-
-                final_warehouse = pickle.load(fh)
+        finalization = session.finalize(
+            reason=netlogo.SimulationTermination.MAXIMUM_HORIZON,
+            success=True,
+        )
+        summary["finalization"] = finalization
+        final_warehouse = session.warehouse
         final_warehouse_time = 0.0
         if final_warehouse is not None:
             final_warehouse_time = getattr(final_warehouse, "_tick", 0.0)
@@ -349,6 +347,20 @@ def run_worker(spec: RunSpec):
 
         return 0
     except Exception as exc:
+        finalization_error = None
+        if session is not None and not getattr(session, "finalized", False):
+            try:
+                finalization = session.finalize(
+                    reason=getattr(netlogo_module, "SimulationTermination").WORKER_EXCEPTION,
+                    success=False,
+                )
+                summary["finalization"] = finalization
+            except Exception as finalize_exc:
+                finalization_error = {
+                    "error_type": type(finalize_exc).__name__,
+                    "error_message": str(finalize_exc),
+                    "traceback": traceback.format_exc(),
+                }
         summary.update(
             {
                 "status": "failure",
@@ -357,25 +369,16 @@ def run_worker(spec: RunSpec):
                 "traceback": traceback.format_exc(),
             }
         )
+        if finalization_error is not None:
+            summary["finalization_failure"] = finalization_error
         return 1
     finally:
-        try:
-            if "previous_env" in locals():
-                for key, value in previous_env.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
-            runtime = None
-            if netlogo_module is not None:
-                universe = getattr(netlogo_module, "universe", None)
-                if universe is not None and hasattr(universe, "finalize_committed_next_run_end"):
-                    universe.finalize_committed_next_run_end()
-                runtime = getattr(universe, "rts_rollout_runtime", None)
-            if runtime is not None:
-                runtime.close()
-        except Exception:
-            pass
+        if "previous_env" in locals():
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
         try:
             from src.rmfs.rl.rts.runtime_registry import reset_rts_runtime
 
@@ -450,7 +453,7 @@ def run_controller(
     keep_runtime_artifacts: bool = False,
     detail_db: bool | None = None,
     timing: bool = False,
-    worker_status_cadence: int = 10,
+    worker_status_cadence: int = 100,
     profile: str = "smoke",
     bootstrap_n_orders: int | None = None,
     demand_horizon_ticks: int | None = None,
@@ -837,7 +840,7 @@ def main(argv=None):
     controller_parser.add_argument("--keep-runtime-artifacts", action="store_true", default=False)
     controller_parser.add_argument("--detail-db", action="store_true", default=None, help="Enable detail SQLite DB writes in workers. Disabled by default for headless runs.")
     controller_parser.add_argument("--timing", action="store_true", default=False, help="Collect compact worker timing summaries.")
-    controller_parser.add_argument("--worker-status-cadence", type=int, default=10, help="Write worker_status.json every N ticks, plus start/final status.")
+    controller_parser.add_argument("--worker-status-cadence", type=int, default=100, help="Write worker_status.json every N ticks, plus start/final status.")
     controller_parser.add_argument("--bootstrap-n-orders", type=int, default=None)
     controller_parser.add_argument("--demand-horizon-ticks", type=int, default=None)
     controller_parser.add_argument("--demand-buffer-ticks", type=int, default=None)

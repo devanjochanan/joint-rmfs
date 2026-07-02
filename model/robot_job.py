@@ -17,7 +17,7 @@ class RobotJob:
     def __init__(self, pod_coordinate: NetLogoCoordinate, station_id, pod):
         self.my_id = RobotJob.counter
         RobotJob.counter +=1
-        self.job_id = id
+        self.job_id = self.my_id
         self.pod_coordinate = pod_coordinate
         self.pod_return_coordinate = NetLogoCoordinate(0,0)
         self.pod = pod

@@ -14,6 +14,8 @@ import pickle
 import os
 import traceback
 from collections import defaultdict
+from dataclasses import dataclass
+from enum import Enum
 from typing import List
 import random
 import secrets
@@ -37,6 +39,7 @@ from src.rmfs.runtime_io.scenario_bundle import (
     list_available_scenarios as _list_available_scenarios,
 )
 from src.rmfs.runtime_io.layout_randomization import slot_index_to_pod_id
+from src.rmfs.rl.rts.runtime_invariants import check_runtime_invariants
 from src.rmfs.decisions.pps import (
     DEFAULT_PPS_MODEL_PATH,
     pps_model_candidates,
@@ -113,6 +116,12 @@ __all__ = [
     "setup",
     "tick",
     "console_tick",
+    "SimulationTermination",
+    "SimulationStepResult",
+    "HeadlessSimulationSession",
+    "setup_in_memory",
+    "tick_in_memory",
+    "finalize_headless_run",
     "setup_py",
     "get_run_context",
     "configure_run_context",
@@ -126,6 +135,30 @@ __all__ = [
 
 ACTIVATE_NEAREST = True
 _RUN_CONTEXT = RunContext.default()
+
+
+class SimulationTermination(str, Enum):
+    RUNNING = "running"
+    MAXIMUM_HORIZON = "maximum_horizon"
+    NORMAL_COMPLETION = "normal_completion"
+    NO_ACTIVE_WORK = "no_active_work"
+    CONGESTION = "congestion"
+    MANUAL_CANCELLATION = "manual_cancellation"
+    WORKER_EXCEPTION = "worker_exception"
+
+
+@dataclass(frozen=True)
+class SimulationStepResult:
+    status: SimulationTermination
+    payload: list | None = None
+    steps_executed: int = 0
+    warehouse_time: float | None = None
+    netlogo_step: int | None = None
+    terminal_reason: str | None = None
+
+    @property
+    def terminal(self) -> bool:
+        return self.status is not SimulationTermination.RUNNING
 
 
 def activate_scenario_inputs(scenario_name=None, target_root=None, dry_run=False):
@@ -1456,160 +1489,270 @@ def assign_skus_to_pods_from_file(pod_manager: PodManager):
     df_sorted.to_csv(sorted_csv_file, index=False)
 
 
+def _initialize_universe():
+    ctx = get_run_context()
+    ctx.ensure_runtime_dirs()
+    _maybe_activate_configured_scenario()
+    _prepare_setup_seed()
+    from datetime import datetime
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    db_path = _str_path("sqlite_db")
+    if not is_detail_db_configured():
+        detail_env = os.environ.get("RMFS_DETAIL_DB")
+        if detail_env is None:
+            detail_enabled = (
+                os.environ.get("RMFS_FAST_TRAIN", "0").strip().lower()
+                not in {"1", "true", "yes", "on"}
+            )
+        else:
+            detail_enabled = detail_env.strip().lower() in {"1", "true", "yes", "on"}
+        configure_detail_db(enabled=detail_enabled, db_path=db_path)
+    configure_default_pod_location_db_path(db_path)
+    configure_default_pod_travel_db_path(db_path)
+
+    initialize_job_task_table(timestamp, db_path=db_path)
+    initialize_order_history_table(timestamp, db_path=db_path)
+    initialize_pod_location_table(timestamp, db_path=db_path)
+    initialize_pod_travel_table(timestamp, db_path=db_path)
+
+    clear_job_task_table(db_path=db_path)
+    clear_order_history(db_path=db_path)
+    clear_pod_locations(db_path=db_path)
+    clear_pod_travel(db_path=db_path)
+    for path_attr in ("assign_order_csv", "pod_info_csv"):
+        path = _str_path(path_attr)
+        if os.path.exists(path):
+            os.remove(path)
+
+    # The order stream is regenerated on every setup so bootstrap seeds take
+    # effect immediately and no stale synthetic files are reused.
+    for generated_attr in (
+        "generated_order_csv",
+        "generated_database_order_csv",
+        "generated_order_meta_json",
+    ):
+        generated_path = _str_path(generated_attr)
+        if os.path.exists(generated_path):
+            os.remove(generated_path)
+
+    warehouse = Inventory(runtime_paths=ctx.inventory_paths(), sqlite_db_path=db_path)
+    _apply_runtime_config(warehouse)
+    draw_layout(warehouse)
+    warehouse.tick_to_second = 0.15
+    configure_pps_rl_strategy(warehouse, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
+    return warehouse, warehouse.generateResult()[0]
+
+
+def _reattach_universe(warehouse):
+    for obj in warehouse._objects:
+        obj.setUniverse(warehouse)
+    configure_pps_rl_strategy(warehouse, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
+
+
+def _tick_payload(warehouse, next_result):
+    return [
+        next_result[0],
+        warehouse.total_energy,
+        len(warehouse.job_queue),
+        warehouse.stop_and_go,
+        warehouse.total_turning,
+        next_result[1],
+        _get_throughput(warehouse),
+        _get_avg_order_completion_time(warehouse),
+        _get_pod_visits(warehouse),
+        _get_pile_on_rate(warehouse),
+        _get_picked_quantity(warehouse),
+    ]
+
+
+def _netlogo_step(warehouse):
+    tick_to_second = getattr(warehouse, "tick_to_second", None)
+    if tick_to_second in (None, 0):
+        return None
+    return int(round(float(getattr(warehouse, "_tick", 0.0)) / float(tick_to_second)))
+
+
+def _run_semantic_tick(warehouse):
+    _reattach_universe(warehouse)
+    next_result = warehouse.tick()
+    _apply_pps_rl_policy(warehouse)
+    return _tick_payload(warehouse, next_result)
+
+
+def _persist_universe(warehouse):
+    with timed("pickle_dump"):
+        with open(_str_path("state_file"), "wb") as config_dictionary_file:
+            pickle.dump(warehouse, config_dictionary_file)
+
+
+def _load_universe():
+    with timed("pickle_load"):
+        with open(_str_path("state_file"), "rb") as file:
+            return pickle.load(file)
+
+
+def _horizon_limit():
+    limit = _env_int("RMFS_RUN_HORIZON_TICKS")
+    return limit if limit is not None and limit > 0 else None
+
+
+def setup_in_memory(*, persist_initial_state: bool = False):
+    warehouse, setup_payload = _initialize_universe()
+    if persist_initial_state:
+        _persist_universe(warehouse)
+    return warehouse, setup_payload
+
+
+def tick_in_memory(warehouse) -> SimulationStepResult:
+    payload = _run_semantic_tick(warehouse)
+    return SimulationStepResult(
+        status=SimulationTermination.RUNNING,
+        payload=payload,
+        steps_executed=1,
+        warehouse_time=float(getattr(warehouse, "_tick", 0.0)),
+        netlogo_step=_netlogo_step(warehouse),
+    )
+
+
+def _censor_status_for_termination(reason: SimulationTermination) -> str:
+    return {
+        SimulationTermination.MAXIMUM_HORIZON: "censored_maximum_horizon",
+        SimulationTermination.CONGESTION: "censored_congestion",
+        SimulationTermination.NO_ACTIVE_WORK: "censored_no_active_work",
+        SimulationTermination.MANUAL_CANCELLATION: "censored_manual_cancellation",
+        SimulationTermination.WORKER_EXCEPTION: "censored_worker_exception",
+    }.get(reason, "censored_run_end")
+
+
+def finalize_headless_run(
+    warehouse,
+    *,
+    reason: SimulationTermination | str,
+    success: bool,
+    persist_final_state: bool = True,
+) -> dict:
+    if warehouse is None:
+        return {"finalized": False, "reason": str(reason), "success": bool(success)}
+    if getattr(warehouse, "_rmfs_finalized", False):
+        return {"finalized": False, "already_finalized": True, "reason": str(reason), "success": bool(success)}
+    warehouse._rmfs_finalized = True
+    reason_enum = reason if isinstance(reason, SimulationTermination) else SimulationTermination(str(reason))
+    diagnostics = {
+        "finalized": True,
+        "reason": reason_enum.value,
+        "success": bool(success),
+        "warehouse_time": float(getattr(warehouse, "_tick", 0.0)),
+        "netlogo_step": _netlogo_step(warehouse),
+        "cancelled_committed_next_reservations": 0,
+        "released_charger_claims": 0,
+    }
+    runtime = getattr(warehouse, "rts_rollout_runtime", None)
+    if runtime is not None:
+        runtime.censor_all_pending(
+            status=_censor_status_for_termination(reason_enum),
+            reason=reason_enum.value,
+            warehouse=warehouse,
+        )
+    registry = getattr(warehouse, "committed_next_registry", None)
+    if registry is not None:
+        cancelled = registry.cancel_all(f"run_end_{reason_enum.value}")
+        diagnostics["cancelled_committed_next_reservations"] = len(cancelled)
+    for robot in getattr(warehouse, "_objects", []) or []:
+        if getattr(robot, "object_type", None) != "robot":
+            continue
+        claimed = getattr(robot, "_claimed_charger", None)
+        if claimed is not None:
+            robot._release_charger()
+            diagnostics["released_charger_claims"] += 1
+    if runtime is not None:
+        runtime.close(censor_status=_censor_status_for_termination(reason_enum), reason=reason_enum.value)
+    invariants = check_runtime_invariants(warehouse)
+    diagnostics["runtime_invariants"] = invariants
+    fail_on_invariants = _env_bool("RMFS_RTS_FAIL_ON_INVARIANTS", False) or _env_bool("RMFS_DEBUG_TRACE", False)
+    if fail_on_invariants and invariants.get("hard_violation_count", 0):
+        raise RuntimeError(f"RTS runtime invariant violations: {invariants}")
+    if persist_final_state:
+        _persist_universe(warehouse)
+    return diagnostics
+
+
+class HeadlessSimulationSession:
+    """Resident worker path; GUI compatibility continues through setup()/tick()."""
+
+    def __init__(self, *, persist_final_state: bool = True):
+        self.persist_final_state = bool(persist_final_state)
+        self.warehouse = None
+        self.setup_payload = None
+        self.steps_completed = 0
+        self.finalized = False
+
+    def setup(self):
+        self.warehouse, self.setup_payload = setup_in_memory(persist_initial_state=False)
+        return self.setup_payload
+
+    def step(self) -> SimulationStepResult:
+        if self.warehouse is None:
+            raise RuntimeError("HeadlessSimulationSession.setup() must be called before step()")
+        result = tick_in_memory(self.warehouse)
+        self.steps_completed += result.steps_executed
+        return result
+
+    def finalize(self, *, reason: SimulationTermination, success: bool) -> dict:
+        self.finalized = True
+        return finalize_headless_run(
+            self.warehouse,
+            reason=reason,
+            success=success,
+            persist_final_state=self.persist_final_state,
+        )
+
+
 def setup():
     try:
-        ctx = get_run_context()
-        ctx.ensure_runtime_dirs()
-        _maybe_activate_configured_scenario()
-        _prepare_setup_seed()
-        # Initiate DB
-        from datetime import datetime
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        db_path = _str_path("sqlite_db")
-        if not is_detail_db_configured():
-            detail_env = os.environ.get("RMFS_DETAIL_DB")
-            if detail_env is None:
-                detail_enabled = (
-                    os.environ.get("RMFS_FAST_TRAIN", "0").strip().lower()
-                    not in {"1", "true", "yes", "on"}
-                )
-            else:
-                detail_enabled = detail_env.strip().lower() in {"1", "true", "yes", "on"}
-            configure_detail_db(enabled=detail_enabled, db_path=db_path)
-        configure_default_pod_location_db_path(db_path)
-        configure_default_pod_travel_db_path(db_path)
-
-        initialize_job_task_table(timestamp, db_path=db_path)
-        initialize_order_history_table(timestamp, db_path=db_path)
-        initialize_pod_location_table(timestamp, db_path=db_path)
-        initialize_pod_travel_table(timestamp, db_path=db_path)
-
-        clear_job_task_table(db_path=db_path)
-        clear_order_history(db_path=db_path)
-        clear_pod_locations(db_path=db_path)
-        clear_pod_travel(db_path=db_path)
-        # Initialize the simulation universe
-        assignment_path = _str_path("assign_order_csv")
-        if os.path.exists(assignment_path):
-            os.remove(assignment_path)
-
-        pod_info = _str_path("pod_info_csv")
-        if os.path.exists(pod_info):
-            os.remove(pod_info)
-
-        # The order stream is regenerated on every setup so bootstrap seeds take
-        # effect immediately and no stale synthetic files are reused.
-        for generated_attr in (
-            "generated_order_csv",
-            "generated_database_order_csv",
-            "generated_order_meta_json",
-        ):
-            generated_path = _str_path(generated_attr)
-            if os.path.exists(generated_path):
-                os.remove(generated_path)
-        universe = Inventory(runtime_paths=ctx.inventory_paths(), sqlite_db_path=db_path)
-        _apply_runtime_config(universe)
-
-        # Populate the universe with objects and connections
-        draw_layout(universe)
-
-        # Set simulation parameters
-        universe.tick_to_second = 0.15
-        configure_pps_rl_strategy(universe, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
-
-        # Generate initial results
-        next_result = universe.generateResult()
-
-        # Save the universe state for future ticks
-        with timed("pickle_dump"):
-            with open(_str_path("state_file"), 'wb') as config_dictionary_file:
-                pickle.dump(universe, config_dictionary_file)
-
-        # Return only the first element (object positions) as NetLogo setup doesn't need station info
-        return next_result[0]
-
-    except Exception as e:
-        # Print complete stack trace
+        warehouse, setup_payload = setup_in_memory(persist_initial_state=True)
+        return setup_payload
+    except Exception:
         traceback.print_exc()
         return "An error occurred. See the details above."
 
 
 def tick():
     try:
-        # Load the simulation state
-        with timed("pickle_load"):
-            with open(_str_path("state_file"), 'rb') as file:
-                universe: Inventory = pickle.load(file)
-
-        # Update each object with the current universe context
-        for _n in universe._objects:
-            _n.setUniverse(universe)
-        configure_pps_rl_strategy(universe, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
-
-        # Perform a simulation tick
-        next_result = universe.tick()
-        _apply_pps_rl_policy(universe)
-        horizon_limit = _env_int("RMFS_RUN_HORIZON_TICKS")
-        if horizon_limit is None or horizon_limit <= 0:
-            horizon_limit = 100000
-        if universe._tick > horizon_limit:
-            return IndexError
-
-        # Save updated state
-        with timed("pickle_dump"):
-            with open(_str_path("state_file"), 'wb') as config_dictionary_file:
-                pickle.dump(universe, config_dictionary_file)
-
-        # Return all required information for NetLogo
-        # next_result[0] contains object positions
-        # next_result[1] contains station orders
-        return [next_result[0], universe.total_energy, len(universe.job_queue), universe.stop_and_go,
-                universe.total_turning, next_result[1], _get_throughput(universe),
-                _get_avg_order_completion_time(universe), _get_pod_visits(universe),
-                _get_pile_on_rate(universe), _get_picked_quantity(universe)]
-
-    except Exception as e:
-        # Print complete stack trace
+        warehouse = _load_universe()
+        limit = _horizon_limit()
+        if limit is not None and getattr(warehouse, "_tick", 0) >= limit:
+            return SimulationStepResult(
+                status=SimulationTermination.MAXIMUM_HORIZON,
+                steps_executed=0,
+                warehouse_time=float(getattr(warehouse, "_tick", 0.0)),
+                netlogo_step=_netlogo_step(warehouse),
+                terminal_reason=SimulationTermination.MAXIMUM_HORIZON.value,
+            )
+        payload = _run_semantic_tick(warehouse)
+        _persist_universe(warehouse)
+        return payload
+    except Exception:
         traceback.print_exc()
         return "An error occurred. See the details above."
     
 def console_tick():
     try:
-        # Load the simulation state
-        with timed("pickle_load"):
-            with open(_str_path("state_file"), 'rb') as file:
-                universe: Inventory = pickle.load(file)
-
-        # Update each object with the current universe context
-        for _n in universe._objects:
-            _n.setUniverse(universe)
-        configure_pps_rl_strategy(universe, items_csv=_str_path("items_csv"), skus_data_csv=_str_path("skus_data_csv"))
-        while True:
-            # Perform a simulation tick
-            next_result = universe.tick()
-            _apply_pps_rl_policy(universe)
-            horizon_limit = _env_int("RMFS_RUN_HORIZON_TICKS")
-            if horizon_limit is None or horizon_limit <= 0:
-                horizon_limit = 100000
-            if universe._tick > horizon_limit:
-                return IndexError
-
-        # Save updated state
-        with timed("pickle_dump"):
-            with open(_str_path("state_file"), 'wb') as config_dictionary_file:
-                pickle.dump(universe, config_dictionary_file)
-
-        # Return all required information for NetLogo
-        # next_result[0] contains object positions
-        # next_result[1] contains station orders
-        return [next_result[0], universe.total_energy, len(universe.job_queue), universe.stop_and_go,
-                universe.total_turning, next_result[1], _get_throughput(universe),
-                _get_avg_order_completion_time(universe), _get_pod_visits(universe),
-                _get_pile_on_rate(universe), _get_picked_quantity(universe)]
-
-    except Exception as e:
-        # Print complete stack trace
+        warehouse = _load_universe()
+        last_payload = None
+        limit = _horizon_limit() or 100000
+        while getattr(warehouse, "_tick", 0) < limit:
+            last_payload = _run_semantic_tick(warehouse)
+        _persist_universe(warehouse)
+        return SimulationStepResult(
+            status=SimulationTermination.MAXIMUM_HORIZON,
+            payload=last_payload,
+            steps_executed=0,
+            warehouse_time=float(getattr(warehouse, "_tick", 0.0)),
+            netlogo_step=_netlogo_step(warehouse),
+            terminal_reason=SimulationTermination.MAXIMUM_HORIZON.value,
+        )
+    except Exception:
         traceback.print_exc()
         return "An error occurred. See the details above."
 

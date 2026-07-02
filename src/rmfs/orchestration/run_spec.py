@@ -32,7 +32,7 @@ class RunSpec:
     keep_runtime_artifacts: bool = False
     detail_db: bool = False
     timing: bool = False
-    worker_status_cadence: int = 10
+    worker_status_cadence: int = 100
     run_profile: str = "smoke"
     run_horizon_ticks: int | None = None
     bootstrap_n_orders: int | None = None

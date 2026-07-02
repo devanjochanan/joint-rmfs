@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -14,6 +15,8 @@ class RTSRolloutWriter:
         self.max_events = max_events
         self.events: list[dict[str, Any]] = []
         self._written = 0
+        self._unflushed = 0
+        self.flush_cadence = self._resolve_flush_cadence()
         self._closed = False
         self._fh = None
 
@@ -25,6 +28,7 @@ class RTSRolloutWriter:
 
     def close(self) -> None:
         if self._fh is not None:
+            self._fh.flush()
             self._fh.close()
             self._fh = None
         self._closed = True
@@ -32,6 +36,8 @@ class RTSRolloutWriter:
     def __getstate__(self):
         state = dict(self.__dict__)
         state["_fh"] = None
+        state["events"] = []
+        state["_unflushed"] = 0
         return state
 
     def __setstate__(self, state):
@@ -50,7 +56,29 @@ class RTSRolloutWriter:
             self._fh = self.path.open("a")
         event = dict(row)
         self._fh.write(json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n")
-        self._fh.flush()
         self.events.append(event)
         self._written += 1
+        self._unflushed += 1
+        if self._unflushed >= self.flush_cadence or self._is_terminal_outcome(event):
+            self._fh.flush()
+            self._unflushed = 0
+
+    @staticmethod
+    def _resolve_flush_cadence() -> int:
+        value = os.environ.get("RMFS_RTS_ROLLOUT_FLUSH_CADENCE", "").strip()
+        if not value:
+            value = "25" if os.environ.get("RMFS_DEBUG_TRACE", "").strip().lower() in {"1", "true", "yes", "on"} else "100"
+        try:
+            return max(1, int(value))
+        except ValueError:
+            return 100
+
+    @staticmethod
+    def _is_terminal_outcome(event: Mapping[str, Any]) -> bool:
+        if event.get("event_type") != "outcome":
+            return False
+        status = str(event.get("paper_cycle_status") or "")
+        if status == "complete" or status.startswith("censored"):
+            return True
+        return str(event.get("outcome_status") or "").startswith("paper_cycle_")
 
