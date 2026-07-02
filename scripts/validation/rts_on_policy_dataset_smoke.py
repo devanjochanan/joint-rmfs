@@ -10,8 +10,26 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.validation.rts_ppo_update_smoke import synthetic_state
+from src.rmfs.rl.rts.features import build_action_feature_names, build_stock_feature_names
+from src.rmfs.rl.rts.ablation import resolve_ablation
+from src.rmfs.rl.rts.training.checkpoint import write_feature_schema
+from tempfile import TemporaryDirectory
 from src.rmfs.rl.rts.rollout_schema import build_decision_event, build_outcome_event
 from src.rmfs.rl.rts.training.on_policy_dataset import build_on_policy_ppo_batch, build_on_policy_training_steps
+
+
+def schema_id():
+    with TemporaryDirectory() as tmp:
+        schema = write_feature_schema(
+            Path(tmp) / "feature_schema.json",
+            action_feature_names=build_action_feature_names(("A", "B")),
+            stock_feature_names=build_stock_feature_names(),
+        )
+        return schema["feature_schema_id"]
+
+
+SCHEMA_ID = schema_id()
+ABLATION = resolve_ablation("full")
 
 
 def decision(event_id: str, actor_kind: str, checkpoint: str = "batch_000001", **overrides):
@@ -37,9 +55,12 @@ def decision(event_id: str, actor_kind: str, checkpoint: str = "batch_000001", *
         policy_mode=actor_kind,
         old_log_prob=-0.7,
         old_value=1.0,
+        feature_schema_id=SCHEMA_ID,
+        feature_ablation=ABLATION.name,
+        feature_ablation_hash=ABLATION.hash,
         netlogo_step=1,
-        warehouse_time=0.5,
-        tick_to_second=0.5,
+        warehouse_time=0.15,
+        tick_to_second=0.15,
     )
     payload.update(overrides)
     return payload
@@ -99,7 +120,12 @@ def main():
     events.extend([decision("mismatch", "rts_rl_explicit", checkpoint="old"), outcome("mismatch")])
     events.extend([decision("missing_logprob", "rts_rl_explicit", old_log_prob=None), outcome("missing_logprob")])
     events.extend([decision("missing_value", "rts_rl_explicit", old_value=None), outcome("missing_value")])
-    dataset = build_on_policy_training_steps(events, required_policy_checkpoint_id="batch_000001")
+    dataset = build_on_policy_training_steps(
+        events,
+        required_policy_checkpoint_id="batch_000001",
+        required_feature_schema_id=SCHEMA_ID,
+        required_feature_ablation_hash=ABLATION.hash,
+    )
     assert dataset.summary["trainable_step_count"] == 1
     assert dataset.summary["rejected_non_on_policy_count"] == 5
     assert dataset.summary["rejected_checkpoint_mismatch_count"] == 1
@@ -166,15 +192,15 @@ def main():
     assert len(w1_steps) == 3
     assert len(w2_steps) == 2
     assert [s.netlogo_step for s in w1_steps] == [1, 2, 3]
-    assert w1_steps[0].terminated is False and w1_steps[0].truncated is False
-    assert w1_steps[1].terminated is False and w1_steps[1].truncated is False
-    assert w1_steps[2].terminated is False and w1_steps[2].truncated is True
+    assert all(s.terminated is True and s.truncated is False for s in w1_steps)
     assert [s.netlogo_step for s in w2_steps] == [1, 2]
-    assert w2_steps[0].terminated is False and w2_steps[0].truncated is False
-    assert w2_steps[1].terminated is False and w2_steps[1].truncated is True
+    assert all(s.terminated is True and s.truncated is False for s in w2_steps)
 
     batch_multi = build_on_policy_ppo_batch(dataset_multi, gamma=0.99, gae_lambda=0.95)
-    assert batch_multi.returns[0] > 1.5, f"GAE multi-step returns failed: {batch_multi.returns[0]}"
+    assert all(abs(float(ret) - 1.0) < 1e-6 for ret in batch_multi.returns)
+    reordered = build_on_policy_training_steps(list(reversed(multi_events)), required_policy_checkpoint_id="batch_000001")
+    reordered_batch = build_on_policy_ppo_batch(reordered, gamma=0.99, gae_lambda=0.95)
+    assert sorted(float(x) for x in reordered_batch.returns) == sorted(float(x) for x in batch_multi.returns)
 
     print("rts on policy dataset smoke ok")
 

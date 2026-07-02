@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from src.rmfs.rl.rts.action_space import action_mask_entry, validate_action_mask
+from src.rmfs.rl.rts.ablation import resolve_ablation, apply_ablation_to_arrays
 from src.rmfs.rl.rts.features import build_feature_bundle
 from src.rmfs.rl.rts.rollout_schema import DECISION_EVENT, OUTCOME_EVENT
 
@@ -203,10 +204,11 @@ def build_smoke_training_steps(events: Sequence[Mapping[str, Any]]) -> RTSRollou
     return RTSRolloutDataset(steps=tuple(steps), summary=summary)
 
 
-def build_feature_tensors_from_steps(steps: Sequence[RTSTrainingStep]) -> RTSPaddedTrainingBatch:
+def build_feature_tensors_from_steps(steps: Sequence[RTSTrainingStep], *, feature_ablation: str = "full") -> RTSPaddedTrainingBatch:
     if not steps:
         raise ValueError("RTS training batch requires at least one step")
     bundles = [build_feature_bundle(step.zone_ids, step.action_mask, step.state_json) for step in steps]
+    ablation = resolve_ablation(feature_ablation)
     action_names = bundles[0].action_feature_names
     stock_names = bundles[0].stock_feature_names
     if any(bundle.action_feature_names != action_names for bundle in bundles):
@@ -223,13 +225,22 @@ def build_feature_tensors_from_steps(steps: Sequence[RTSTrainingStep]) -> RTSPad
     X_stock = np.zeros((batch, k_max, stock_dim), dtype=np.float32)
     M_stock = np.zeros((batch, k_max), dtype=np.int64)
     for index, bundle in enumerate(bundles):
+        X_actions_row, M_actions_row, X_stock_row, M_stock_row = apply_ablation_to_arrays(
+            X_actions=bundle.X_actions,
+            M_actions=bundle.M_actions,
+            X_stock=bundle.X_stock,
+            M_stock=bundle.M_stock,
+            action_feature_names=bundle.action_feature_names,
+            zone_ids=bundle.zone_ids,
+            ablation=ablation,
+        )
         actions = bundle.X_actions.shape[0]
         stocks = bundle.X_stock.shape[0]
-        X_actions[index, :actions, :] = bundle.X_actions
-        M_actions[index, :actions] = bundle.M_actions
+        X_actions[index, :actions, :] = X_actions_row
+        M_actions[index, :actions] = M_actions_row
         if stocks:
-            X_stock[index, :stocks, :] = bundle.X_stock
-            M_stock[index, :stocks] = bundle.M_stock
+            X_stock[index, :stocks, :] = X_stock_row
+            M_stock[index, :stocks] = M_stock_row
     return RTSPaddedTrainingBatch(
         X_actions=X_actions,
         M_actions=M_actions,

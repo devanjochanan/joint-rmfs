@@ -55,6 +55,9 @@ def ingest_evaluation_summary(
     metrics = summary.get("metrics")
     if metrics is None:
         metric_keys = [
+            "mean_completed_paper_cycle_duration",
+            "completed_cycle_count",
+            "completion_rate",
             "avg_order_cycle_time", "avg_order_cycle_time_mean",
             "orders_completed", "orders_completed_mean",
             "congestion_rate", "congestion_rate_mean",

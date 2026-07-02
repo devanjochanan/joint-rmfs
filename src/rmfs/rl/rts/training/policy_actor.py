@@ -11,6 +11,7 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 from src.rmfs.decisions.rts.types import RTSDecision
 from src.rmfs.rl.rts.action_context import revalidate_selected_context, selected_context_by_index
 from src.rmfs.rl.rts.action_space import build_action_mask_from_contexts, decode_action, validate_action_mask
+from src.rmfs.rl.rts.ablation import AblationSpec, resolve_ablation, apply_ablation_to_arrays
 from src.rmfs.rl.rts.features import build_feature_bundle
 from src.rmfs.rl.rts.state import build_state
 from src.rmfs.rl.rts.storage_resolver import find_free_storage_in_zone
@@ -24,6 +25,8 @@ class RTSOnPolicyActorConfig:
     policy_action_mode: str = "sample"
     policy_device: str = "cpu"
     feature_schema_id: str | None = None
+    feature_ablation: str = "full"
+    feature_ablation_hash: str | None = None
 
 
 class RTSOnPolicyActor:
@@ -36,6 +39,9 @@ class RTSOnPolicyActor:
         self.zone_ids = tuple(str(zone_id) for zone_id in zone_ids)
         if not self.zone_ids:
             raise ValueError("rts_rl_explicit actor requires zone_ids")
+        self.ablation: AblationSpec = resolve_ablation(config.feature_ablation)
+        if config.feature_ablation_hash is not None and config.feature_ablation_hash != self.ablation.hash:
+            raise ValueError("feature_ablation_hash does not match feature_ablation")
         self.config = config
 
     def select_destination(self, context: Any) -> RTSDecision:
@@ -44,17 +50,26 @@ class RTSOnPolicyActor:
         action_mask = build_action_mask_from_contexts(zones, state.action_contexts)
         validate_action_mask(zones, action_mask, require_valid=True)
         features = build_feature_bundle(zones, action_mask, state.state_json)
+        X_actions, M_actions, X_stock, M_stock = apply_ablation_to_arrays(
+            X_actions=features.X_actions,
+            M_actions=features.M_actions,
+            X_stock=features.X_stock,
+            M_stock=features.M_stock,
+            action_feature_names=features.action_feature_names,
+            zone_ids=zones,
+            ablation=self.ablation,
+        )
         device_str = resolve_rts_torch_device(self.config.policy_device)
         device = torch.device(device_str)
         with torch.no_grad():
-            X_actions = torch.as_tensor(features.X_actions, dtype=torch.float32, device=device).unsqueeze(0)
-            M_actions = torch.as_tensor(features.M_actions, dtype=torch.int64, device=device).unsqueeze(0)
-            X_stock = torch.as_tensor(features.X_stock, dtype=torch.float32, device=device).unsqueeze(0)
-            M_stock = torch.as_tensor(features.M_stock, dtype=torch.int64, device=device).unsqueeze(0)
-            logits, values = self.model(X_actions, M_actions, X_stock, M_stock)
-            dist = masked_categorical_from_logits(logits, M_actions)
+            X_actions_tensor = torch.as_tensor(X_actions, dtype=torch.float32, device=device).unsqueeze(0)
+            M_actions_tensor = torch.as_tensor(M_actions, dtype=torch.int64, device=device).unsqueeze(0)
+            X_stock_tensor = torch.as_tensor(X_stock, dtype=torch.float32, device=device).unsqueeze(0)
+            M_stock_tensor = torch.as_tensor(M_stock, dtype=torch.int64, device=device).unsqueeze(0)
+            logits, values = self.model(X_actions_tensor, M_actions_tensor, X_stock_tensor, M_stock_tensor)
+            dist = masked_categorical_from_logits(logits, M_actions_tensor)
             if self.config.policy_action_mode == "greedy":
-                selected = int(logits.masked_fill(M_actions <= 0, torch.finfo(logits.dtype).min).argmax(dim=-1).item())
+                selected = int(logits.masked_fill(M_actions_tensor <= 0, torch.finfo(logits.dtype).min).argmax(dim=-1).item())
             else:
                 selected = int(dist.sample().item())
             selected_tensor = torch.as_tensor([selected], dtype=torch.int64, device=device)
@@ -97,7 +112,8 @@ class RTSOnPolicyActor:
                 "selected_action_index": selected,
                 "selected_action_branch": action.branch,
                 "selected_zone_id": action.zone_id,
-                "action_mask": list(action_mask),
+                "raw_action_mask": list(action_mask),
+                "action_mask": [int(value) for value in M_actions.tolist()],
                 "action_context_id": action_context.context_id,
                 "action_context_version": action_context.context_version,
                 "candidate_storage_id": action_context.candidate_storage_id,
@@ -107,6 +123,9 @@ class RTSOnPolicyActor:
                 "selected_cycle_estimate": cycle_estimate,
                 "state_json": state.state_json,
                 "feature_schema_id": self.config.feature_schema_id or self.config.policy_checkpoint_id,
+                "feature_ablation": self.ablation.name,
+                "feature_ablation_hash": self.ablation.hash,
+                "feature_ablation_specification": self.ablation.to_json_dict(),
             },
         )
 

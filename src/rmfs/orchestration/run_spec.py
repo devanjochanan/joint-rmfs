@@ -29,6 +29,9 @@ class RunSpec:
     rts_policy_checkpoint_id: str | None = None
     rts_policy_action_mode: str = "sample"
     rts_policy_device: str = "cpu"
+    rts_feature_ablation: str = "full"
+    rts_feature_ablation_hash: str | None = None
+    rts_charging_mode: str = "inherit"
     keep_runtime_artifacts: bool = False
     detail_db: bool = False
     timing: bool = False

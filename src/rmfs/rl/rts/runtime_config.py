@@ -31,6 +31,8 @@ class RTSRuntimeConfig:
     policy_checkpoint_id: str | None = None
     policy_action_mode: str = "sample"
     policy_device: str = "cpu"
+    feature_ablation: str = "full"
+    feature_ablation_hash: str | None = None
     committed_next_reservations_enabled: bool = False
     cycle_estimate_semantics: str = SEMANTICS_HOST_STRUCTURAL
     cycle_estimate_allow_metric_fallback: bool = True
@@ -63,6 +65,10 @@ def validate_rts_runtime_config(config: RTSRuntimeConfig) -> None:
         raise ValueError("rts policy_action_mode must be sample or greedy")
     if config.policy_device not in {"cpu", "cuda", "auto"}:
         raise ValueError("rts policy_device must be cpu, cuda, or auto")
+    from .ablation import resolve_ablation
+    ablation = resolve_ablation(config.feature_ablation)
+    if config.feature_ablation_hash is not None and config.feature_ablation_hash != ablation.hash:
+        raise ValueError("rts feature_ablation_hash does not match feature_ablation")
     if config.cycle_estimate_semantics not in SUPPORTED_CYCLE_ESTIMATE_SEMANTICS:
         raise ValueError(
             "rts cycle_estimate_semantics must be one of "

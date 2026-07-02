@@ -27,7 +27,11 @@ class RTSOnPolicyTrainingConfig:
     min_trainable_steps: int = 1
     ppo_epochs: int = 4
     minibatch_size: int = 64
+    learning_rate: float = 1e-4
     zone_ids: tuple[str, ...] = ()
+    feature_ablation: str = "full"
+    ledger_path: Path | None = None
+    charging_mode: str = "inherit"
     feature_flags: dict[str, Any] | None = None
     scenario_id: str | None = None
     experiment_id: str | None = None
@@ -44,6 +48,7 @@ class RTSOnPolicyTrainingConfig:
         data = asdict(self)
         data["output_root"] = str(self.output_root)
         data["cycle_reference_path"] = str(self.cycle_reference_path) if self.cycle_reference_path is not None else None
+        data["ledger_path"] = str(self.ledger_path) if self.ledger_path is not None else None
         data["zone_ids"] = list(self.zone_ids)
         data["seed_base"] = self.seed
         return data
@@ -57,6 +62,10 @@ class RTSOnPolicyTrainingConfig:
             payload["cycle_reference_path"] = Path(payload["cycle_reference_path"])
         else:
             payload["cycle_reference_path"] = None
+        if payload.get("ledger_path"):
+            payload["ledger_path"] = Path(payload["ledger_path"])
+        else:
+            payload["ledger_path"] = None
         if "zone_ids" in payload:
             payload["zone_ids"] = tuple(payload["zone_ids"])
         
@@ -102,6 +111,12 @@ def validate_on_policy_training_config(
         raise ValueError("ppo_epochs must be >= 1")
     if int(config.minibatch_size) < 1:
         raise ValueError("minibatch_size must be >= 1")
+    if float(config.learning_rate) <= 0.0:
+        raise ValueError("learning_rate must be positive")
+    from src.rmfs.rl.rts.ablation import resolve_ablation
+    resolve_ablation(config.feature_ablation)
+    if config.charging_mode not in {"inherit", "enabled", "disabled"}:
+        raise ValueError("charging_mode must be inherit, enabled, or disabled")
     if config.feature_flags is not None:
         from src.rmfs.experiments.feature_flags import validate_feature_flags
         validate_feature_flags(config.feature_flags)

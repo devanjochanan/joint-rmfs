@@ -12,7 +12,7 @@ import torch
 from src.rmfs.rl.rts.training.device import resolve_rts_torch_device
 from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id
 from src.rmfs.rl.rts.model import RTSMaskedActorCritic
-from src.rmfs.rl.rts.features import ACTION_FEATURE_SCHEMA_VERSION, build_action_feature_names
+from src.rmfs.rl.rts.features import ACTION_FEATURE_SCHEMA_VERSION, build_action_feature_names, feature_schema_identity
 from src.rmfs.rl.rts.action_space import ACTION_BRANCHES, ACTION_BRANCH_ORDER_VERSION
 from src.rmfs.rl.rts.cycle_estimator import CYCLE_ESTIMATE_VERSION, SEMANTICS_HOST_STRUCTURAL
 from src.rmfs.rl.rts.graph_distance import DISTANCE_SEMANTICS_VERSION
@@ -51,6 +51,10 @@ def load_policy_from_checkpoint(checkpoint_dir: Path, *, device: str = "cpu") ->
         metadata = json.load(fh)
     with schema_path.open() as fh:
         feature_schema = json.load(fh)
+    if int(feature_schema.get("action_feature_dim") or 0) != 18:
+        raise ValueError("unsupported RTS checkpoint action_feature_schema_version/action_feature_dim; expected v4 width 18")
+    if int(feature_schema.get("stock_feature_dim") or 0) != 4:
+        raise ValueError("RTS v4 checkpoints must have stock_feature_dim=4")
     training_config = dict(metadata.get("training_config", {}) or {})
     model = RTSMaskedActorCritic(
         action_feature_dim=int(feature_schema["action_feature_dim"]),
@@ -68,6 +72,11 @@ def load_policy_from_checkpoint(checkpoint_dir: Path, *, device: str = "cpu") ->
     if not policy_checkpoint_id.strip():
         raise ValueError("policy_checkpoint_id must be nonblank")
     _validate_schema_semantics(feature_schema)
+    expected_schema_id = feature_schema_identity(feature_schema)
+    actual_schema_id = feature_schema.get("feature_schema_id")
+    if actual_schema_id is not None and actual_schema_id != expected_schema_id:
+        raise ValueError("incompatible RTS checkpoint feature_schema_id")
+    feature_schema["feature_schema_id"] = expected_schema_id
     return LoadedRTSPolicy(
         model=model,
         checkpoint_dir=checkpoint,

@@ -11,6 +11,8 @@ import torch
 from .metrics import append_jsonl, atomic_write_json, json_safe, write_json
 from .references import copy_cycle_reference_to_checkpoint
 from ..features import ACTION_FEATURE_SCHEMA_VERSION, feature_schema_metadata
+from ..features import feature_schema_identity
+from ..ablation import resolve_ablation
 from ..cycle_estimator import CYCLE_ESTIMATE_VERSION, SEMANTICS_HOST_STRUCTURAL
 from ..graph_distance import DISTANCE_SEMANTICS_VERSION
 from ..action_space import ACTION_BRANCHES, ACTION_BRANCH_ORDER_VERSION
@@ -95,8 +97,49 @@ def write_feature_schema(
         "stock_feature_dim": len(stock_feature_names),
         **metadata,
     }
+    schema["feature_schema_id"] = feature_schema_identity(schema)
     atomic_write_json(path, schema)
     return schema
+
+
+def optimizer_state_fingerprint(optimizer_state: Mapping[str, Any]) -> dict[str, Any]:
+    import hashlib
+
+    state = optimizer_state.get("state", {}) if isinstance(optimizer_state, Mapping) else {}
+    param_groups = optimizer_state.get("param_groups", []) if isinstance(optimizer_state, Mapping) else []
+    steps: list[float] = []
+    digest = hashlib.sha256()
+    tensor_count = 0
+    for param_key in sorted(state.keys(), key=lambda item: str(item)):
+        param_state = state[param_key]
+        if not isinstance(param_state, Mapping):
+            continue
+        step = param_state.get("step")
+        if step is not None:
+            try:
+                steps.append(float(step.item() if hasattr(step, "item") else step))
+            except Exception:
+                pass
+        for tensor_key in ("exp_avg", "exp_avg_sq"):
+            tensor = param_state.get(tensor_key)
+            if tensor is None:
+                continue
+            cpu_tensor = tensor.detach().cpu().contiguous() if hasattr(tensor, "detach") else torch.as_tensor(tensor).cpu().contiguous()
+            digest.update(str(param_key).encode("utf-8"))
+            digest.update(tensor_key.encode("utf-8"))
+            digest.update(str(tuple(cpu_tensor.shape)).encode("utf-8"))
+            digest.update(cpu_tensor.numpy().tobytes())
+            tensor_count += 1
+    learning_rates = [float(group.get("lr")) for group in param_groups if "lr" in group]
+    return {
+        "schema_version": "rts_optimizer_fingerprint.v1",
+        "state_parameter_count": len(state),
+        "moment_tensor_count": tensor_count,
+        "min_step": min(steps) if steps else 0.0,
+        "max_step": max(steps) if steps else 0.0,
+        "learning_rates": learning_rates,
+        "sha256": digest.hexdigest(),
+    }
 
 
 def write_latest_pointer(root: Path, *, batch_id: int, checkpoint_dir: Path, policy_checkpoint_id: str | None = None) -> None:
@@ -146,6 +189,8 @@ def save_training_checkpoint(
             "training_zone_ids": list(tuple(getattr(config, "zone_ids", ()) or ())),
         },
     )
+    ablation = resolve_ablation(getattr(config, "feature_ablation", "full"))
+    optimizer_fingerprint = optimizer_state_fingerprint(optimizer.state_dict())
     copied_reference = None
     if cycle_reference_path is not None:
         copied_reference = copy_cycle_reference_to_checkpoint(cycle_reference_path, checkpoint_dir)
@@ -157,12 +202,22 @@ def save_training_checkpoint(
             "dataset_summary": dataset_summary,
             "ppo_update_result": ppo_update_result,
             "feature_schema": feature_schema,
+            "feature_schema_id": feature_schema["feature_schema_id"],
+            "feature_ablation": ablation.name,
+            "feature_ablation_hash": ablation.hash,
+            "feature_ablation_specification": ablation.to_json_dict(),
+            "optimizer_state_fingerprint": optimizer_fingerprint,
             "cycle_reference_path": str(copied_reference) if copied_reference else None,
             "reward_normalizer": reward_normalizer_metadata,
             "lineage": lineage_metadata,
         }
     )
     atomic_write_json(checkpoint_dir / "metadata.json", metadata)
+    from .policy_loader import load_policy_from_checkpoint
+
+    reloaded = load_policy_from_checkpoint(checkpoint_dir, device="cpu")
+    if reloaded.policy_checkpoint_id != checkpoint_id_after:
+        raise RuntimeError("checkpoint reload validation returned unexpected policy checkpoint id")
     write_latest_pointer(root, batch_id=batch_id, checkpoint_dir=checkpoint_dir, policy_checkpoint_id=checkpoint_id_after)
     
     append_checkpoint_history(
@@ -180,6 +235,9 @@ def save_training_checkpoint(
             "avg_reward": float(dataset_summary.get("avg_reward", 0.0)),
             "cycle_reference_path": str(copied_reference) if copied_reference else None,
             "reward_normalizer": dict(reward_normalizer_metadata or {}),
+            "optimizer_state_fingerprint": optimizer_fingerprint,
+            "feature_ablation": ablation.name,
+            "feature_ablation_hash": ablation.hash,
             "feature_schema_path": str(checkpoint_dir / "feature_schema.json"),
             "latest_updated": True,
         },

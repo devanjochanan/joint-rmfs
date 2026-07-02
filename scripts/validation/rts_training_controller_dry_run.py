@@ -18,6 +18,22 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts.training.rts_train_controller import main as controller_main
 
 
+def init_checkpoint(path: Path) -> None:
+    subprocess.check_call(
+        [
+            sys.executable,
+            "scripts/training/init_rts_checkpoint.py",
+            "--checkpoint-dir",
+            str(path),
+            "--zone-ids",
+            "zone1",
+            "--policy-checkpoint-id",
+            "dry_run_smoke_checkpoint",
+        ],
+        cwd=REPO_ROOT,
+    )
+
+
 def main():
     # 1. Standard dry-run configuration propagation checks
     output_root = REPO_ROOT / "data" / "runtime" / "rts_training" / "phase9_dry_run_smoke"
@@ -56,6 +72,41 @@ def main():
     assert (run_root / "batch_000001" / "workers" / "run_002" / "run_spec.json").exists()
     shutil.rmtree(output_root, ignore_errors=True)
 
+    # 1b. Resume dry-run appends additional batches after latest.json
+    shutil.rmtree(output_root, ignore_errors=True)
+    output_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint_dir = Path(tmpdir) / "checkpoint"
+        init_checkpoint(checkpoint_dir)
+        run_root = output_root / "phase9_dry_run_smoke"
+        (run_root / "batch_000001").mkdir(parents=True, exist_ok=True)
+        with (run_root / "latest.json").open("w") as fh:
+            json.dump({"batch_id": 1, "checkpoint_dir": str(checkpoint_dir), "policy_checkpoint_id": "dry_run_smoke_checkpoint"}, fh)
+        controller_main(
+            [
+                "--artifact-label",
+                "phase9_dry_run_smoke",
+                "--output-root",
+                str(output_root),
+                "--batches",
+                "2",
+                "--workers",
+                "1",
+                "--netlogo-steps-per-run",
+                "3",
+                "--seed",
+                "42",
+                "--no-progress",
+                "--no-tensorboard",
+                "--resume-latest",
+                "--dry-run",
+            ]
+        )
+        assert (run_root / "batch_000001").exists()
+        assert (run_root / "batch_000002" / "batch_summary.json").exists()
+        assert (run_root / "batch_000003" / "batch_summary.json").exists()
+    shutil.rmtree(output_root, ignore_errors=True)
+
     # 2. Dry-run debug_worker_logs configuration propagation checks
     shutil.rmtree(output_root, ignore_errors=True)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -89,7 +140,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         checkpoint_dir = tmp_path / "checkpoint"
-        checkpoint_dir.mkdir()
+        init_checkpoint(checkpoint_dir)
         real_output_root = REPO_ROOT / "data" / "runtime" / "rts_training" / "test_worker_logs_default"
         shutil.rmtree(real_output_root, ignore_errors=True)
         real_output_root.mkdir(parents=True, exist_ok=True)
@@ -157,7 +208,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         checkpoint_dir = tmp_path / "checkpoint"
-        checkpoint_dir.mkdir()
+        init_checkpoint(checkpoint_dir)
         real_output_root = REPO_ROOT / "data" / "runtime" / "rts_training" / "test_worker_logs_debug"
         shutil.rmtree(real_output_root, ignore_errors=True)
         real_output_root.mkdir(parents=True, exist_ok=True)

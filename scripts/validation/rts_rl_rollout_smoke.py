@@ -188,13 +188,14 @@ def main():
         assert rows[1]["outcome_status"] == "return_completed"
         assert rows[1]["paper_cycle_status"] == "pending"
         assert_current_cold_start_reward(rows[1])
-        assert rows[2]["outcome_status"] == "paper_cycle_completed"
-        assert rows[2]["paper_cycle_status"] == "complete"
-        assert rows[2]["paper_cycle_completion_rule"] == "next_order_retrieval_arrival"
+        assert rows[2]["outcome_status"] == "paper_cycle_censored"
+        assert rows[2]["paper_cycle_status"] == "censored_no_next_task"
+        assert rows[2]["paper_cycle_completion_rule"] == "censored_no_next_task"
         assert_current_cold_start_reward(rows[2])
         summary = summarize_rollout_events(rows, policy_mode="current_probe")
-        assert summary["completed_paper_cycle_count"] == 1
+        assert summary["completed_paper_cycle_count"] == 0
         assert summary["pending_paper_cycle_count"] == 1
+        assert summary["censored_paper_cycle_count"] == 1
         assert isinstance(current_policy, CurrentRTSPolicy)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -222,9 +223,10 @@ def main():
         runtime.on_station_arrival(robot=context.robot, station=context.station)
         runtime.close()
         rows = read_jsonl(tmp_path / "rts_rollout.jsonl")
-        assert rows[-1]["reward_json"]["reward_computed"] is True
+        assert rows[-1]["reward_json"]["reward_computed"] is False
         assert rows[-1]["reward_json"]["reward_horizon"] == "paper_cycle_duration"
-        assert rows[-1]["paper_cycle_duration"] == 12
+        assert rows[-1]["paper_cycle_status"] == "censored_no_next_task"
+        assert rows[-1]["paper_cycle_duration"] is None
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)

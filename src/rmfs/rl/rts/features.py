@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -163,6 +165,35 @@ def feature_schema_metadata() -> dict[str, Any]:
         "zone_geometry_version": ZONE_GEOMETRY_VERSION,
         **macro_region_metadata(),
     }
+
+
+def feature_schema_identity(schema: Mapping[str, Any]) -> str:
+    """Stable identity for the v4 tensor contract, independent of checkpoint ID."""
+    payload = {
+        "action_feature_schema_version": schema.get("action_feature_schema_version"),
+        "stock_feature_schema_version": schema.get("stock_feature_schema_version"),
+        "stock_source_version": schema.get("stock_source_version"),
+        "action_feature_names": list(schema.get("action_feature_names") or ()),
+        "stock_feature_names": list(schema.get("stock_feature_names") or ()),
+        "action_feature_dim": int(schema.get("action_feature_dim") or 0),
+        "stock_feature_dim": int(schema.get("stock_feature_dim") or 0),
+        "action_branch_order_version": schema.get("action_branch_order_version"),
+        "action_branch_order": list(schema.get("action_branch_order") or ()),
+        "zone_geometry_version": schema.get("zone_geometry_version"),
+        "macro_region_semantic_version": schema.get("macro_region_semantic_version"),
+        "traffic_pressure_semantic_version": schema.get("traffic_pressure_semantic_version"),
+        "cycle_estimator_version": schema.get("cycle_estimator_version"),
+        "cycle_estimate_semantics": schema.get("cycle_estimate_semantics"),
+        "distance_semantics_version": schema.get("distance_semantics_version"),
+        "travel_time_version": schema.get("travel_time_version"),
+        "time_conversion_version": schema.get("time_conversion_version"),
+        "layout_normalization_version": schema.get("layout_normalization_version"),
+        "historical_pod_rank_version": schema.get("historical_pod_rank_version"),
+        "sku_similarity_version": schema.get("sku_similarity_version"),
+        "distance_normalization_version": schema.get("distance_normalization_version"),
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "rts_feature_schema_" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def compute_feature_standardization(feature_matrix: np.ndarray) -> tuple[tuple[float, ...], tuple[float, ...]]:

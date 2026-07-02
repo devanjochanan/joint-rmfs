@@ -31,6 +31,16 @@ def main(argv=None):
     parser.add_argument("--zone-ids", default=None, help="Comma-separated list of explicit zone IDs.")
     parser.add_argument("--robot-task-allocator", choices=("regret_k", "legacy_nearest"), default="regret_k")
     parser.add_argument("--regret-k", type=int, default=2)
+    parser.add_argument("--min-trainable-steps", type=int, default=1)
+    parser.add_argument("--ppo-epochs", type=int, default=4)
+    parser.add_argument("--minibatch-size", type=int, default=64)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--feature-ablation", default="full")
+    parser.add_argument("--ledger-path", default=None)
+    charging = parser.add_mutually_exclusive_group()
+    charging.add_argument("--charging-enabled", action="store_const", const="enabled", dest="charging_mode")
+    charging.add_argument("--charging-disabled", action="store_const", const="disabled", dest="charging_mode")
+    charging.add_argument("--charging-inherit-default", action="store_const", const="inherit", dest="charging_mode")
     progress = parser.add_mutually_exclusive_group()
     progress.add_argument("--progress", action="store_true", dest="progress")
     progress.add_argument("--no-progress", action="store_false", dest="progress")
@@ -42,6 +52,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", default=False, help="Deprecated no-op flag. Dry run is default.")
     parser.add_argument("--execute", action="store_true", default=False, help="Run real training instead of a dry run.")
     parser.add_argument("--debug-worker-logs", action="store_true", default=False, help="Persist worker stdout/stderr logs for diagnosis.")
+    parser.set_defaults(charging_mode="inherit")
     args = parser.parse_args(argv)
 
     if args.execute:
@@ -68,7 +79,14 @@ def main(argv=None):
         policy_action_mode=args.policy_action_mode,
         progress=args.progress,
         tensorboard_enabled=args.tensorboard_enabled,
+        min_trainable_steps=args.min_trainable_steps,
+        ppo_epochs=args.ppo_epochs,
+        minibatch_size=args.minibatch_size,
+        learning_rate=args.learning_rate,
         zone_ids=zone_ids,
+        feature_ablation=args.feature_ablation,
+        ledger_path=Path(args.ledger_path).resolve() if args.ledger_path else None,
+        charging_mode=args.charging_mode,
         robot_task_allocator=args.robot_task_allocator,
         regret_k=args.regret_k if args.robot_task_allocator == "regret_k" else None,
         debug_worker_logs=args.debug_worker_logs,

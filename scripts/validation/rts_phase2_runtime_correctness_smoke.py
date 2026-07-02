@@ -7,9 +7,13 @@ hardening without running a long NetLogo simulation.
 from __future__ import annotations
 
 import pickle
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 from engine.netlogo_coordinate import NetLogoCoordinate
 from model.robot_job import RobotJob

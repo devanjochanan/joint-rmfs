@@ -44,6 +44,8 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
         from .training.device import resolve_rts_torch_device
         from .training.policy_actor import RTSOnPolicyActor, RTSOnPolicyActorConfig
         from .training.policy_loader import load_policy_from_checkpoint
+        from .features import feature_schema_identity
+        from .ablation import resolve_ablation
 
         load_device = resolve_rts_torch_device(config.policy_device)
         loaded = load_policy_from_checkpoint(Path(config.policy_checkpoint_dir), device=load_device)
@@ -51,6 +53,7 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
             raise RuntimeError(
                 f"policy checkpoint id mismatch: loaded {loaded.policy_checkpoint_id!r}, expected {config.policy_checkpoint_id!r}"
             )
+        ablation = resolve_ablation(config.feature_ablation)
         inventory.rts_policy = RTSOnPolicyActor(
             model=loaded.model,
             zone_ids=config.zone_ids,
@@ -58,7 +61,9 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
                 policy_checkpoint_id=config.policy_checkpoint_id,
                 policy_action_mode=config.policy_action_mode,
                 policy_device=load_device,
-                feature_schema_id=config.policy_checkpoint_id,
+                feature_schema_id=feature_schema_identity(loaded.feature_schema),
+                feature_ablation=ablation.name,
+                feature_ablation_hash=ablation.hash,
             ),
         )
         inventory.rts_controls_post_pick_replenishment = True

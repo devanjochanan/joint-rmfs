@@ -9,6 +9,7 @@ import numpy as np
 
 from src.rmfs.rl.rts.action_space import action_mask_entry, validate_action_mask
 from src.rmfs.rl.rts.features import build_feature_bundle
+from src.rmfs.rl.rts.ablation import resolve_ablation
 from src.rmfs.rl.rts.rollout_schema import DECISION_EVENT, OUTCOME_EVENT
 from src.rmfs.rl.rts.training.metrics import finite_float, mean_or_none
 from src.rmfs.rl.rts.training.ppo import RTSPPORolloutBatch, compute_gae
@@ -37,6 +38,7 @@ class RTSOnPolicyTrainingStep:
     zone_ids: tuple[str, ...]
     terminated: bool
     truncated: bool
+    feature_ablation: str
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,9 @@ def build_on_policy_training_steps(
     events: Sequence[Mapping[str, Any]],
     *,
     required_policy_checkpoint_id: str,
+    required_feature_schema_id: str | None = None,
+    required_feature_ablation_hash: str | None = None,
+    expected_tick_to_second: float = 0.15,
     reward_normalizer_metadata: Mapping[str, Any] | None = None,
 ) -> RTSOnPolicyRolloutDataset:
     derived_reward_metadata = derive_reward_normalizer_from_events(events)
@@ -80,7 +85,16 @@ def build_on_policy_training_steps(
         "rejected_invalid_selected_action_count": 0,
         "rejected_missing_state_count": 0,
         "rejected_feature_error_count": 0,
+        "rejected_feature_schema_mismatch_count": 0,
+        "rejected_feature_ablation_mismatch_count": 0,
+        "rejected_action_mask_dimension_count": 0,
+        "rejected_state_contract_count": 0,
+        "rejected_timebase_mismatch_count": 0,
+        "rejected_runtime_invariant_count": 0,
+        "rejected_duplicate_trainable_outcome_count": 0,
     }
+    censored_count_by_reason: dict[str, int] = {}
+    rejected_count_by_reason: dict[str, int] = {}
     raw_steps: list[RTSOnPolicyTrainingStep] = []
     for event_id, decs in decisions.items():
         if len(decs) != 1:
@@ -90,40 +104,37 @@ def build_on_policy_training_steps(
         if not outs:
             rejected["rejected_missing_outcome_count"] += 1
             continue
-        trainable_outcome = _select_trainable_paper_cycle_outcome(outs)
+        _count_censored(outs, censored_count_by_reason)
+        trainable_outcome, outcome_reason = _select_trainable_paper_cycle_outcome(outs)
         if trainable_outcome is None:
-            rejected["rejected_missing_completed_paper_cycle_count"] += 1
+            rejected[outcome_reason] += 1
             continue
-        step, reason = _build_step(decs[0], trainable_outcome, required_policy_checkpoint_id)
+        step, reason = _build_step(
+            decs[0],
+            trainable_outcome,
+            required_policy_checkpoint_id,
+            required_feature_schema_id=required_feature_schema_id,
+            required_feature_ablation_hash=required_feature_ablation_hash,
+            expected_tick_to_second=expected_tick_to_second,
+        )
         if step is None:
             rejected[reason] += 1
+            rejected_count_by_reason[reason] = rejected_count_by_reason.get(reason, 0) + 1
         else:
             raw_steps.append(step)
 
-    # Group steps by worker_run_id and sort same-worker trajectories
-    by_worker: dict[str, list[RTSOnPolicyTrainingStep]] = {}
-    for step in raw_steps:
-        run_id = step.worker_run_id or "synthetic_run"
-        by_worker.setdefault(run_id, []).append(step)
-
-    processed_steps: list[RTSOnPolicyTrainingStep] = []
-    for run_id in sorted(by_worker.keys()):
-        group = by_worker[run_id]
-        # Sort group by netlogo_step, then warehouse_time, then decision_event_id
-        group.sort(key=lambda s: (
+    processed_steps: list[RTSOnPolicyTrainingStep] = [
+        replace(step, terminated=True, truncated=False)
+        for step in sorted(
+            raw_steps,
+            key=lambda s: (
+                s.worker_run_id or "",
             s.netlogo_step if s.netlogo_step is not None else 0,
             s.warehouse_time if s.warehouse_time is not None else 0.0,
             s.decision_event_id
-        ))
-        n = len(group)
-        for idx in range(n):
-            is_last = (idx == n - 1)
-            step_mod = replace(
-                group[idx],
-                terminated=False,
-                truncated=is_last,
-            )
-            processed_steps.append(step_mod)
+            ),
+        )
+    ]
 
     rewards = [step.reward for step in processed_steps]
     summary = {
@@ -141,13 +152,29 @@ def build_on_policy_training_steps(
             for outcome in group
             if str(outcome.get("paper_cycle_status") or "").strip() == "pending"
         ),
+        "pending_count": sum(
+            1
+            for group in outcomes.values()
+            for outcome in group
+            if str(outcome.get("paper_cycle_status") or "").strip() == "pending"
+        ),
         "censored_paper_cycle_count": sum(
             1
             for group in outcomes.values()
             for outcome in group
             if str(outcome.get("paper_cycle_status") or "").strip().startswith("censored")
         ),
+        "censored_count": sum(censored_count_by_reason.values()),
+        "censored_count_by_reason": censored_count_by_reason,
+        "rejected_count_by_reason": rejected_count_by_reason,
         "trainable_step_count": len(processed_steps),
+        "completion_rate": _rate(
+            sum(1 for group in outcomes.values() for outcome in group if _is_completed_paper_cycle_outcome(outcome)),
+            sum(len(v) for v in decisions.values()),
+        ),
+        "censor_rate": _rate(sum(censored_count_by_reason.values()), sum(len(v) for v in decisions.values())),
+        "trainable_rate": _rate(len(processed_steps), sum(len(v) for v in decisions.values())),
+        "feature_ablation": processed_steps[0].feature_ablation if processed_steps else None,
         "avg_reward": mean_or_none(rewards),
         "reward_mean": mean_or_none(rewards),
         "reward_std": float(np.std(rewards)) if rewards else 0.0,
@@ -177,8 +204,6 @@ def build_on_policy_ppo_batch(
         gamma,
         gae_lambda,
     )
-    if advantages.size > 1 and float(advantages.std()) > 1e-8:
-        advantages = ((advantages - advantages.mean()) / advantages.std()).astype(np.float32)
     return RTSPPORolloutBatch(
         X_actions=padded.X_actions,
         M_actions=padded.M_actions,
@@ -197,11 +222,28 @@ def build_on_policy_ppo_batch(
     )
 
 
-def _build_step(decision: Mapping[str, Any], outcome: Mapping[str, Any], required_policy_checkpoint_id: str):
+def _build_step(
+    decision: Mapping[str, Any],
+    outcome: Mapping[str, Any],
+    required_policy_checkpoint_id: str,
+    *,
+    required_feature_schema_id: str | None,
+    required_feature_ablation_hash: str | None,
+    expected_tick_to_second: float,
+):
     if decision.get("actor_kind") != "rts_rl_explicit":
         return None, "rejected_non_on_policy_count"
     if decision.get("policy_checkpoint_id") != required_policy_checkpoint_id:
         return None, "rejected_checkpoint_mismatch_count"
+    if required_feature_schema_id is not None and decision.get("feature_schema_id") != required_feature_schema_id:
+        return None, "rejected_feature_schema_mismatch_count"
+    if required_feature_ablation_hash is not None and decision.get("feature_ablation_hash") != required_feature_ablation_hash:
+        return None, "rejected_feature_ablation_mismatch_count"
+    if bool(decision.get("hard_runtime_invariant_violation") or decision.get("runtime_invariant_violation")):
+        return None, "rejected_runtime_invariant_count"
+    tick_to_second = finite_float(decision.get("tick_to_second"))
+    if tick_to_second is None or abs(tick_to_second - float(expected_tick_to_second)) > 1e-9:
+        return None, "rejected_timebase_mismatch_count"
     old_log_prob = finite_float(decision.get("old_log_prob"))
     if old_log_prob is None:
         return None, "rejected_missing_old_log_prob_count"
@@ -212,10 +254,14 @@ def _build_step(decision: Mapping[str, Any], outcome: Mapping[str, Any], require
     state_json = decision.get("state_json")
     if not zone_ids or not isinstance(state_json, Mapping) or not decision.get("action_mask"):
         return None, "rejected_missing_state_count"
+    if str(state_json.get("state_contract_version") or "").strip() != "rts_rl_state.v4":
+        return None, "rejected_state_contract_count"
     selected = decision.get("selected_action_index")
     try:
         selected_index = int(selected)
         mask = np.asarray(validate_action_mask(zone_ids, decision.get("action_mask"), require_valid=True), dtype=np.int64)
+        if mask.shape[0] != 2 * len(zone_ids):
+            return None, "rejected_action_mask_dimension_count"
         if action_mask_entry(selected_index, zone_ids, mask) != 1:
             return None, "rejected_invalid_selected_action_count"
     except Exception:
@@ -225,7 +271,11 @@ def _build_step(decision: Mapping[str, Any], outcome: Mapping[str, Any], require
     if not reward_json.get("reward_computed") or reward is None:
         return None, "rejected_reward_uncomputed_count"
     try:
-        build_feature_bundle(zone_ids, mask, state_json)
+        bundle = build_feature_bundle(zone_ids, mask, state_json)
+        if len(bundle.action_feature_names) != 18:
+            return None, "rejected_feature_error_count"
+        if len(bundle.stock_feature_names) != 4:
+            return None, "rejected_feature_error_count"
     except Exception:
         return None, "rejected_feature_error_count"
     return RTSOnPolicyTrainingStep(
@@ -233,7 +283,7 @@ def _build_step(decision: Mapping[str, Any], outcome: Mapping[str, Any], require
         worker_run_id=decision.get("worker_run_id") or outcome.get("worker_run_id"),
         netlogo_step=_int_or_none(decision.get("netlogo_step")),
         warehouse_time=finite_float(decision.get("warehouse_time")),
-        tick_to_second=finite_float(decision.get("tick_to_second")),
+        tick_to_second=tick_to_second,
         policy_checkpoint_id=str(decision.get("policy_checkpoint_id")),
         old_log_prob=float(old_log_prob),
         old_value=float(old_value),
@@ -244,20 +294,23 @@ def _build_step(decision: Mapping[str, Any], outcome: Mapping[str, Any], require
         zone_ids=zone_ids,
         terminated=True,
         truncated=False,
+        feature_ablation=str(decision.get("feature_ablation") or "full"),
     ), ""
 
 
-def _select_trainable_paper_cycle_outcome(outcomes: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+def _select_trainable_paper_cycle_outcome(outcomes: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any] | None, str]:
     completed = [outcome for outcome in outcomes if _is_completed_paper_cycle_outcome(outcome)]
+    if len(completed) > 1:
+        return None, "rejected_duplicate_trainable_outcome_count"
     if not completed:
-        return None
+        return None, "rejected_missing_completed_paper_cycle_count"
     completed.sort(
         key=lambda outcome: (
             finite_float(outcome.get("paper_cycle_next_station_arrival_tick")) or 0.0,
             finite_float(outcome.get("warehouse_time")) or 0.0,
         )
     )
-    return completed[0]
+    return completed[0], ""
 
 
 def _is_completed_paper_cycle_outcome(outcome: Mapping[str, Any]) -> bool:
@@ -268,7 +321,8 @@ def _is_completed_paper_cycle_outcome(outcome: Mapping[str, Any]) -> bool:
             return False
     except Exception:
         return False
-    if str(outcome.get("paper_cycle_completion_rule") or "").strip() != "next_order_retrieval_arrival":
+    rule = str(outcome.get("paper_cycle_completion_rule") or outcome.get("completion_rule") or "").strip()
+    if rule != "next_order_retrieval_arrival":
         return False
     duration = finite_float(outcome.get("paper_cycle_duration"))
     return duration is not None and duration > 0.0
@@ -286,7 +340,13 @@ def _padded_from_on_policy_steps(steps: Sequence[RTSOnPolicyTrainingStep]) -> RT
             self.truncated = step.truncated
             self.state_json = step.state_json
 
-    return build_feature_tensors_from_steps([_Step(step) for step in steps])
+    ablation_name = "full"
+    for step in steps:
+        if step.feature_ablation:
+            ablation_name = str(step.feature_ablation)
+            break
+    resolve_ablation(ablation_name)
+    return build_feature_tensors_from_steps([_Step(step) for step in steps], feature_ablation=ablation_name)
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -294,3 +354,16 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def _count_censored(outcomes: Sequence[Mapping[str, Any]], counts: dict[str, int]) -> None:
+    for outcome in outcomes:
+        status = str(outcome.get("paper_cycle_status") or "").strip()
+        if not status.startswith("censored"):
+            continue
+        reason = status
+        counts[reason] = counts.get(reason, 0) + 1
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0

@@ -19,6 +19,8 @@ from src.rmfs.rl.rts.training.checkpoint import load_training_checkpoint, resolv
 from src.rmfs.rl.rts.training.config import RTSTrainingConfig
 from src.rmfs.rl.rts.training.on_policy_dataset import build_on_policy_ppo_batch, build_on_policy_training_steps
 from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint
+from src.rmfs.rl.rts.features import feature_schema_identity
+from src.rmfs.rl.rts.ablation import resolve_ablation
 
 from .device import resolve_rts_torch_device
 from .metrics import append_jsonl, atomic_write_json
@@ -93,12 +95,26 @@ def run_on_policy_training_controller(
     commit = git_value(repo_root, "rev-parse", "HEAD")
 
     config_dict = config.to_json_dict()
+    ablation = resolve_ablation(config.feature_ablation)
     scheduler = scheduler_metadata(
         robot_task_allocator=config.robot_task_allocator,
         regret_k=config.regret_k,
         committed_next_reservations_enabled=config.committed_next_reservations_enabled,
     )
+    proposal_metadata = {
+        "committed_next_proposal_policy": "nearest_guaranteed",
+        "committed_next_reservations_enabled": config.committed_next_reservations_enabled,
+    }
     config_dict.update(scheduler)
+    config_dict.update(proposal_metadata)
+    config_dict.update(
+        {
+            "feature_ablation": ablation.name,
+            "feature_ablation_hash": ablation.hash,
+            "feature_ablation_specification": ablation.to_json_dict(),
+            "charging_mode": config.charging_mode,
+        }
+    )
     reward_metadata = default_reward_normalizer_metadata()
     config_dict.update(reward_metadata)
     if config.cycle_reference_path is not None:
@@ -132,7 +148,11 @@ def run_on_policy_training_controller(
         "commit": commit,
         "run_root": str(run_root),
         **scheduler,
+        **proposal_metadata,
         **reward_metadata,
+        "feature_ablation": ablation.name,
+        "feature_ablation_hash": ablation.hash,
+        "charging_mode": config.charging_mode,
         "batches": [],
     }
     atomic_write_json(run_root / "controller_summary.json", initial_summary)
@@ -145,12 +165,19 @@ def run_on_policy_training_controller(
     if latest:
         active_checkpoint_dir = Path(latest["checkpoint_dir"])
         active_checkpoint_id = _checkpoint_id(active_checkpoint_dir)
+        _validate_resume_compatibility(config=config, checkpoint_dir=active_checkpoint_dir, expected_ablation=ablation)
+    elif active_checkpoint_dir is not None:
+        _validate_resume_compatibility(config=config, checkpoint_dir=active_checkpoint_dir, expected_ablation=ablation, fresh=True)
+    start_batch_id = int(latest.get("batch_id", 0)) + 1 if latest else 1
+    end_batch_id = start_batch_id + int(config.batches) - 1
     batch_summaries = []
     last_update_time = 0.0
 
     try:
-        for batch_id in range(1, config.batches + 1):
+        for batch_id in range(start_batch_id, end_batch_id + 1):
             batch_dir = run_root / f"batch_{batch_id:06d}"
+            if batch_dir.exists():
+                raise RuntimeError(f"refusing to overwrite existing batch directory: {batch_dir}")
             rollout_input = batch_dir / "rollout_input"
             workers_dir = batch_dir / "workers"
             rollout_input.mkdir(parents=True, exist_ok=True)
@@ -222,6 +249,9 @@ def run_on_policy_training_controller(
                     rts_policy_checkpoint_id=active_checkpoint_id,
                     rts_policy_action_mode=config.policy_action_mode,
                     rts_policy_device=config.worker_device,
+                    rts_feature_ablation=ablation.name,
+                    rts_feature_ablation_hash=ablation.hash,
+                    rts_charging_mode=config.charging_mode,
                     experiment_id=experiment_id,
                     scenario_id=scenario_id,
                     artifact_label=config.artifact_label,
@@ -252,6 +282,10 @@ def run_on_policy_training_controller(
                     "latest_updated": False,
                     "zone_ids": list(active_zone_ids or ()),
                     **scheduler,
+                    **proposal_metadata,
+                    "feature_ablation": ablation.name,
+                    "feature_ablation_hash": ablation.hash,
+                    "charging_mode": config.charging_mode,
                     **previous_reward_metadata,
                 }
                 atomic_write_json(batch_dir / "batch_summary.json", summary)
@@ -503,6 +537,9 @@ def run_on_policy_training_controller(
             dataset = build_on_policy_training_steps(
                 normalized_events,
                 required_policy_checkpoint_id=active_checkpoint_id,
+                required_feature_schema_id=_feature_schema_id_from_checkpoint(active_checkpoint_dir),
+                required_feature_ablation_hash=ablation.hash,
+                expected_tick_to_second=0.15,
                 reward_normalizer_metadata=batch_reward_metadata,
             )
             if dataset.summary["trainable_step_count"] < config.min_trainable_steps:
@@ -519,6 +556,10 @@ def run_on_policy_training_controller(
                     "zone_ids": list(active_zone_ids or ()),
                     "derived_reward_normalizer": derived_reward_metadata,
                     **scheduler,
+                    **proposal_metadata,
+                    "feature_ablation": ablation.name,
+                    "feature_ablation_hash": ablation.hash,
+                    "charging_mode": config.charging_mode,
                     **batch_reward_metadata,
                 }
                 atomic_write_json(batch_dir / "batch_summary.json", summary)
@@ -556,6 +597,10 @@ def run_on_policy_training_controller(
                     "repo_commit": commit,
                     "python_executable": sys.executable,
                     **scheduler,
+                    **proposal_metadata,
+                    "feature_ablation": ablation.name,
+                    "feature_ablation_hash": ablation.hash,
+                    "charging_mode": config.charging_mode,
                     **batch_reward_metadata,
                 },
                 checkpoint_id_before=active_checkpoint_id,
@@ -583,6 +628,10 @@ def run_on_policy_training_controller(
                 "zone_ids": list(active_zone_ids or ()),
                 "derived_reward_normalizer": derived_reward_metadata,
                 **scheduler,
+                **proposal_metadata,
+                "feature_ablation": ablation.name,
+                "feature_ablation_hash": ablation.hash,
+                "charging_mode": config.charging_mode,
                 **batch_reward_metadata,
             }
             atomic_write_json(batch_dir / "batch_summary.json", summary)
@@ -607,8 +656,18 @@ def run_on_policy_training_controller(
                     "rollout/trainable_step_count": dataset.summary["trainable_step_count"],
                     "rollout/decision_count": dataset.summary["decision_count"],
                     "rollout/outcome_count": dataset.summary["outcome_count"],
-                    "rollout/rejected_non_on_policy_count": dataset.summary["rejected_non_on_policy_count"],
-                    "rollout/rejected_checkpoint_mismatch_count": dataset.summary["rejected_checkpoint_mismatch_count"],
+                        "rollout/rejected_non_on_policy_count": dataset.summary["rejected_non_on_policy_count"],
+                        "rollout/rejected_checkpoint_mismatch_count": dataset.summary["rejected_checkpoint_mismatch_count"],
+                        "rollout/completed_cycle_count": dataset.summary["completed_paper_cycle_count"],
+                        "rollout/completion_rate": dataset.summary["completion_rate"],
+                        "rollout/censor_rate": dataset.summary["censor_rate"],
+                        "rollout/rejected_total": sum(
+                            int(v) for k, v in dataset.summary.items() if k.startswith("rejected_") and k.endswith("_count")
+                        ),
+                        "rollout/censored_charging": dataset.summary["censored_count_by_reason"].get("censored_next_task_charging", 0),
+                        "rollout/censored_no_next_task": dataset.summary["censored_count_by_reason"].get("censored_no_next_task", 0),
+                        "rollout/censored_horizon": dataset.summary["censored_count_by_reason"].get("censored_maximum_horizon", 0),
+                        "rollout/censored_failure": dataset.summary["censored_count_by_reason"].get("censored_worker_exception", 0),
                     "rollout/avg_reward": dataset.summary["avg_reward"],
                     "rollout/reward_mean": dataset.summary.get("reward_mean", 0.0),
                     "rollout/reward_std": dataset.summary.get("reward_std", 0.0),
@@ -647,9 +706,15 @@ def run_on_policy_training_controller(
             "commit": commit,
             "run_root": str(run_root),
             **scheduler,
+            **proposal_metadata,
             **reward_metadata,
+            "feature_ablation": ablation.name,
+            "feature_ablation_hash": ablation.hash,
+            "charging_mode": config.charging_mode,
             "batches": batch_summaries,
         }
+        if config.ledger_path is not None:
+            result["ledger_ingest"] = _ingest_training_ledger(run_root=run_root, ledger_path=config.ledger_path)
         atomic_write_json(run_root / "controller_summary.json", result)
         return result
 
@@ -665,7 +730,11 @@ def run_on_policy_training_controller(
             "commit": commit,
             "run_root": str(run_root),
             **scheduler,
+            **proposal_metadata,
             **reward_metadata,
+            "feature_ablation": ablation.name,
+            "feature_ablation_hash": ablation.hash,
+            "charging_mode": config.charging_mode,
             "batches": batch_summaries,
         }
         atomic_write_json(run_root / "controller_summary.json", failure_summary)
@@ -737,7 +806,7 @@ def _ppo_training_config(config: RTSOnPolicyTrainingConfig, metadata: dict[str, 
         artifact_label=config.artifact_label,
         output_root=config.output_root,
         seed=config.seed,
-        learning_rate=float(base.get("learning_rate", 1e-4)),
+        learning_rate=float(config.learning_rate if config.learning_rate is not None else base.get("learning_rate", 1e-4)),
         gamma=float(base.get("gamma", 0.99)),
         gae_lambda=float(base.get("gae_lambda", 0.95)),
         ppo_epochs=config.ppo_epochs,
@@ -745,5 +814,59 @@ def _ppo_training_config(config: RTSOnPolicyTrainingConfig, metadata: dict[str, 
         hidden_sizes=tuple(base.get("hidden_sizes", (64, 64))),
         stock_hidden_sizes=tuple(base.get("stock_hidden_sizes", (32, 32))),
         stock_embedding_dim=int(base.get("stock_embedding_dim", 16)),
+        zone_ids=tuple(config.zone_ids),
+        feature_ablation=config.feature_ablation,
         tensorboard_enabled=config.tensorboard_enabled,
     )
+
+
+def _feature_schema_id_from_checkpoint(checkpoint_dir: Path | None) -> str | None:
+    if checkpoint_dir is None:
+        return None
+    try:
+        loaded = load_policy_from_checkpoint(checkpoint_dir, device="cpu")
+        return feature_schema_identity(loaded.feature_schema)
+    except Exception:
+        return None
+
+
+def _validate_resume_compatibility(
+    *,
+    config: RTSOnPolicyTrainingConfig,
+    checkpoint_dir: Path,
+    expected_ablation,
+    fresh: bool = False,
+) -> None:
+    loaded = load_policy_from_checkpoint(checkpoint_dir, device="cpu")
+    metadata = loaded.metadata or {}
+    checkpoint_ablation_hash = metadata.get("feature_ablation_hash")
+    if checkpoint_ablation_hash is not None and checkpoint_ablation_hash != expected_ablation.hash:
+        raise RuntimeError("resume checkpoint feature ablation does not match requested training ablation")
+    training_config = metadata.get("training_config") or {}
+    hidden = tuple(training_config.get("hidden_sizes", (64, 64)))
+    stock_hidden = tuple(training_config.get("stock_hidden_sizes", (32, 32)))
+    if hidden != tuple(training_config.get("hidden_sizes", hidden)):
+        raise RuntimeError("resume checkpoint model architecture is inconsistent")
+    if int(loaded.feature_schema.get("action_feature_dim") or 0) != 18:
+        raise RuntimeError("resume checkpoint action feature width is not v4 width 18")
+    if int(loaded.feature_schema.get("stock_feature_dim") or 0) != 4:
+        raise RuntimeError("resume checkpoint stock feature width is not width 4")
+    if not fresh:
+        zones = tuple(str(z) for z in training_config.get("zone_ids") or ())
+        if config.zone_ids and zones and tuple(config.zone_ids) != zones:
+            raise RuntimeError("resume checkpoint zone_ids differ from requested training config")
+
+
+def _ingest_training_ledger(*, run_root: Path, ledger_path: Path) -> dict[str, Any]:
+    try:
+        from src.rmfs.experiments.ledger.ingest_phase9 import ingest_phase9_run
+
+        row = ingest_phase9_run(run_root, ledger_path)
+        return {"status": "success", "ledger_path": str(ledger_path), **row}
+    except Exception as exc:
+        return {
+            "status": "failure",
+            "ledger_path": str(ledger_path),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        }

@@ -24,6 +24,8 @@ class RTSTrainingConfig:
     hidden_sizes: tuple[int, ...] = (64, 64)
     stock_hidden_sizes: tuple[int, ...] = (32, 32)
     stock_embedding_dim: int = 16
+    zone_ids: tuple[str, ...] = ()
+    feature_ablation: str = "full"
     checkpoint_every_batch: bool = True
     keep_all_batch_checkpoints: bool = True
     use_latest_only_for_resume: bool = True
@@ -34,6 +36,7 @@ class RTSTrainingConfig:
         data["output_root"] = str(self.output_root)
         data["hidden_sizes"] = list(self.hidden_sizes)
         data["stock_hidden_sizes"] = list(self.stock_hidden_sizes)
+        data["zone_ids"] = list(self.zone_ids)
         return data
 
     @classmethod
@@ -42,6 +45,7 @@ class RTSTrainingConfig:
         payload["output_root"] = Path(payload["output_root"])
         payload["hidden_sizes"] = tuple(payload.get("hidden_sizes", (64, 64)))
         payload["stock_hidden_sizes"] = tuple(payload.get("stock_hidden_sizes", (32, 32)))
+        payload["zone_ids"] = tuple(payload.get("zone_ids", ()))
         config = cls(**payload)
         validate_training_config(config)
         return config
@@ -72,4 +76,6 @@ def validate_training_config(config: RTSTrainingConfig) -> None:
         raise ValueError("stock_hidden_sizes must be positive")
     if int(config.stock_embedding_dim) <= 0:
         raise ValueError("stock_embedding_dim must be positive")
+    from src.rmfs.rl.rts.ablation import resolve_ablation
+    resolve_ablation(config.feature_ablation)
 

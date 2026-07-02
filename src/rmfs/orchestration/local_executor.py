@@ -243,6 +243,8 @@ def run_worker(spec: RunSpec):
                 policy_checkpoint_id=spec.rts_policy_checkpoint_id,
                 policy_action_mode=spec.rts_policy_action_mode,
                 policy_device=spec.rts_policy_device,
+                feature_ablation=spec.rts_feature_ablation,
+                feature_ablation_hash=spec.rts_feature_ablation_hash,
                 committed_next_reservations_enabled=spec.committed_next_reservations_enabled,
             ),
             runtime_root=spec.runtime_root,

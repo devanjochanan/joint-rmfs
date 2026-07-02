@@ -35,12 +35,29 @@ from src.rmfs.decisions.task_allocation.committed_next import (
     has_committed_next_retrieval,
 )
 from src.rmfs.rl.rts.action_space import REPLENISH_STORE, STORE
+from src.rmfs.rl.rts.ablation import resolve_ablation
 from src.rmfs.rl.rts.action_context import selected_context_by_index
+from src.rmfs.rl.rts.features import build_action_feature_names, build_stock_feature_names
 from src.rmfs.rl.rts.storage_resolver import find_free_storage_in_zone
 from src.rmfs.rl.rts.state import build_state
 from src.rmfs.rl.rts.outcome_tracker import RTSRolloutRuntime
 from src.rmfs.rl.rts.runtime_config import RTSRuntimeConfig
+from src.rmfs.rl.rts.training.checkpoint import write_feature_schema
 from src.rmfs.rl.rts.training.on_policy_dataset import build_on_policy_training_steps
+
+
+def smoke_schema_id() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        schema = write_feature_schema(
+            Path(tmp) / "feature_schema.json",
+            action_feature_names=build_action_feature_names(("zone-a",)),
+            stock_feature_names=build_stock_feature_names(),
+        )
+        return schema["feature_schema_id"]
+
+
+SMOKE_SCHEMA_ID = smoke_schema_id()
+SMOKE_ABLATION = resolve_ablation("full")
 
 
 class SimpleGraph:
@@ -97,7 +114,9 @@ class BranchPolicy:
                 "actor_kind": "rts_rl_explicit",
                 "policy_checkpoint_id": "smoke_checkpoint",
                 "policy_mode": "rts_rl_explicit",
-                "feature_schema_id": "smoke_checkpoint",
+                "feature_schema_id": SMOKE_SCHEMA_ID,
+                "feature_ablation": SMOKE_ABLATION.name,
+                "feature_ablation_hash": SMOKE_ABLATION.hash,
                 "old_log_prob": -0.25,
                 "old_value": 0.5,
                 "policy_entropy": 0.1,
@@ -264,7 +283,13 @@ def assert_one_completed_cycle(inv):
     assert len(completed) == 1, event_rows
     assert completed[0]["paper_cycle_status"] == "complete"
     assert completed[0]["committed_next_reservation_id"]
-    dataset = build_on_policy_training_steps(event_rows, required_policy_checkpoint_id="smoke_checkpoint")
+    dataset = build_on_policy_training_steps(
+        event_rows,
+        required_policy_checkpoint_id="smoke_checkpoint",
+        required_feature_schema_id=SMOKE_SCHEMA_ID,
+        required_feature_ablation_hash=SMOKE_ABLATION.hash,
+        expected_tick_to_second=1.0,
+    )
     assert dataset.summary["trainable_step_count"] == 1
     return event_rows, completed[0]
 
