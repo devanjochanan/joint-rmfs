@@ -97,6 +97,8 @@ def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
         env["RMFS_DEMAND_HORIZON_TICKS"] = str(spec.demand_horizon_ticks)
     if spec.demand_buffer_ticks is not None:
         env["RMFS_DEMAND_BUFFER_TICKS"] = str(spec.demand_buffer_ticks)
+    if spec.order_rate_per_hour is not None:
+        env["RMFS_ORDER_CYCLE_TIME"] = str(int(spec.order_rate_per_hour))
     if spec.pod_location_seed is not None:
         env["RMFS_POD_LOCATION_SEED"] = str(spec.pod_location_seed)
     return env
@@ -177,6 +179,110 @@ def write_json(path: Path, payload):
     tmp_path.replace(path)
 
 
+def validate_generated_order_contract(spec: RunSpec) -> dict[str, object]:
+    meta_path = spec.runtime_root / "generated_order_meta.json"
+    if not meta_path.exists():
+        raise RuntimeError(f"generated_order_meta.json missing in worker runtime: {meta_path}")
+    with meta_path.open() as fh:
+        meta = json.load(fh)
+    checks = {
+        "profile": (spec.run_profile, meta.get("profile")),
+        "order_generation_mode": (spec.order_generation_mode, meta.get("order_generation_mode")),
+        "full_raw_order_replay": (bool(spec.full_raw_order_replay), bool(meta.get("full_raw_order_replay"))),
+        "seed": (spec.rts_random_seed, meta.get("seed")),
+        "order_rate_per_hour": (spec.order_rate_per_hour, meta.get("order_rate_per_hour", meta.get("order_cycle_time"))),
+    }
+    mismatches = {
+        name: {"requested": requested, "generated": generated}
+        for name, (requested, generated) in checks.items()
+        if requested is not None and requested != generated
+    }
+    if mismatches:
+        raise RuntimeError(f"generated order metadata mismatch: {mismatches}")
+    if meta.get("arrival_time_unit") != "simulated_seconds":
+        raise RuntimeError("generated order metadata must declare arrival_time_unit=simulated_seconds")
+    if meta.get("order_rate_unit") not in (None, "orders_per_simulated_hour"):
+        raise RuntimeError("generated order metadata order_rate_unit must be orders_per_simulated_hour")
+    if spec.order_generation_mode == "legacy_compat":
+        raise RuntimeError("headless workers reject generated legacy_compat order generation")
+    csv_path = spec.runtime_root / "generated_order.csv"
+    measured = _measure_generated_order_rate(csv_path, int(spec.order_rate_per_hour or 0))
+    return {
+        "metadata_path": str(meta_path),
+        "requested_profile": spec.run_profile,
+        "generated_profile": meta.get("profile"),
+        "requested_mode": spec.order_generation_mode,
+        "generated_mode": meta.get("order_generation_mode"),
+        "requested_order_rate_per_hour": spec.order_rate_per_hour,
+        "generated_order_rate_per_hour": meta.get("order_rate_per_hour", meta.get("order_cycle_time")),
+        "order_rate_unit": meta.get("order_rate_unit"),
+        "seed": meta.get("seed"),
+        "full_raw_order_replay": bool(meta.get("full_raw_order_replay")),
+        "arrival_time_unit": meta.get("arrival_time_unit"),
+        "generated_unique_orders": meta.get("generated_unique_orders"),
+        "generated_order_lines": meta.get("generated_order_lines"),
+        "generated_max_arrival": meta.get("generated_max_arrival"),
+        "measured_complete_hour_order_counts": measured.get("complete_hour_order_counts", []),
+        "measured_complete_hour_rate_ok": measured.get("complete_hour_rate_ok"),
+    }
+
+
+def _measure_generated_order_rate(csv_path: Path, expected_rate: int) -> dict[str, object]:
+    if expected_rate <= 0 or not csv_path.exists():
+        return {"complete_hour_order_counts": [], "complete_hour_rate_ok": None}
+    import csv
+
+    order_arrivals: dict[str, int] = {}
+    with csv_path.open(newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            order_id = str(row.get("order_id", ""))
+            if order_id not in order_arrivals:
+                order_arrivals[order_id] = int(float(row.get("order_arrival", 0)))
+    if not order_arrivals:
+        return {"complete_hour_order_counts": [], "complete_hour_rate_ok": False}
+    max_arrival = max(order_arrivals.values())
+    complete_hours = max_arrival // 3600
+    counts = []
+    for hour in range(int(complete_hours)):
+        start = hour * 3600
+        end = start + 3600
+        counts.append(sum(1 for arrival in order_arrivals.values() if start <= arrival < end))
+    return {
+        "complete_hour_order_counts": counts,
+        "complete_hour_rate_ok": all(count == expected_rate for count in counts),
+    }
+
+
+def finalize_rts_static_runtime_after_setup(warehouse, requested_zone_ids) -> dict[str, object] | None:
+    if warehouse is None:
+        return None
+    runtime = getattr(warehouse, "rts_rollout_runtime", None)
+    config = getattr(runtime, "config", None)
+    policy = getattr(warehouse, "rts_policy", None)
+    policy_mode = getattr(config, "policy_mode", None)
+    if policy_mode not in {"random_valid", "rts_rl_explicit"}:
+        return None
+    from dataclasses import replace
+    from src.rmfs.rl.rts.static_runtime_index import get_or_build_static_runtime_index, resolve_runtime_zone_ids
+    from src.rmfs.rl.rts.runtime_config import validate_rts_runtime_config
+
+    index = get_or_build_static_runtime_index(warehouse)
+    requested = tuple(requested_zone_ids or getattr(config, "zone_ids", ()) or ())
+    resolved_zone_ids = resolve_runtime_zone_ids(warehouse, requested)
+    if policy is not None and hasattr(policy, "zone_ids"):
+        policy.zone_ids = tuple(resolved_zone_ids)
+    if config is not None and tuple(getattr(config, "zone_ids", ()) or ()) != tuple(resolved_zone_ids):
+        runtime.config = replace(config, zone_ids=tuple(resolved_zone_ids))
+        validate_rts_runtime_config(runtime.config)
+    setattr(runtime, "static_runtime_index_summary", index.to_summary_dict())
+    return {
+        "runtime_zone_manifest": index.manifest.to_json_dict(),
+        "rts_static_runtime_index": index.to_summary_dict(),
+        "resolved_zone_ids": list(resolved_zone_ids),
+    }
+
+
 def run_worker(spec: RunSpec):
     worker_start = time.perf_counter()
     original_cwd = Path.cwd()
@@ -228,6 +334,7 @@ def run_worker(spec: RunSpec):
     debug_rows = []
 
     try:
+        spec.validate_runtime_semantics()
         sys.path.insert(0, str(spec.repo_root))
         os.chdir(spec.repo_root)
 
@@ -279,13 +386,35 @@ def run_worker(spec: RunSpec):
             setup_result = session.setup()
         if isinstance(setup_result, str) and "An error occurred" in setup_result:
             raise RuntimeError(setup_result)
+        summary["generated_order_contract"] = validate_generated_order_contract(spec)
         summary["setup_digest"] = stable_digest(setup_result)
         summary["setup_signature"] = return_signature(setup_result)
 
         warehouse = session.warehouse
+        if warehouse is not None:
+            try:
+                finalized_rts = finalize_rts_static_runtime_after_setup(warehouse, spec.rts_zone_ids)
+                if finalized_rts is not None:
+                    summary.update(finalized_rts)
+            except Exception as exc:
+                summary["rts_static_runtime_index_error"] = f"{type(exc).__name__}: {exc}"
+                raise
         tick_to_second = getattr(warehouse, "tick_to_second", 1.0)
         summary["warehouse_time_start"] = float(getattr(warehouse, "_tick", 0.0)) if warehouse is not None else 0.0
         summary["tick_to_second"] = tick_to_second
+        summary["run_time_unit_contract"] = {
+            "backend_step": "one warehouse.tick() / NetLogo simulation step",
+            "netlogo_steps_requested": spec.netlogo_steps_requested,
+            "tick_to_second": spec.tick_to_second,
+            "simulated_horizon_seconds": spec.simulated_horizon_seconds,
+            "demand_horizon_steps": spec.demand_horizon_steps,
+            "demand_horizon_simulated_seconds": spec.demand_horizon_simulated_seconds,
+            "demand_buffer_steps": spec.demand_buffer_steps,
+            "demand_buffer_simulated_seconds": spec.demand_buffer_simulated_seconds,
+            "order_rate_per_hour": spec.order_rate_per_hour,
+            "order_rate_unit": "orders_per_simulated_hour" if spec.order_rate_per_hour is not None else None,
+            "order_arrival_unit": "simulated_seconds",
+        }
 
         first_result = None
         final_result = None
@@ -486,6 +615,7 @@ def run_controller(
     bootstrap_n_orders: int | None = None,
     demand_horizon_ticks: int | None = None,
     demand_buffer_ticks: int | None = None,
+    order_rate_per_hour: int | None = None,
     pod_location_mode: str | None = None,
     pod_location_seed: int | None = None,
     full_raw_order_replay: bool = False,
@@ -499,6 +629,7 @@ def run_controller(
         bootstrap_n_orders=bootstrap_n_orders,
         demand_horizon_ticks=demand_horizon_ticks,
         demand_buffer_ticks=demand_buffer_ticks,
+        order_rate_per_hour=order_rate_per_hour,
         full_raw_order_replay=full_raw_order_replay,
         detail_db=detail_db,
         debug_trace=debug_trace or None,
@@ -537,8 +668,14 @@ def run_controller(
         "bootstrap_n_orders": profile_cfg.bootstrap_n_orders,
         "demand_horizon_ticks": profile_cfg.demand_horizon_ticks,
         "demand_buffer_ticks": profile_cfg.demand_buffer_ticks,
+        "demand_buffer_simulated_seconds": profile_cfg.demand_buffer_simulated_seconds,
         "order_generation_mode": profile_cfg.order_generation_mode,
         "full_raw_order_replay": profile_cfg.full_raw_order_replay,
+        "order_rate_per_hour": profile_cfg.order_rate_per_hour,
+        "order_rate_unit": "orders_per_simulated_hour" if profile_cfg.order_rate_per_hour is not None else None,
+        "tick_to_second": profile_cfg.tick_to_second,
+        "simulated_horizon_seconds": profile_cfg.simulated_horizon_seconds,
+        "demand_horizon_simulated_seconds": profile_cfg.demand_horizon_simulated_seconds,
         "pod_location_mode": profile_cfg.pod_location_mode,
         "pod_location_seed": profile_cfg.pod_location_seed,
         "max_workers": max_workers,
@@ -651,6 +788,7 @@ def run_controller(
             demand_buffer_ticks=profile_cfg.demand_buffer_ticks,
             order_generation_mode=profile_cfg.order_generation_mode,
             full_raw_order_replay=profile_cfg.full_raw_order_replay,
+            order_rate_per_hour=profile_cfg.order_rate_per_hour,
             pod_location_mode=profile_cfg.pod_location_mode,
             pod_location_seed=profile_cfg.pod_location_seed if profile_cfg.pod_location_seed is not None else index,
             rts_torch_threads=rts_torch_threads,
@@ -813,6 +951,14 @@ def run_controller(
         "bootstrap_n_orders": profile_cfg.bootstrap_n_orders,
         "demand_horizon_ticks": profile_cfg.demand_horizon_ticks,
         "demand_buffer_ticks": profile_cfg.demand_buffer_ticks,
+        "demand_buffer_simulated_seconds": profile_cfg.demand_buffer_simulated_seconds,
+        "order_generation_mode": profile_cfg.order_generation_mode,
+        "full_raw_order_replay": profile_cfg.full_raw_order_replay,
+        "order_rate_per_hour": profile_cfg.order_rate_per_hour,
+        "order_rate_unit": "orders_per_simulated_hour" if profile_cfg.order_rate_per_hour is not None else None,
+        "tick_to_second": profile_cfg.tick_to_second,
+        "simulated_horizon_seconds": profile_cfg.simulated_horizon_seconds,
+        "demand_horizon_simulated_seconds": profile_cfg.demand_horizon_simulated_seconds,
         "pod_location_mode": profile_cfg.pod_location_mode,
         "pod_location_seed": profile_cfg.pod_location_seed,
         "max_workers": max_workers,
@@ -876,6 +1022,7 @@ def main(argv=None):
     controller_parser.add_argument("--bootstrap-n-orders", type=int, default=None)
     controller_parser.add_argument("--demand-horizon-ticks", type=int, default=None)
     controller_parser.add_argument("--demand-buffer-ticks", type=int, default=None)
+    controller_parser.add_argument("--order-rate-per-hour", type=int, default=None, help="Orders per simulated hour for shuffled historical-cycle demand.")
     controller_parser.add_argument("--pod-location-mode", choices=("fixed", "randomize_slots"), default=None)
     controller_parser.add_argument("--pod-location-seed", type=int, default=None)
     controller_parser.add_argument("--full-raw-order-replay", action="store_true", default=False)
@@ -952,6 +1099,7 @@ def main(argv=None):
         bootstrap_n_orders=args.bootstrap_n_orders,
         demand_horizon_ticks=args.demand_horizon_ticks,
         demand_buffer_ticks=args.demand_buffer_ticks,
+        order_rate_per_hour=args.order_rate_per_hour,
         pod_location_mode=args.pod_location_mode,
         pod_location_seed=args.pod_location_seed,
         full_raw_order_replay=args.full_raw_order_replay,

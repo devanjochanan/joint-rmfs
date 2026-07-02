@@ -11,6 +11,7 @@ from .runtime_config import RTSRuntimeConfig, validate_rts_runtime_config
 
 def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path | None):
     validate_rts_runtime_config(config)
+    resolved_zone_ids = tuple(config.zone_ids or ())
     inventory.rts_rollout_runtime = NoopRTSRolloutRuntime()
     inventory.rts_controls_post_pick_replenishment = False
     inventory.committed_next_reservations_enabled = bool(config.committed_next_reservations_enabled)
@@ -32,7 +33,7 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
         if runtime_root is None:
             raise RuntimeError("random_valid RTS rollout requires a worker runtime_root")
         inventory.rts_policy = RTSRandomValidStoragePolicy(
-            zone_ids=config.zone_ids,
+            zone_ids=resolved_zone_ids,
             random_seed=config.random_seed,
         )
         inventory.rts_rollout_runtime = RTSRolloutRuntime(config=config, runtime_root=runtime_root)
@@ -56,7 +57,7 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
         ablation = resolve_ablation(config.feature_ablation)
         inventory.rts_policy = RTSOnPolicyActor(
             model=loaded.model,
-            zone_ids=config.zone_ids,
+            zone_ids=resolved_zone_ids,
             config=RTSOnPolicyActorConfig(
                 policy_checkpoint_id=config.policy_checkpoint_id,
                 policy_action_mode=config.policy_action_mode,

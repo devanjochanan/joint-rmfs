@@ -17,6 +17,7 @@ from src.rmfs.rl.rts.ablation import resolve_ablation
 from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id
 from src.rmfs.rl.rts.training.metrics import atomic_write_json, append_jsonl, finite_float
 from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint
+from src.rmfs.runtime_io.run_profiles import DEFAULT_RTS_ORDER_RATE_PER_HOUR
 
 
 def build_eval_run_id(config: dict[str, Any]) -> str:
@@ -106,7 +107,7 @@ def run_rts_evaluation(
     config = {
         "checkpoint_dir": str(checkpoint) if checkpoint is not None else None,
         "policy_checkpoint_id": policy_checkpoint_id,
-        "zone_ids": list(zone_ids),
+        "zone_ids": list(zone_ids) if zone_ids else ["auto"],
         "seed_pack_id": seed_pack["seed_pack_id"],
         "netlogo_steps_per_run": seed_pack["netlogo_steps_per_run"],
         "replications": seed_pack["replications"],
@@ -117,6 +118,11 @@ def run_rts_evaluation(
         "charging_mode": charging_mode,
         "rts_torch_threads": rts_torch_threads if rts_torch_threads is not None else (1 if policy_mode == "rts_rl_explicit" else None),
         "rts_torch_interop_threads": rts_torch_interop_threads if rts_torch_interop_threads is not None else (1 if policy_mode == "rts_rl_explicit" else None),
+        "run_profile": "training",
+        "order_generation_mode": "shuffled_historical_cycle",
+        "full_raw_order_replay": False,
+        "order_rate_per_hour": DEFAULT_RTS_ORDER_RATE_PER_HOUR,
+        "tick_to_second": 0.15,
     }
     eval_run_id = build_eval_run_id(config)
     run_root = Path(output_root) / eval_run_id
@@ -138,7 +144,7 @@ def run_rts_evaluation(
             timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             rts_policy_mode=policy_mode,
             rts_rollout_enabled=True,
-            rts_zone_ids=list(zone_ids),
+            rts_zone_ids=list(zone_ids) if zone_ids else ["auto"],
             rts_seed_base=int(seed_pack["seed_base"]),
             rts_random_seed=int(seed["seed"]),
             rts_policy_checkpoint_dir=str(checkpoint) if checkpoint is not None else None,
@@ -155,6 +161,15 @@ def run_rts_evaluation(
             worker_id=int(seed["replication"]),
             rts_torch_threads=rts_torch_threads,
             rts_torch_interop_threads=rts_torch_interop_threads,
+            run_profile="training",
+            run_horizon_ticks=int(seed_pack["netlogo_steps_per_run"]),
+            demand_horizon_ticks=int(seed_pack["netlogo_steps_per_run"]) + 1000,
+            demand_buffer_ticks=1000,
+            order_generation_mode="shuffled_historical_cycle",
+            full_raw_order_replay=False,
+            order_rate_per_hour=DEFAULT_RTS_ORDER_RATE_PER_HOUR,
+            pod_location_mode="randomize_slots",
+            pod_location_seed=int(seed["seed"]),
         )
         worker_root.mkdir(parents=True, exist_ok=True)
         atomic_write_json(worker_root / "run_spec.json", spec.to_json_dict())

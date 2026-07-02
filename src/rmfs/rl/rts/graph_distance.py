@@ -11,6 +11,7 @@ from .travel_time import EMPTY_ROBOT, LOADED_ROBOT, graph_wrapper_for_topology
 DISTANCE_SEMANTICS_VERSION = "rts_directed_graph_distance.v2"
 DISTANCE_SOURCE_GRAPH = "directed_graph_shortest_path"
 DISTANCE_SOURCE_CACHE_HIT = "directed_graph_shortest_path_cache_hit"
+DISTANCE_SOURCE_PRECOMPUTED = "precomputed_directed_matrix"
 DISTANCE_SOURCE_EXPLICIT_FALLBACK = "explicit_metric_fallback_unavailable_graph"
 DISTANCE_STATUS_AVAILABLE = "available"
 DISTANCE_STATUS_FALLBACK = "fallback_explicit"
@@ -70,6 +71,34 @@ class RTSDistanceCache:
                 topology=cached.topology,
             )
         self.miss_count += 1
+        precomputed = _precomputed_matrix_distance(self.warehouse, src, dst, normalized_topology)
+        if precomputed is not None and math.isfinite(precomputed):
+            result = RTSDistanceResult(
+                distance=precomputed,
+                source=DISTANCE_SOURCE_PRECOMPUTED,
+                status=DISTANCE_STATUS_AVAILABLE,
+                topology=normalized_topology,
+            )
+            self._cache[key] = result
+            return result
+        if precomputed is not None:
+            if allow_metric_fallback:
+                self.fallback_count += 1
+                result = RTSDistanceResult(
+                    distance=_metric_distance(key),
+                    source=DISTANCE_SOURCE_EXPLICIT_FALLBACK,
+                    status=DISTANCE_STATUS_FALLBACK,
+                    fallback_used=True,
+                    topology=normalized_topology,
+                )
+                self._cache[key] = result
+                return result
+            return RTSDistanceResult(
+                distance=None,
+                source=DISTANCE_SOURCE_PRECOMPUTED,
+                status=DISTANCE_STATUS_UNAVAILABLE,
+                topology=normalized_topology,
+            )
         self.graph_compute_count += 1
         graph_distance = _graph_shortest_path_length(self.warehouse, key)
         if graph_distance is not None:
@@ -225,6 +254,24 @@ def _graph_shortest_path_length(warehouse: Any, key: tuple[str, int, int, int, i
     return float(distance)
 
 
+def _precomputed_matrix_distance(warehouse: Any, src: Any, dst: Any, topology: str) -> float | None:
+    try:
+        from .static_runtime_index import get_or_build_static_runtime_index, get_static_runtime_index, node_id_for_coordinate
+
+        index = get_static_runtime_index(warehouse) or get_or_build_static_runtime_index(warehouse)
+        graph_index = index.graph_index(topology)
+        src_node = node_id_for_coordinate(src)
+        dst_node = node_id_for_coordinate(dst)
+        if src_node is None or dst_node is None:
+            return None
+        if src_node not in graph_index.node_to_index or dst_node not in graph_index.node_to_index:
+            return None
+        distance = index.distance_between(src, dst, topology=topology)
+        return float("inf") if distance is None else distance
+    except Exception:
+        return None
+
+
 def _networkx_shortest_path_length(graph: Any, src: str, dst: str) -> float | None:
     try:
         import networkx as nx
@@ -232,6 +279,26 @@ def _networkx_shortest_path_length(graph: Any, src: str, dst: str) -> float | No
         return float(nx.shortest_path_length(graph, source=src, target=dst, weight="weight"))
     except Exception:
         return None
+
+
+def _graph_identity_hash(graph: Any, topology: str) -> str:
+    import hashlib
+    import json
+
+    payload = {
+        "topology": str(topology),
+        "directed": bool(getattr(graph, "is_directed", lambda: False)()),
+        "nodes": sorted(str(node) for node in graph.nodes()),
+        "edges": sorted(
+            (
+                str(src),
+                str(dst),
+                f"{float(data.get('weight', 1.0)):.9f}",
+            )
+            for src, dst, data in graph.edges(data=True)
+        ),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
 
 
 def _directed_key(src: Any, dst: Any) -> tuple[int, int, int, int] | None:

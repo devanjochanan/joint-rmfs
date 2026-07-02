@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import datetime
 import json
 from pathlib import Path
 import sys
+import tempfile
 
 import torch
 
@@ -45,14 +47,10 @@ def main(argv=None):
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     if args.zone_ids == "auto":
-        from model.layout import Layout
-        layout = Layout()
-        zone_ids = tuple(
-            f"rts_z_r{r:02d}_c{c:02d}"
-            for r in range(layout.pod_batch_vertical_max)
-            for c in range(layout.pod_batch_horizontal_max)
-        )
+        manifest = _resolve_auto_zone_manifest()
+        zone_ids = tuple(manifest["zone_ids"])
     else:
+        manifest = None
         zone_ids = tuple(z.strip() for z in args.zone_ids.split(",") if z.strip())
 
     if not zone_ids:
@@ -133,10 +131,11 @@ def main(argv=None):
         },
         "optimizer_state_fingerprint": optimizer_state_fingerprint(optimizer.state_dict()),
         "training_zone_provenance": {
-            "source": "layout_auto" if args.zone_ids == "auto" else "cli",
+            "source": "runtime_warehouse_auto" if args.zone_ids == "auto" else "cli",
             "zone_count": len(zone_ids),
             "zone_ids": list(zone_ids),
             "informational_only": True,
+            "runtime_zone_manifest": manifest,
         },
         "charging_mode": args.charging_mode,
         "committed_next_proposal_policy": "nearest_guaranteed",
@@ -167,6 +166,51 @@ def main(argv=None):
 
     print(f"Bootstrapped checkpoint successfully in {checkpoint_dir}")
     return 0
+
+
+def _resolve_auto_zone_manifest() -> dict[str, object]:
+    from src.rmfs.runtime_io import RunContext
+    from src.rmfs.rl.rts.static_runtime_index import runtime_zone_manifest_from_warehouse
+    import netlogo
+
+    env = {
+        "RMFS_RUN_PROFILE": "training",
+        "RMFS_ORDER_GENERATION_MODE": "shuffled_historical_cycle",
+        "RMFS_FULL_RAW_ORDER_REPLAY": "0",
+        "RMFS_ORDER_CYCLE_TIME": "500",
+        "RMFS_RUN_HORIZON_TICKS": "5000",
+        "RMFS_DEMAND_HORIZON_TICKS": "6000",
+        "RMFS_DEMAND_BUFFER_TICKS": "1000",
+        "RMFS_POD_LOCATION_MODE": "randomize_slots",
+        "RMFS_SIM_SEED": "42",
+    }
+    previous = {key: os.environ.get(key) for key in env}
+    session = None
+    with tempfile.TemporaryDirectory(prefix="rmfs-rts-zones-") as tmp:
+        try:
+            os.environ.update(env)
+            ctx = RunContext.isolated(Path(tmp), repo_root=REPO_ROOT)
+            ctx.ensure_runtime_dirs()
+            netlogo.configure_run_context(ctx)
+            session = netlogo.HeadlessSimulationSession(persist_final_state=False)
+            result = session.setup()
+            if isinstance(result, str) and "An error occurred" in result:
+                raise RuntimeError(result)
+            manifest = runtime_zone_manifest_from_warehouse(session.warehouse).to_json_dict()
+            manifest["resolver"] = "isolated_headless_runtime_setup"
+            return manifest
+        finally:
+            if session is not None and not getattr(session, "finalized", False):
+                try:
+                    session.finalize(reason=netlogo.SimulationTermination.WORKER_EXCEPTION, success=False)
+                except Exception:
+                    pass
+            netlogo.reset_run_context()
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.rmfs.rl.rts.graph_distance import graph_distance_or_fallback
+from src.rmfs.rl.rts.static_runtime_index import get_static_runtime_index
 from src.rmfs.rl.rts.travel_time import EMPTY_ROBOT, LOADED_ROBOT
 from src.rmfs.rl.rts.zone_registry import build_zone_registry
 
@@ -147,7 +148,7 @@ class CommittedNextRegistry:
         if self.get_for_robot(robot) is not None:
             self.robot_id_to_action_proposals[owner_id] = proposals
             return proposals
-        registry = build_zone_registry(inventory, zone_ids=zone_ids)
+        registry = _runtime_zone_registry(inventory, zone_ids)
         contexts_by_zone = {}
         for action_context in action_contexts or ():
             zone_id = str(getattr(action_context, "zone_id", ""))
@@ -185,7 +186,7 @@ class CommittedNextRegistry:
     ) -> CommittedNextProposal | None:
         if storage is None:
             try:
-                registry = build_zone_registry(inventory, zone_ids=(str(zone_id),))
+                registry = _runtime_zone_registry(inventory, (str(zone_id),))
             except Exception:
                 registry = None
             storage = self._candidate_storage_for_action(context, registry, str(zone_id)) if registry is not None else None
@@ -375,7 +376,7 @@ class CommittedNextRegistry:
         runtime = getattr(inventory, "rts_rollout_runtime", None)
         config = getattr(runtime, "config", None)
         try:
-            registry = build_zone_registry(inventory, zone_ids=getattr(config, "zone_ids", ()) or ())
+            registry = _runtime_zone_registry(inventory, getattr(config, "zone_ids", ()) or ())
         except Exception:
             registry = None
         for queue_index, job in enumerate(getattr(inventory, "job_queue", []) or []):
@@ -421,7 +422,7 @@ class CommittedNextRegistry:
         zone_id = str(getattr(decision, "zone_id", "") or "")
         if storage is not None and not zone_id:
             try:
-                registry = build_zone_registry(inventory, zone_ids=getattr(getattr(getattr(inventory, "rts_rollout_runtime", None), "config", None), "zone_ids", ()) or ())
+                registry = _runtime_zone_registry(inventory, getattr(getattr(getattr(inventory, "rts_rollout_runtime", None), "config", None), "zone_ids", ()) or ())
                 if registry is not None:
                     zone_id = registry.zone_id_for_storage(storage)
             except Exception:
@@ -438,7 +439,7 @@ class CommittedNextRegistry:
         eligible, station, pod, zone_id = self._candidate_context(
             inventory,
             proposal.job,
-            build_zone_registry(inventory, zone_ids=getattr(getattr(getattr(inventory, "rts_rollout_runtime", None), "config", None), "zone_ids", ()) or ()),
+            _runtime_zone_registry(inventory, getattr(getattr(getattr(inventory, "rts_rollout_runtime", None), "config", None), "zone_ids", ()) or ()),
         )
         if not eligible:
             return False, "job_no_longer_eligible"
@@ -534,7 +535,7 @@ class CommittedNextRegistry:
         try:
             runtime = getattr(inventory, "rts_rollout_runtime", None)
             config = getattr(runtime, "config", None)
-            registry = build_zone_registry(inventory, zone_ids=getattr(config, "zone_ids", ()) or ())
+            registry = _runtime_zone_registry(inventory, getattr(config, "zone_ids", ()) or ())
         except Exception:
             registry = None
         for queue_index, job in enumerate(getattr(inventory, "job_queue", []) or []):
@@ -684,6 +685,19 @@ def get_committed_next_action_proposal(
 
 def proposal_key(branch: str, zone_id: str) -> str:
     return str(zone_id)
+
+
+def _runtime_zone_registry(inventory: Any, zone_ids: Any):
+    static_index = get_static_runtime_index(inventory)
+    requested = tuple(str(zone_id) for zone_id in (zone_ids or ()) if str(zone_id))
+    if static_index is not None:
+        registry = static_index.zone_registry
+        if not requested or requested == tuple(registry.zone_ids):
+            return registry
+        missing = [zone_id for zone_id in requested if zone_id not in registry.zones_by_id]
+        if missing:
+            raise ValueError(f"RTS committed-next zone_ids are not in runtime manifest: {missing}")
+    return build_zone_registry(inventory, zone_ids=requested)
 
 
 def robot_id(robot: Any) -> str:

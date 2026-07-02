@@ -194,22 +194,9 @@ def run_on_policy_training_controller(
             }
             atomic_write_json(rollout_input / "active_checkpoint_ref.json", active_ref)
             worker_specs = []
-            # Prefer explicit config.zone_ids
-            if config.zone_ids:
-                active_zone_ids = config.zone_ids
-            else:
-                # Try to load from checkpoint metadata
-                active_zone_ids = _zone_ids_from_checkpoint_metadata(active_checkpoint_dir)
-                # As last resort for dry-run/smoke, infer from checkpoint feature names
-                if not active_zone_ids and active_checkpoint_dir:
-                    try:
-                        active_zone_ids = _zone_ids_from_checkpoint(active_checkpoint_dir)
-                    except Exception:
-                        active_zone_ids = None
+            active_zone_ids = config.zone_ids if config.zone_ids else ("auto",)
 
-            if not dry_run:
-                if not active_zone_ids:
-                    raise RuntimeError("non-dry training execution requires zone_ids to be explicitly determined")
+            if config.zone_ids:
                 if any(not str(z).strip() for z in active_zone_ids) or len(set(active_zone_ids)) != len(active_zone_ids):
                     raise ValueError("zone_ids must be nonblank and unique for non-dry training")
                 validate_no_col_zone_ids(active_zone_ids, context="RTS on-policy controller")
@@ -259,6 +246,15 @@ def run_on_policy_training_controller(
                     worker_id=worker_index + 1,
                     rts_torch_threads=config.rts_torch_threads,
                     rts_torch_interop_threads=config.rts_torch_interop_threads,
+                    run_profile="training",
+                    run_horizon_ticks=config.netlogo_steps_per_run,
+                    demand_horizon_ticks=config.netlogo_steps_per_run + 1000,
+                    demand_buffer_ticks=1000,
+                    order_generation_mode="shuffled_historical_cycle",
+                    full_raw_order_replay=False,
+                    order_rate_per_hour=config.order_rate_per_hour,
+                    pod_location_mode="randomize_slots",
+                    pod_location_seed=derive_worker_seed(config.seed, batch_id, worker_index),
                     **scheduler,
                 )
                 worker_root.mkdir(parents=True, exist_ok=True)

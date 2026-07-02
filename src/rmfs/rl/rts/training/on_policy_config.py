@@ -45,6 +45,7 @@ class RTSOnPolicyTrainingConfig:
     debug_worker_logs: bool = False
     rts_torch_threads: int | None = None
     rts_torch_interop_threads: int | None = None
+    order_rate_per_hour: int = 500
 
     def to_json_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -115,6 +116,8 @@ def validate_on_policy_training_config(
         raise ValueError("minibatch_size must be >= 1")
     if config.learning_rate is not None and float(config.learning_rate) <= 0.0:
         raise ValueError("learning_rate must be positive")
+    if int(config.order_rate_per_hour) <= 0:
+        raise ValueError("order_rate_per_hour must be positive")
     from src.rmfs.rl.rts.ablation import resolve_ablation
     resolve_ablation(config.feature_ablation)
     if config.charging_mode not in {"inherit", "enabled", "disabled"}:

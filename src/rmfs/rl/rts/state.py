@@ -5,11 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from .action_context import ACTION_CONTEXT_VERSION, build_action_contexts
+from .action_context import ACTION_CONTEXT_VERSION, build_action_contexts, build_physical_zone_contexts
 from .cycle_estimator import CYCLE_ESTIMATE_VERSION, SEMANTICS_HOST_STRUCTURAL
 from .macro_region import macro_region_metadata
 from .replenishment_snapshot import build_replenishment_snapshot
 from .static_state_context import get_or_build_static_state_context
+from .static_runtime_index import get_or_build_static_runtime_index, resolve_runtime_zone_ids
 from .stock_features import stock_rows_from_pod
 from .zone_features import build_zone_registry_metadata, build_zone_rows
 
@@ -49,10 +50,14 @@ def build_default_feature_fidelity() -> dict[str, str]:
 
 
 def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
-    zones = tuple(str(zone_id) for zone_id in zone_ids)
+    warehouse = getattr(context, "warehouse", None)
+    try:
+        static_index = get_or_build_static_runtime_index(warehouse)
+    except Exception:
+        static_index = None
+    zones = resolve_runtime_zone_ids(warehouse, zone_ids) if static_index is not None else tuple(str(zone_id) for zone_id in zone_ids)
     if not zones:
         raise ValueError("RTS-RL state requires at least one zone")
-    warehouse = getattr(context, "warehouse", None)
     robot = getattr(context, "robot", None)
     pod = getattr(context, "pod", None)
     station = getattr(context, "station", None)
@@ -71,13 +76,24 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         zones,
         replenishment_signal_active=repl_signal_active,
         replenishment_station_available=repl_station_available,
+        static_index=static_index,
     )
-    zone_metadata = build_zone_registry_metadata(context, zones)
+    zone_metadata = build_zone_registry_metadata(context, zones, static_index=static_index)
+    rows_by_zone = {str(row.get("zone_id")): dict(row) for row in zone_rows}
+    physical_contexts = build_physical_zone_contexts(
+        context,
+        zones,
+        rows_by_zone=rows_by_zone,
+        static_index=static_index,
+    )
     base_action_contexts = build_action_contexts(
         context,
         zones,
         zone_rows=zone_rows,
         replenishment_snapshot=replenishment_snapshot,
+        static_index=static_index,
+        physical_contexts=physical_contexts,
+        include_cycle_estimates=False,
     )
     action_proposals = {}
     if warehouse is not None and robot is not None and getattr(warehouse, "committed_next_reservations_enabled", False):
@@ -106,6 +122,8 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         zone_rows=zone_rows,
         replenishment_snapshot=replenishment_snapshot,
         next_job_proposals=proposal_objects,
+        static_index=static_index,
+        physical_contexts=physical_contexts,
     )
     rows = [float(row.get("zone_row_index", 0.0)) for row in zone_rows]
     cols = [float(row.get("zone_col_index", 0.0)) for row in zone_rows]

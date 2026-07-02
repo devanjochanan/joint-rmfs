@@ -24,6 +24,7 @@ class OrderGenerationPolicy:
     run_horizon_ticks: int | None
     demand_horizon_ticks: int | None
     demand_buffer_ticks: int
+    order_rate_per_hour: int | None
 
 
 def _env_int(name: str) -> int | None:
@@ -46,6 +47,7 @@ def resolve_order_generation_policy(
     demand_buffer_ticks: int | None = None,
     order_generation_mode: str | None = None,
     full_raw_order_replay: bool | None = None,
+    order_rate_per_hour: int | None = None,
 ) -> OrderGenerationPolicy:
     profile_name = profile or os.environ.get("RMFS_RUN_PROFILE", "gui")
     explicit_n_orders = n_orders if n_orders is not None else _env_int("RMFS_BOOTSTRAP_N_ORDERS")
@@ -58,6 +60,7 @@ def resolve_order_generation_policy(
         demand_buffer_ticks=demand_buffer_ticks if demand_buffer_ticks is not None else _env_int("RMFS_DEMAND_BUFFER_TICKS"),
         order_generation_mode=order_generation_mode or os.environ.get("RMFS_ORDER_GENERATION_MODE"),
         full_raw_order_replay=full_replay,
+        order_rate_per_hour=order_rate_per_hour if order_rate_per_hour is not None else _env_int("RMFS_ORDER_CYCLE_TIME"),
     )
     return OrderGenerationPolicy(
         profile=resolved_profile.profile,
@@ -67,4 +70,5 @@ def resolve_order_generation_policy(
         run_horizon_ticks=resolved_profile.run_horizon_ticks,
         demand_horizon_ticks=resolved_profile.demand_horizon_ticks,
         demand_buffer_ticks=resolved_profile.demand_buffer_ticks,
+        order_rate_per_hour=resolved_profile.order_rate_per_hour,
     )

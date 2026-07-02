@@ -35,6 +35,7 @@ def main(argv=None):
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--minibatch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--order-rate-per-hour", type=int, default=500, help="Orders per simulated hour for training demand generation.")
     parser.add_argument("--feature-ablation", default="full")
     parser.add_argument("--ledger-path", default=None)
     charging = parser.add_mutually_exclusive_group()
@@ -85,6 +86,7 @@ def main(argv=None):
         ppo_epochs=args.ppo_epochs,
         minibatch_size=args.minibatch_size,
         learning_rate=args.learning_rate,
+        order_rate_per_hour=args.order_rate_per_hour,
         zone_ids=zone_ids,
         feature_ablation=args.feature_ablation,
         ledger_path=Path(args.ledger_path).resolve() if args.ledger_path else None,

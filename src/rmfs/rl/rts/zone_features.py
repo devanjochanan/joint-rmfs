@@ -80,6 +80,7 @@ def build_zone_rows(
     *,
     replenishment_signal_active: bool = False,
     replenishment_station_available: bool = False,
+    static_index: Any | None = None,
 ) -> tuple[list[dict[str, float | str]], list[str]]:
     warehouse = getattr(context, "warehouse", None)
     pod = getattr(context, "pod", None)
@@ -91,7 +92,7 @@ def build_zone_rows(
     active_robot_denominator = max(1, len(robots))
     warnings: list[str] = []
     rows = []
-    registry = build_zone_registry(context, zone_ids)
+    registry = getattr(static_index, "zone_registry", None) or build_zone_registry(context, zone_ids)
     zone_ids = registry.zone_ids
     present_pressure_zone_ids = [
         infer_pressure_zone_id(robot, zone_ids, registry=registry)
@@ -114,7 +115,10 @@ def build_zone_rows(
     
     for zone_id in zone_ids:
         zone_info = registry.zones_by_id[zone_id]
-        zone_storages = [storage for storage in storages if registry.zone_id_for_storage(storage) == zone_id]
+        if static_index is not None:
+            zone_storages = list(getattr(static_index, "storages_by_zone", {}).get(zone_id, ()))
+        else:
+            zone_storages = [storage for storage in storages if registry.zone_id_for_storage(storage) == zone_id]
         free = [storage for storage in zone_storages if bool(getattr(storage, "is_empty", False)) and getattr(storage, "assigned_pod", None) is None]
         total = len(zone_storages)
         free_slot_ratio = float(len(free)) / float(max(1, total))
@@ -228,11 +232,22 @@ def build_zone_rows(
     return rows, warnings
 
 
-def build_zone_registry_metadata(context: Any, zone_ids: Sequence[str]) -> dict[str, Any]:
-    registry = build_zone_registry(context, zone_ids)
+def build_zone_registry_metadata(context: Any, zone_ids: Sequence[str], *, static_index: Any | None = None) -> dict[str, Any]:
+    registry = getattr(static_index, "zone_registry", None) or build_zone_registry(context, zone_ids)
     metadata = registry.metadata()
     warehouse = getattr(context, "warehouse", None)
     metadata.update(distance_cache_metadata(warehouse))
+    if static_index is not None:
+        metadata.update(
+            {
+                "static_runtime_index_version": getattr(static_index, "version", None),
+                "layout_identity_hash": getattr(static_index, "layout_identity_hash", None),
+                "empty_graph_identity_hash": getattr(static_index, "empty_graph_identity_hash", None),
+                "loaded_graph_identity_hash": getattr(static_index, "loaded_graph_identity_hash", None),
+                "static_index_build_seconds": getattr(static_index, "build_seconds", None),
+                "static_index_total_matrix_bytes": getattr(static_index, "total_matrix_bytes", None),
+            }
+        )
     metadata.update(
         {
             "sku_similarity_version": SKU_SIMILARITY_VERSION,

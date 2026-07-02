@@ -6,6 +6,7 @@ from typing import Any
 
 from .action_context import select_candidate_storage
 from .graph_distance import graph_distance_or_fallback
+from .static_runtime_index import get_static_runtime_index
 from .zone_registry import build_zone_registry
 
 
@@ -22,14 +23,21 @@ def find_free_storage_in_zone(context: Any, zone_id: str, branch: str) -> Any | 
         if proposed_storage is not None and _available(proposed_storage):
             return proposed_storage
     storage_manager = getattr(warehouse, "storage_manager", None)
-    storages = list(getattr(storage_manager, "storages", []) or [])
-    registry = build_zone_registry(context, (str(zone_id),))
-    candidates = [
-        storage
-        for storage in storages
-        if registry.zone_id_for_storage(storage) == str(zone_id)
-        and _available(storage)
-    ]
+    static_index = get_static_runtime_index(warehouse)
+    if static_index is not None:
+        candidates = [
+            storage for storage in getattr(static_index, "storages_by_zone", {}).get(str(zone_id), ())
+            if _available(storage)
+        ]
+    else:
+        storages = list(getattr(storage_manager, "storages", []) or [])
+        registry = build_zone_registry(context, (str(zone_id),))
+        candidates = [
+            storage
+            for storage in storages
+            if registry.zone_id_for_storage(storage) == str(zone_id)
+            and _available(storage)
+        ]
     if not candidates:
         return None
     origin = _origin(context)

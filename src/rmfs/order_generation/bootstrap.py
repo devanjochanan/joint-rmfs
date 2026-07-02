@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from src.rmfs.order_generation.policy import resolve_order_generation_policy
+from src.rmfs.runtime_io.run_profiles import TICK_TO_SECOND
 
 
 current_directory = os.path.dirname(os.path.abspath(__file__))
@@ -303,6 +304,7 @@ def generate_orders_from_raw_bootstrap(
     order_generation_mode=None,
     full_raw_order_replay=None,
     profile=None,
+    order_rate_per_hour=None,
 ):
     # Unified seed: prefer explicit seed arg, then RMFS_SIM_SEED, then
     # RMFS_BOOTSTRAP_SEED for backward compatibility, then default 42.
@@ -322,6 +324,7 @@ def generate_orders_from_raw_bootstrap(
         demand_buffer_ticks=demand_buffer_ticks,
         order_generation_mode=order_generation_mode,
         full_raw_order_replay=full_raw_order_replay,
+        order_rate_per_hour=order_rate_per_hour,
     )
     resolved_n_orders = policy.bootstrap_n_orders
     resolved_full_raw_replay = bool(policy.full_raw_order_replay)
@@ -338,7 +341,7 @@ def generate_orders_from_raw_bootstrap(
     resolved_order_cycle_time = (
         int(order_cycle_time)
         if order_cycle_time is not None
-        else _env_optional_int("RMFS_ORDER_CYCLE_TIME")
+        else policy.order_rate_per_hour
     )
     resolved_shuffle_full_sequence = bool(shuffle_full_order_sequence)
 
@@ -431,13 +434,29 @@ def generate_orders_from_raw_bootstrap(
         "n_orders": None if resolved_mode == "shuffled_historical_cycle" else int(resolved_n_orders),
         "bootstrap_n_orders": None if resolved_mode == "shuffled_historical_cycle" else int(resolved_n_orders),
         "run_horizon_ticks": policy.run_horizon_ticks,
+        "netlogo_steps_requested": policy.run_horizon_ticks,
+        "simulated_horizon_seconds": (
+            None if policy.run_horizon_ticks is None else float(policy.run_horizon_ticks) * TICK_TO_SECOND
+        ),
+        "tick_to_second": TICK_TO_SECOND,
         "demand_horizon_ticks": policy.demand_horizon_ticks,
+        "demand_horizon_steps": policy.demand_horizon_ticks,
+        "demand_horizon_simulated_seconds": (
+            None if policy.demand_horizon_ticks is None else float(policy.demand_horizon_ticks) * TICK_TO_SECOND
+        ),
         "demand_buffer_ticks": policy.demand_buffer_ticks,
+        "demand_buffer_steps": policy.demand_buffer_ticks,
+        "demand_buffer_simulated_seconds": float(policy.demand_buffer_ticks) * TICK_TO_SECOND,
         "full_raw_order_replay": bool(resolved_full_raw_replay),
         "shuffle_full_order_sequence": bool(resolved_shuffle_full_sequence),
         "order_cycle_time": resolved_order_cycle_time,
-        "order_cycle_time_unit": "orders_per_hour" if resolved_order_cycle_time is not None else None,
+        "order_cycle_time_unit": "orders_per_simulated_hour" if resolved_order_cycle_time is not None else None,
+        "order_rate_per_hour": resolved_order_cycle_time,
+        "order_rate_unit": "orders_per_simulated_hour" if resolved_order_cycle_time is not None else None,
         "arrival_mode": resolved_arrival_mode,
+        "arrival_time_unit": "simulated_seconds",
+        "order_arrival_unit": "simulated_seconds",
+        "generated_arrival_values_are_simulated_seconds": True,
         "order_start_arrival_time": int(resolved_start_arrival),
         "source_unique_orders": int(source_unique_orders),
         "sampled_unique_source_orders": int(pd.Series(sampled_order_ids).nunique()),
@@ -490,6 +509,7 @@ def config_orders(
     full_raw_order_replay=None,
     shuffle_full_order_sequence=False,
     profile=None,
+    order_rate_per_hour=None,
 ):
     # SKU composition always comes from complete historical orders in raw_order.csv.
     # PPS training may additionally shuffle the full sequence and use order_cycle_time
@@ -510,4 +530,5 @@ def config_orders(
         order_generation_mode=order_generation_mode,
         full_raw_order_replay=full_raw_order_replay,
         profile=profile,
+        order_rate_per_hour=order_rate_per_hour,
     )

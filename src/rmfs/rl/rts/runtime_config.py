@@ -83,15 +83,15 @@ def validate_rts_runtime_config(config: RTSRuntimeConfig) -> None:
             raise ValueError("rts_rl_explicit requires policy_checkpoint_dir")
         if not config.policy_checkpoint_id:
             raise ValueError("rts_rl_explicit requires policy_checkpoint_id")
-        if not config.zone_ids:
-            raise ValueError("rts_rl_explicit requires zone_ids")
+        if config.zone_ids and "auto" in config.zone_ids and config.zone_ids != ("auto",):
+            raise ValueError("rts zone_ids must be exactly ('auto',) or an explicit zone list")
     if config.max_events is not None and int(config.max_events) <= 0:
         raise ValueError("rts max_events must be positive when provided")
     if any(not str(zone_id).strip() for zone_id in config.zone_ids):
         raise ValueError("rts zone_ids must be nonblank")
     if len(set(config.zone_ids)) != len(config.zone_ids):
         raise ValueError("rts zone_ids must be unique")
-    if config.policy_mode == "rts_rl_explicit":
+    if config.policy_mode == "rts_rl_explicit" and config.zone_ids != ("auto",):
         validate_no_col_zone_ids(config.zone_ids, context="rts_rl_explicit")
     if not str(config.rollout_filename).strip():
         raise ValueError("rts rollout_filename must be nonblank")
