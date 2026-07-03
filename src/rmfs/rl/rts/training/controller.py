@@ -338,7 +338,7 @@ def run_on_policy_training_controller(
                         "warehouse/avg_order_cycle_time_available": 0.0,
                         "warehouse/avg_energy": 0.0,
                         "warehouse/congestion_rate": 0.0,
-                        "warehouse/robot_idle_time": 0.0,
+                        "warehouse/job_queue_len": 0.0,
                         "device/cuda_memory_allocated_bytes": cuda_memory_allocated,
                     },
                     batch_id,
@@ -530,7 +530,18 @@ def run_on_policy_training_controller(
             worker_failures = sum(1 for s in worker_summaries if s.get("status") == "failure")
             import numpy as np
             worker_elapsed_avg = float(np.mean([s.get("worker_wall_time_elapsed", 0.0) for s in worker_summaries])) if worker_summaries else 0.0
-            energy_avg = float(np.mean([s.get("final_metrics", {}).get("total_energy", 0.0) for s in worker_summaries if s.get("final_metrics")])) if worker_summaries else 0.0
+            _fm = [s.get("final_metrics", {}) for s in worker_summaries if s.get("final_metrics")]
+            energy_avg = float(np.mean([fm.get("total_energy", 0.0) for fm in _fm])) if _fm else 0.0
+            orders_completed_vals = [fm.get("warehouse_orders_completed", 0) for fm in _fm if fm.get("warehouse_orders_completed_available")]
+            orders_completed_avg = float(np.mean(orders_completed_vals)) if orders_completed_vals else 0.0
+            orders_completed_available = 1.0 if orders_completed_vals else 0.0
+            cycle_time_vals = [fm.get("warehouse_average_order_cycle_time", 0.0) for fm in _fm if fm.get("warehouse_average_order_cycle_time_available")]
+            avg_order_cycle_time = float(np.mean(cycle_time_vals)) if cycle_time_vals else 0.0
+            avg_order_cycle_time_available = 1.0 if cycle_time_vals else 0.0
+            stop_and_go_vals = [fm.get("stop_and_go", 0.0) for fm in _fm]
+            congestion_avg = float(np.mean(stop_and_go_vals)) if stop_and_go_vals else 0.0
+            job_queue_vals = [fm.get("job_queue_len", 0.0) for fm in _fm]
+            job_queue_avg = float(np.mean(job_queue_vals)) if job_queue_vals else 0.0
             completed_paper_cycles = sum(s.get("completed_paper_cycle_count", 0) for s in rollout_summaries)
             censored_paper_cycles = sum(s.get("censored_paper_cycle_count", 0) for s in rollout_summaries)
             on_policy_candidate_decisions = sum(s.get("on_policy_candidate_decision_count", 0) for s in rollout_summaries)
@@ -720,13 +731,13 @@ def run_on_policy_training_controller(
                     "worker/controller_wait_time_sec": wait_time,
                     "time/netlogo_steps_per_run": config.netlogo_steps_per_run,
                     "time/resolved_simulated_horizon_seconds": resolved_simulated_horizon_seconds,
-                    "warehouse/orders_completed": 0.0,
-                    "warehouse/orders_completed_available": 0.0,
-                    "warehouse/avg_order_cycle_time": 0.0,
-                    "warehouse/avg_order_cycle_time_available": 0.0,
+                    "warehouse/orders_completed": orders_completed_avg,
+                    "warehouse/orders_completed_available": orders_completed_available,
+                    "warehouse/avg_order_cycle_time": avg_order_cycle_time,
+                    "warehouse/avg_order_cycle_time_available": avg_order_cycle_time_available,
                     "warehouse/avg_energy": energy_avg,
-                    "warehouse/congestion_rate": 0.0,
-                    "warehouse/robot_idle_time": 0.0,
+                    "warehouse/congestion_rate": congestion_avg,
+                    "warehouse/job_queue_len": job_queue_avg,
                     "checkpoint/batch_id": batch_id,
                     "checkpoint/latest_updated": 1,
                     "device/cuda_memory_allocated_bytes": cuda_memory_allocated,

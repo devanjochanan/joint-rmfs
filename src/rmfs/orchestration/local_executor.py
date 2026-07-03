@@ -432,41 +432,46 @@ def run_worker(spec: RunSpec):
             tick_result = step_result.payload
             if tick_result is None:
                 raise RuntimeError(f"worker stopped without a tick payload: {step_result.status}")
-            
+
             ticks_done += step_result.steps_executed
-            digest = stable_digest(tick_result)
-            sig = return_signature(tick_result)
-            
             write_worker_status("running")
-            
-            if index == 0:
-                first_result = (digest, sig)
-            final_result = (digest, sig, tick_result)
 
+            is_first = index == 0
+            is_final = index == spec.ticks - 1
+
+            trace_selected = False
             if spec.debug_trace:
-                record = False
                 if spec.trace_first_n > 0 and index < spec.trace_first_n:
-                    record = True
+                    trace_selected = True
                 if spec.trace_cadence > 0 and (index + 1) % spec.trace_cadence == 0:
-                    record = True
-                if index == spec.ticks - 1:
-                    record = True
+                    trace_selected = True
+                if is_final:
+                    trace_selected = True
 
-                if record:
-                    metrics = {}
-                    if isinstance(tick_result, list) and len(tick_result) >= 6:
-                        metrics = {
-                            "total_energy": tick_result[1],
-                            "job_queue_len": tick_result[2],
-                            "stop_and_go": tick_result[3],
-                            "total_turning": tick_result[4],
-                        }
-                    debug_rows.append({
-                        "tick_index": index + 1,
-                        "digest": digest,
-                        "signature": sig,
-                        "metrics": metrics,
-                    })
+            if is_first or is_final or trace_selected:
+                digest = stable_digest(tick_result)
+                sig = return_signature(tick_result)
+
+            if is_first:
+                first_result = (digest, sig)
+            if is_final:
+                final_result = (digest, sig, tick_result)
+
+            if trace_selected:
+                metrics = {}
+                if isinstance(tick_result, list) and len(tick_result) >= 6:
+                    metrics = {
+                        "total_energy": tick_result[1],
+                        "job_queue_len": tick_result[2],
+                        "stop_and_go": tick_result[3],
+                        "total_turning": tick_result[4],
+                    }
+                debug_rows.append({
+                    "tick_index": index + 1,
+                    "digest": digest,
+                    "signature": sig,
+                    "metrics": metrics,
+                })
 
         summary["ticks_completed"] = ticks_done
         summary["netlogo_steps_completed"] = ticks_done

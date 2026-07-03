@@ -235,24 +235,34 @@ def _cycle_rate_arrivals(
 
 
 def _build_generated_orders(sampled_order_ids, raw_orders, sampled_arrivals):
+    # Pre-group source lines by source_order_id once, preserving original row
+    # order within each group (sort=False).  Each value is a list of
+    # (item_id, item_quantity) tuples in source-line order, including any
+    # duplicate lines.
+    _source_lines_by_id = {
+        str(source_id): list(
+            zip(group["item_id"].tolist(), group["item_quantity"].tolist())
+        )
+        for source_id, group in raw_orders.groupby("source_order_id", sort=False)[
+            ["item_id", "item_quantity"]
+        ]
+    }
+
     order_lines = []
     sequence_id = 0
 
     for generated_order_id, (source_order_id, order_arrival) in enumerate(
         zip(sampled_order_ids, sampled_arrivals)
     ):
-        source_lines = raw_orders.loc[
-            raw_orders["source_order_id"] == source_order_id,
-            ["item_id", "item_quantity"],
-        ]
-        for line in source_lines.itertuples(index=False):
+        source_lines = _source_lines_by_id.get(str(source_order_id), ())
+        for item_id, item_quantity in source_lines:
             order_lines.append(
                 {
                     "sequence_id": int(sequence_id),
                     "order_id": int(generated_order_id),
                     "order_type": 1,
-                    "item_id": int(line.item_id),
-                    "item_quantity": int(line.item_quantity),
+                    "item_id": int(item_id),
+                    "item_quantity": int(item_quantity),
                     "order_arrival": int(order_arrival),
                     "source_order_id": str(source_order_id),
                 }

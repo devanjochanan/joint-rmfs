@@ -1500,7 +1500,6 @@ class Inventory(Universe):
         file_path = self.assign_order_csv
         if os.path.exists(file_path):
             assign_order_df = pd.read_csv(file_path)
-            # pass
         else:
             orders_df = pd.read_csv(self.generated_order_csv)
             assign_order_df = orders_df.copy()
@@ -1508,15 +1507,14 @@ class Inventory(Universe):
             assign_order_df['assigned_pod'] = pd.Series([None] * len(assign_order_df), dtype="object")
             assign_order_df['status'] = -3
             assign_order_df.to_csv(self.assign_order_csv, index=False)
-        new_file_df = pd.read_csv(file_path)
-                  
+            assign_order_df = pd.read_csv(file_path)
+
         current_second = self.next_process_tick
         previous_second = (self.next_process_tick - 1)
 
-        # Filter orders that have arrived by the current second and have not been processed before
-        new_orders = new_file_df[(new_file_df['order_arrival']<= current_second) & 
-                               (new_file_df['order_arrival'] > previous_second) &
-                               (new_file_df['status'] == -3)]
+        new_orders = assign_order_df[(assign_order_df['order_arrival']<= current_second) &
+                               (assign_order_df['order_arrival'] > previous_second) &
+                               (assign_order_df['status'] == -3)]
         grouped_orders = new_orders.groupby('order_id')
 
         for order_id, group in grouped_orders:
@@ -1555,12 +1553,6 @@ class Inventory(Universe):
                         order.start_processing(int(self._tick))
             return
 
-        # Step 1: Robot job initialization
-        robots_location = [
-            [o.pos_x, o.pos_y] for o in self.get_movable_objects()
-            if o.object_type == "robot" and (o.job is None or o.job.is_finished) and o.current_state == 'idle'
-            and len(self.job_queue) > 0
-        ]
         # Step 2: Trigger preassign logic
         if self.poa_first:
             advanced_table = self.get_advanced_table()
@@ -1601,8 +1593,6 @@ class Inventory(Universe):
                 order.start_processing(int(self._tick))
         self.refresh_mandatory_replenishment_pods()
         self.run_proactive_replenishment_pass()
-        assign_order_df = pd.read_csv(self.assign_order_csv)
-        assign_order_df.to_csv(self.assign_order_csv, index=False)
         # Step 7: Process PPS logic (skip when RL controls PPS)
         if self.pps_rl:
             self.dispatch_pending_replenishment_requests(prioritize_aged_only=False)

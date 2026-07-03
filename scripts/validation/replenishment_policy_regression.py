@@ -92,6 +92,9 @@ class StubRobot:
         self.is_charging = False
         self._claimed_charger = None
 
+    def is_unavailable_for_work_due_to_charging(self):
+        return False
+
     def assign_job_and_set_move_to_station(self, job):
         self.job = job
         self.current_state = "delivering_pod"
