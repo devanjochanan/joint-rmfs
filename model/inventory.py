@@ -881,9 +881,7 @@ class Inventory(Universe):
             robot for robot in self._iter_robots()
             if (robot.job is None or getattr(robot.job, "is_finished", False))
             and getattr(robot, "current_state", None) == "idle"
-            and not getattr(robot, "is_charging_pending", False)
-            and not getattr(robot, "is_charging", False)
-            and getattr(robot, "_claimed_charger", None) is None
+            and not robot.is_unavailable_for_work_due_to_charging()
         ]
 
     def _unmatched_idle_robots_after_picking_allocation(self, idle_robots):
@@ -963,9 +961,7 @@ class Inventory(Universe):
                 continue
             if getattr(robot, "job", None) is not None and not getattr(robot.job, "is_finished", False):
                 continue
-            if getattr(robot, "is_charging_pending", False) or getattr(robot, "is_charging", False):
-                continue
-            if getattr(robot, "_claimed_charger", None) is not None:
+            if robot.is_unavailable_for_work_due_to_charging():
                 continue
             station = self.station_manager.find_available_replenish_station()
             if station is None:
@@ -1187,9 +1183,7 @@ class Inventory(Universe):
             if o.object_type == "robot"
             and (o.job is None or o.job.is_finished)
             and o.current_state == 'idle'
-            and not getattr(o, "is_charging_pending", False)
-            and not getattr(o, "is_charging", False)
-            and getattr(o, "_claimed_charger", None) is None
+            and not o.is_unavailable_for_work_due_to_charging()
         ]
         assigned_robot = None
 

@@ -866,6 +866,9 @@ def initRobots(universe: Inventory):
         for obj in universe._objects
         if getattr(obj, "object_type", None) in {"pod", "picker", "replenishment", "station"}
     }
+    blocked_coordinates = occupied_coordinates | {
+        (int(x), int(y)) for x, y in getattr(universe, "charger_cells", set())
+    }
     candidate_coordinates = []
     if universe.graph is not None:
         for node in universe.graph.graph.nodes:
@@ -873,7 +876,7 @@ def initRobots(universe: Inventory):
             if (
                 x_min <= x <= x_max
                 and y_min <= y <= y_max
-                and (x, y) not in occupied_coordinates
+                and (x, y) not in blocked_coordinates
             ):
                 candidate_coordinates.append((x, y))
     if len(candidate_coordinates) < num_robot:

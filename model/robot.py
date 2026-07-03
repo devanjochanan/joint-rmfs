@@ -123,6 +123,19 @@ class Robot(Object):
             return False
         return bool(getattr(self, "charge_after_current_task", False) or (self.battery_pct < self.BATTERY_LOW_PCT))
 
+    def is_unavailable_for_work_due_to_charging(self):
+        if not getattr(self.universe, "charging_enabled", False):
+            return False
+        if getattr(self.universe, "disable_active_charging", False):
+            return False
+        if self.battery_pct >= self.BATTERY_CHARGED_PCT:
+            return False
+        return bool(
+            getattr(self, "is_charging", False)
+            or getattr(self, "is_charging_pending", False)
+            or getattr(self, "_claimed_charger", None) is not None
+        )
+
     def _apply_drive_by_charging(self):
         charger_cells = getattr(self.universe, 'charger_cells', set())
         grid_pos = (round(self.pos_x), round(self.pos_y))
