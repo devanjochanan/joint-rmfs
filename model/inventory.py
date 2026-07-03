@@ -739,8 +739,24 @@ class Inventory(Universe):
         ):
             return False
 
+        # Proactive replenishment must return the pod to the exact storage it
+        # left. Resolve and require that origin up front; if it cannot be pinned
+        # (not currently owned by this pod) do not dispatch as proactive — this
+        # is a clean pre-commit failure that mutates nothing.
+        proactive_origin = None
+        if str(source) == "proactive":
+            proactive_origin = self.storage_manager.get_owned_storage_for_pod(pod)
+            if proactive_origin is None:
+                return False
+
         new_job = RobotJob(pod.coordinate, station_id=station.station_id, pod=pod)
         new_job.add_replenishment_task(pod, replenishment_skus, source=source)
+        if proactive_origin is not None:
+            new_job.set_proactive_origin(
+                proactive_origin,
+                getattr(proactive_origin, "storage_id", None),
+                (float(getattr(proactive_origin, "pos_x", 0.0)), float(getattr(proactive_origin, "pos_y", 0.0))),
+            )
         station.add_pod(pod.pod_id)
         pod.station = station
         self.pod_manager.mark_pod_not_available(pod)

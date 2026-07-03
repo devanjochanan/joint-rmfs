@@ -207,9 +207,11 @@ def test_similarity_pressure_features_and_placeholders():
     validate_no_removed_placeholder_features(features.action_feature_names)
     assert "turnover_value" not in features.action_feature_names
     assert features.action_feature_names == build_action_feature_names(("A", "B"))
-    assert len(features.action_feature_names) == 21
+    assert len(features.action_feature_names) == 17
     assert "estimated_queue_time" not in features.action_feature_names
-    assert "cycle_estimate_known" in features.action_feature_names
+    assert "cycle_estimate_known" not in features.action_feature_names
+    assert "candidate_to_proposed_next_pod_distance" in features.action_feature_names
+    assert "candidate_to_proposed_next_pod_distance_norm" not in features.action_feature_names
     assert "is_store_action" not in features.action_feature_names
     assert "is_replenish_store_action" not in features.action_feature_names
     assert "allocator_cost_norm" not in features.action_feature_names

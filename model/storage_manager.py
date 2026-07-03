@@ -29,6 +29,26 @@ class StorageManager:
     def getStorageByPod(self, pod: Pod) -> Optional[Storage]:
         return self.pods_to_storage.get(pod, None)
 
+    def get_owned_storage_for_pod(self, pod: Pod) -> Optional[Storage]:
+        """Return the storage currently owned by (assigned to) ``pod``.
+
+        A storage is owned by the pod when it is mapped to the pod AND the
+        storage's ``assigned_pod`` back-reference points to the same pod. Used to
+        pin a proactive replenishment pod's exact origin so it is never handed to
+        another pod while the pod is away.
+        """
+        storage = self.pods_to_storage.get(pod)
+        if storage is None:
+            return None
+        if getattr(storage, "assigned_pod", None) is not pod:
+            return None
+        return storage
+
+    def storage_owned_by_pod(self, storage: Storage | None, pod: Pod) -> bool:
+        if storage is None or pod is None:
+            return False
+        return self.pods_to_storage.get(pod) is storage and getattr(storage, "assigned_pod", None) is pod
+
     def getStorageByCoordinate(self, x: int, y: int) -> Optional[Storage]:
         return self.coordinate_to_storages.get((x, y), None)
 

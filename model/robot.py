@@ -298,6 +298,11 @@ class Robot(Object):
             # activation replaces robot.job — otherwise the completed pod's
             # cleanup would be bypassed and it would be left unavailable/unowned.
             self.warehouse.finalize_completed_return(completed_job)
+            # A proactive replenishment pod is physically back at its retained
+            # origin storage: keep the normal pod-to-storage assignment intact and
+            # clear only the temporary proactive-origin reservation metadata.
+            if getattr(completed_job, "proactive_origin_reserved", False):
+                completed_job.clear_proactive_origin_reservation()
             e_li = self.load_mass * self._gravity * self._lift_coef
             self.energy_consumption += e_li
             self.load_mass = 0
@@ -824,7 +829,12 @@ class Robot(Object):
                 storage_manager = self.warehouse.storage_manager
                 storage = storage_manager.pods_to_storage.get(pod)
                 self.job.record_delivery(self.universe._tick)
-                if storage:
+                # Proactive replenishment keeps its origin reserved for the whole
+                # trip: do NOT release the pod-to-storage mapping or mark the slot
+                # empty when the pod is collected. Every other job type (ordinary
+                # picking, post-pick replenishment, RTS-selected returns) releases
+                # the origin here and selects a new destination on return.
+                if storage and not getattr(self.job, "proactive_origin_reserved", False):
                     storage.removeStoragePod()
                     del storage_manager.pods_to_storage[pod]
                     storage_manager.setStorageAvailable(NetLogoCoordinate(storage.pos_x, storage.pos_y))
@@ -1076,6 +1086,13 @@ class Robot(Object):
             self._continue_rts_return_after_replenishment()
             return
 
+        # Proactive replenishment never consults RTS on return: it routes the pod
+        # straight back to the exact storage it left, which was kept reserved for
+        # the whole trip.
+        if getattr(self.job, "proactive_origin_reserved", False):
+            self._return_proactive_pod_to_origin()
+            return
+
         context = RTSDestinationContext(
             warehouse=self.warehouse,
             robot=self,
@@ -1125,6 +1142,34 @@ class Robot(Object):
             self.job.writePodReturnReport(-1)
             self.destination = decision.destination
             self.set_move(self.destination, self.warehouse.graph_pod, need_neutralize_robot=False)
+
+    def _return_proactive_pod_to_origin(self):
+        """Route a proactive replenishment pod back to its exact original storage
+        without invoking RTS.
+
+        The origin was kept reserved (via the StorageManager ownership model) for
+        the whole trip. Ownership is re-verified immediately before routing; a
+        conflict is a hard error with no nearest-storage fallback and no RTS zone
+        selection.
+        """
+        pod = self.job.pod
+        origin = self.job.proactive_origin_storage
+        storage_manager = self.warehouse.storage_manager
+        if origin is None or not storage_manager.storage_owned_by_pod(origin, pod):
+            raise RuntimeError(
+                "proactive replenishment origin ownership conflict for pod "
+                f"{getattr(pod, 'pod_id', None)}: recorded origin "
+                f"{self.job.proactive_origin_storage_id} is no longer owned by the pod"
+            )
+        self.destination = NetLogoCoordinate(origin.pos_x, origin.pos_y)
+        self.job.pod_return_coordinate = self.destination
+        self.job.writePodReturnReport(
+            calculateManhattanDistance(
+                (self.job.pod_return_coordinate.x, self.job.pod_return_coordinate.y),
+                (self.job.pod_coordinate.x, self.job.pod_coordinate.y),
+            )
+        )
+        self.set_move(self.destination, self.universe.graph_pod, need_neutralize_robot=False)
 
     def _record_rts_decision(self, context, decision):
         decision_event_id = self.warehouse.rts_rollout_runtime.on_decision(

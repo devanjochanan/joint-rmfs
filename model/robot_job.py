@@ -35,6 +35,14 @@ class RobotJob:
         # states and drives capacity accounting and diagnostics.
         self.is_replenishment_job = False
         self.replenishment_source = None
+        # Proactive replenishment origin reservation: a proactive replenishment
+        # pod must return to the exact storage it left. The origin is recorded at
+        # dispatch and kept reserved (via the existing StorageManager ownership
+        # model) for the whole trip; it is NOT released when the pod is collected.
+        self.proactive_origin_reserved = False
+        self.proactive_origin_storage = None
+        self.proactive_origin_storage_id = None
+        self.proactive_origin_coordinate = None
         self.is_finished = False
         self.rts_continuation_active = False
         self.rts_decision_identity = None
@@ -76,6 +84,21 @@ class RobotJob:
             self.replenishment_skus,
             delay_per_sku=self.replenishment_delay_per_sku,
         )
+
+    def is_proactive_replenishment(self) -> bool:
+        return bool(self.is_replenishment_job) and self.replenishment_source == "proactive"
+
+    def set_proactive_origin(self, storage, storage_id, coordinate) -> None:
+        self.proactive_origin_reserved = True
+        self.proactive_origin_storage = storage
+        self.proactive_origin_storage_id = storage_id
+        self.proactive_origin_coordinate = coordinate
+
+    def clear_proactive_origin_reservation(self) -> None:
+        self.proactive_origin_reserved = False
+        self.proactive_origin_storage = None
+        self.proactive_origin_storage_id = None
+        self.proactive_origin_coordinate = None
 
     def is_being_processed(self):
         """Check if the job is being processed based on delays."""

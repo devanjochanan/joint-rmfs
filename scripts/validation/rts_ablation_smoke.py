@@ -20,7 +20,7 @@ def main() -> None:
     zones = ("A", "B")
     mask = np.asarray([1, 1, 1, 1], dtype=np.int64)
     bundle = build_feature_bundle(zones, mask, synthetic_state())
-    assert bundle.X_actions.shape[-1] == 21
+    assert bundle.X_actions.shape[-1] == 17
     assert bundle.X_stock.shape[-1] == 4
     full = resolve_ablation("full")
     full_arrays = apply_ablation_to_arrays(

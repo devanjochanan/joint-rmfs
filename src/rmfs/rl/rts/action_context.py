@@ -8,6 +8,7 @@ Unselected contexts do not reserve or mutate simulator state.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import math
 from typing import Any, Mapping, Sequence
 
 from engine.netlogo_coordinate import NetLogoCoordinate
@@ -166,6 +167,7 @@ def build_action_contexts(
         static_index=static_index,
     ))
     replenishment_hard_cap_reached = _replenishment_hard_cap_reached(context)
+    strict_mode = _static_index_required(getattr(context, "warehouse", None))
     contexts: list[RTSActionContext] = []
     for action_index in range(len(zones) * 2):
         action = decode_action(action_index, zones)
@@ -232,7 +234,13 @@ def build_action_contexts(
             state_feature_values=state_values,
             context_id=context_id,
         )
-        contexts.append(_with_cycle_estimate(context, action_context) if include_cycle_estimates else action_context)
+        finalized = _with_cycle_estimate(context, action_context) if include_cycle_estimates else action_context
+        # Schema-v6 invariant: in strict RTS modes a valid action with a known
+        # proposed next job must carry a finite, nonnegative cycle estimate.
+        # Mask the affected action rather than silently emitting a zero cycle.
+        if include_cycle_estimates and strict_mode and not cycle_estimate_invariant_holds(finalized):
+            finalized = _mask_for_cycle_invariant(finalized)
+        contexts.append(finalized)
     return tuple(contexts)
 
 
@@ -358,7 +366,16 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
                 pass
         proposal = current
     refreshed = refreshed.with_next_job_proposal(proposal)
-    return _with_cycle_estimate(context, refreshed)
+    refreshed = _with_cycle_estimate(context, refreshed)
+    # Schema-v6 invariant enforced fail-fast for the selected action: a valid
+    # action with a known proposed next job must have a finite cycle estimate.
+    if not cycle_estimate_invariant_holds(refreshed):
+        raise RuntimeError(
+            f"selected RTS action violates cycle-estimate invariant for "
+            f"{refreshed.branch}:{refreshed.zone_id}: proposed_next_job_known=1 "
+            "but estimated_cycle_time is not finite/nonnegative"
+        )
+    return refreshed
 
 
 def select_candidate_storage(context: Any, zone_id: str, *, static_index: Any | None = None) -> tuple[Any | None, RTSStorageFeasibility]:
@@ -637,6 +654,54 @@ def _with_cycle_estimate(context: Any, action_context: RTSActionContext) -> RTSA
     except Exception as exc:
         estimate = _UnavailableCycleEstimate(action_context, exc)
     return action_context.with_cycle_estimate(estimate)
+
+
+def _proposed_next_job_known(action_context: RTSActionContext) -> bool:
+    return bool(getattr(getattr(action_context, "next_job_proposal", None), "has_next_job", False))
+
+
+def _cycle_estimate_finite_nonneg(action_context: RTSActionContext) -> bool:
+    estimate = getattr(action_context, "cycle_estimate", None)
+    if estimate is None:
+        return False
+    try:
+        payload = estimate.to_json_dict()
+    except Exception:
+        return False
+    if not bool(payload.get("known", False)):
+        return False
+    try:
+        value = float(payload.get("estimated_cycle_seconds"))
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(value) and value >= 0.0
+
+
+def cycle_estimate_invariant_holds(action_context: RTSActionContext) -> bool:
+    """Schema-v6 invariant.
+
+    action valid AND proposed_next_job_known == 1
+        -> estimated_cycle_time must be finite and nonnegative.
+
+    Trivially satisfied for invalid actions and for actions with no proposed
+    next job (those legitimately emit estimated_cycle_time == 0).
+    """
+    if not bool(getattr(action_context, "action_valid", False)):
+        return True
+    if not _proposed_next_job_known(action_context):
+        return True
+    return _cycle_estimate_finite_nonneg(action_context)
+
+
+def _mask_for_cycle_invariant(action_context: RTSActionContext) -> RTSActionContext:
+    reasons = tuple(sorted(set(action_context.invalid_reason_codes) | {"cycle_estimate_invariant_violation"}))
+    return replace(
+        action_context,
+        store_valid=False if action_context.branch == STORE else action_context.store_valid,
+        replenish_store_valid=False if action_context.branch == REPLENISH_STORE else action_context.replenish_store_valid,
+        action_valid=False,
+        invalid_reason_codes=reasons,
+    )
 
 
 class _UnavailableCycleEstimate:

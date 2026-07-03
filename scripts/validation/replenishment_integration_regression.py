@@ -70,6 +70,9 @@ def test_unmatched_idle_robot_bypass_after_picking_allocation() -> None:
 
     replenishment_pod = pod_with(20, 5, 5, {301: (10, 2, 0.5, 1.0)})
     register_pod(inv, replenishment_pod)
+    # Proactive replenishment pins the pod's origin storage before dispatch.
+    _origin20 = inv.storage_manager.createStorage(5, 5)
+    inv.storage_manager.addPodToStorage(replenishment_pod, _origin20)
     inv.pod_manager.skus_data[301]["current_global_qty"] = 1
     inv.pod_manager.skus_data[301]["global_inv_level"] = 0.01
     inv.pod_manager.skus_data[301]["global_threshold_inv_level"] = 0.5

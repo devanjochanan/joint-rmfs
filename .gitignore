@@ -88,3 +88,4 @@ sorted_skus_data.csv
 # Validation smoke-test scratch directories
 _smoke_seed_test/
 scripts/validation/__pycache__/
+create_dummy_pps_model.py

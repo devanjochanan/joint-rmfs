@@ -112,17 +112,13 @@ def test_feature_contract_variable_zones():
         "macro_region_destination_robot_pressure",
         "selected_replenishment_station_destination_pressure",
         "proposed_next_job_known",
-        "candidate_to_proposed_next_pod_distance_norm",
-        "cycle_estimate_known",
+        "candidate_to_proposed_next_pod_distance",
         "estimated_cycle_time",
-        "replenishment_queue_estimate_known",
-        "estimated_replenishment_queue_seconds",
-        "replenishment_station_load_pressure",
     )
     assert build_action_feature_names(zone_ids(9)) == expected
     assert build_action_feature_names(zone_ids(16)) == expected
     assert build_action_feature_names(zone_ids(25)) == expected
-    assert ACTION_FEATURE_SCHEMA_VERSION == "rts_action_features.v5"
+    assert ACTION_FEATURE_SCHEMA_VERSION == "rts_action_features.v6"
     assert STOCK_FEATURE_SCHEMA_VERSION == "rts_stock_features.v3"
     assert tuple(STOCK_FEATURE_NAMES) == (
         "local_fill_ratio",
@@ -133,7 +129,7 @@ def test_feature_contract_variable_zones():
     for count, expected_rows in ((9, 18), (16, 32), (25, 50)):
         zones = zone_ids(count)
         bundle = build_feature_bundle(zones, [1] * (2 * count), synthetic_state(zones))
-        assert bundle.X_actions.shape == (expected_rows, 21)
+        assert bundle.X_actions.shape == (expected_rows, 17)
         assert bundle.X_stock.shape[1] == 4
         assert not any("one_hot" in name for name in bundle.action_feature_names)
         removed = {"allocator_cost_norm", "regret_score_norm", "one_robot_degenerate", "estimated_queue_time"}
@@ -153,7 +149,7 @@ def test_picker_count_compatibility():
         source_x_values.append(float(bundle.X_actions[0, source_index]))
         assert "picking_station_count" not in bundle.action_feature_names
         assert all("picker_one_hot" not in name for name in bundle.action_feature_names)
-    assert widths == [21, 21, 21]
+    assert widths == [17, 17, 17]
     assert np.allclose(source_x_values, [0.1, 0.5, 0.9])
 
 
@@ -178,11 +174,11 @@ def test_mixed_zone_batch_and_model_forward():
             )
         )
     padded = build_feature_tensors_from_steps(steps)
-    assert padded.X_actions.shape == (3, 50, 21)
+    assert padded.X_actions.shape == (3, 50, 17)
     assert padded.M_actions[0, 18:].sum() == 0
     assert padded.M_actions[1, 32:].sum() == 0
     assert padded.M_actions[2].sum() == 50
-    model = RTSMaskedActorCritic(action_feature_dim=21, stock_feature_dim=4)
+    model = RTSMaskedActorCritic(action_feature_dim=17, stock_feature_dim=4)
     with torch.no_grad():
         logits, values = model(
             torch.as_tensor(padded.X_actions, dtype=torch.float32),

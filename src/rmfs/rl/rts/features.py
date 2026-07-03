@@ -14,7 +14,7 @@ from .stock_features import STOCK_FEATURE_NAMES, build_stock_feature_matrix, sto
 from .validation import validate_no_raw_threshold_features
 
 
-ACTION_FEATURE_SCHEMA_VERSION = "rts_action_features.v5"
+ACTION_FEATURE_SCHEMA_VERSION = "rts_action_features.v6"
 
 ACTION_FEATURE_BASE_NAMES: tuple[str, ...] = (
     "is_replenish_store",
@@ -32,12 +32,8 @@ ACTION_FEATURE_BASE_NAMES: tuple[str, ...] = (
     "macro_region_destination_robot_pressure",
     "selected_replenishment_station_destination_pressure",
     "proposed_next_job_known",
-    "candidate_to_proposed_next_pod_distance_norm",
-    "cycle_estimate_known",
+    "candidate_to_proposed_next_pod_distance",
     "estimated_cycle_time",
-    "replenishment_queue_estimate_known",
-    "estimated_replenishment_queue_seconds",
-    "replenishment_station_load_pressure",
 )
 
 
@@ -83,7 +79,6 @@ def build_action_feature_matrix(
         if row.get("action_index") is not None
     }
     names = build_action_feature_names(zones)
-    distance_denominator = max(1.0, _float(spatial.get("distance_normalization_denominator", 1.0)))
     layout = dict(state_json.get("layout_normalization", {}) or {})
     eligible_skus = list(dict(state_json.get("replenishment_snapshot", {}) or {}).get("eligible_skus", []) or [])
     replenishment_eligible_sku_ratio = _bounded(len(eligible_skus) / float(max(1, len(stock_rows)))) if stock_rows else 0.0
@@ -98,18 +93,6 @@ def build_action_feature_matrix(
             or {}
         )
         cycle_estimate = dict(action_context.get("cycle_estimate") or {})
-        queue_estimate = dict(cycle_estimate.get("queue_estimate") or {})
-        queue_known = bool(queue_estimate.get("known", False))
-        if action.branch == REPLENISH_STORE:
-            station_load_pressure = _bounded(
-                (
-                    _float(queue_estimate.get("active_robot_count", 0.0))
-                    + _float(queue_estimate.get("queued_robot_count", 0.0))
-                )
-                / max(1.0, _float(queue_estimate.get("server_count", 1.0)))
-            )
-        else:
-            station_load_pressure = 0.0
         coord = action_context.get("candidate_storage_coordinate")
         if coord is None:
             coord = (zone_row.get("candidate_storage_x", 0.0), zone_row.get("candidate_storage_y", 0.0))
@@ -130,12 +113,8 @@ def build_action_feature_matrix(
             _bounded(zone_row.get("macro_region_destination_robot_pressure", 0.0)),
             _bounded(action_context.get("selected_replenishment_station_destination_pressure", zone_row.get("selected_replenishment_station_destination_pressure", 0.0))),
             _bounded(proposal.get("proposed_next_job_known", proposal.get("next_job_known", 0.0))),
-            _distance_norm(proposal.get("candidate_to_proposed_next_pod_distance", proposal.get("candidate_storage_to_next_pod_distance", 0.0)), distance_denominator),
-            1.0 if bool(cycle_estimate.get("known", False)) else 0.0,
+            _raw_distance(proposal.get("candidate_to_proposed_next_pod_distance", proposal.get("candidate_storage_to_next_pod_distance", 0.0))),
             _finite_if_known(cycle_estimate, "estimated_cycle_seconds"),
-            1.0 if action.branch == REPLENISH_STORE and queue_known else 0.0,
-            max(0.0, _float(queue_estimate.get("estimated_wait_seconds", 0.0))) if action.branch == REPLENISH_STORE and queue_known else 0.0,
-            station_load_pressure,
         ]
         if len(values) != len(names):
             raise ValueError(f"RTS-RL action feature width mismatch: {len(values)} != {len(names)}")
@@ -264,8 +243,15 @@ def _bounded(value: Any) -> float:
     return max(0.0, min(1.0, _float(value)))
 
 
-def _distance_norm(value: Any, denominator: float) -> float:
-    return max(0.0, min(1.0, _float(value) / max(1.0, float(denominator))))
+def _raw_distance(value: Any) -> float:
+    """Raw directed empty-robot graph distance from candidate storage to the
+    proposed next pod. Non-negative but otherwise unbounded: it is NOT divided
+    by any layout span or maximum distance and is NOT clipped to [0, 1]. Returns
+    0.0 only when there is no proposed next task (missing/non-finite value).
+    The generic training standardization pipeline may still standardize this
+    column using learned mean/std.
+    """
+    return max(0.0, _float(value))
 
 
 def _finite_if_known(payload: Mapping[str, Any], key: str) -> float:

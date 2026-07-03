@@ -25,7 +25,7 @@ SUPPORTED_ABLATIONS: tuple[str, ...] = (
 )
 
 ACTION_FEATURE_ZERO_MAP: dict[str, tuple[str, ...]] = {
-    "no_next_job_distance": ("candidate_to_proposed_next_pod_distance_norm",),
+    "no_next_job_distance": ("candidate_to_proposed_next_pod_distance",),
     "no_macro_region_pressure": (
         "macro_region_present_robot_pressure",
         "macro_region_destination_robot_pressure",
@@ -34,7 +34,6 @@ ACTION_FEATURE_ZERO_MAP: dict[str, tuple[str, ...]] = {
         "zone_present_robot_pressure",
         "zone_destination_robot_pressure",
         "selected_replenishment_station_destination_pressure",
-        "replenishment_station_load_pressure",
     ),
     "no_source_picker_coordinates": ("source_picker_x_norm", "source_picker_y_norm"),
     "no_sku_similarity": ("sku_similarity_fraction",),

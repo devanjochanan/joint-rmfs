@@ -79,10 +79,12 @@ def test_store_cycle_components_and_features():
     mask = build_action_mask_from_contexts(("zone-a",), state.action_contexts)
     features = build_feature_bundle(("zone-a",), mask, state.state_json)
     names = features.action_feature_names
-    assert "cycle_estimate_known" in names
+    # v6: the cycle_estimate_known feature was removed; estimated_cycle_time
+    # remains and, per the schema-v6 invariant, must be finite for a valid
+    # action with a known proposed next job.
+    assert "cycle_estimate_known" not in names
     assert "estimated_cycle_time" in names
     assert "estimated_queue_time" not in names
-    assert features.X_actions[0, names.index("cycle_estimate_known")] == 1.0
     assert abs(features.X_actions[0, names.index("estimated_cycle_time")] - expected) < 1e-5
 
 
@@ -118,12 +120,17 @@ def test_no_next_job_cycle_unknown_without_masking():
         assert estimate["known"] is False
         assert estimate["status"] == "unavailable_no_next_job"
     features = build_feature_bundle(("zone-a",), mask, state.state_json)
-    known_index = features.action_feature_names.index("cycle_estimate_known")
+    known_index = features.action_feature_names.index("proposed_next_job_known")
     cycle_index = features.action_feature_names.index("estimated_cycle_time")
+    dist_index = features.action_feature_names.index("candidate_to_proposed_next_pod_distance")
+    # No proposed next job -> proposed_next_job_known=0, estimated_cycle_time=0,
+    # raw candidate-to-next-pod distance=0.
     assert features.X_actions[0, known_index] == 0.0
     assert features.X_actions[1, known_index] == 0.0
     assert features.X_actions[0, cycle_index] == 0.0
     assert features.X_actions[1, cycle_index] == 0.0
+    assert features.X_actions[0, dist_index] == 0.0
+    assert features.X_actions[1, dist_index] == 0.0
 
 
 def test_rollout_estimate_and_error_fields():

@@ -302,6 +302,10 @@ def test_idle_bypass_permits_beyond_soft_cap():
     pod = pod_with(20, 5, 5, {101: (10, 2, 0.5, 1.0)})
     register_pod(inv, pod)
     inv.pod_manager.mark_pod_available(pod)
+    # Proactive replenishment returns the pod to its exact origin, so the pod
+    # must own a storage before it can be dispatched proactively.
+    _origin20 = inv.storage_manager.createStorage(5, 5)
+    inv.storage_manager.addPodToStorage(pod, _origin20)
     inv.pod_manager.skus_data[101]["current_global_qty"] = 1
     inv.pod_manager.skus_data[101]["global_inv_level"] = 0.01
     inv.pod_manager.skus_data[101]["global_threshold_inv_level"] = 0.5
