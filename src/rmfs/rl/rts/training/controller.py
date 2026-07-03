@@ -180,7 +180,11 @@ def run_on_policy_training_controller(
         for batch_id in range(start_batch_id, end_batch_id + 1):
             batch_dir = run_root / f"batch_{batch_id:06d}"
             if batch_dir.exists():
-                raise RuntimeError(f"refusing to overwrite existing batch directory: {batch_dir}")
+                if resume_latest and batch_id == start_batch_id:
+                    print(f"[resume] removing incomplete batch directory: {batch_dir}")
+                    shutil.rmtree(batch_dir)
+                else:
+                    raise RuntimeError(f"refusing to overwrite existing batch directory: {batch_dir}")
             rollout_input = batch_dir / "rollout_input"
             workers_dir = batch_dir / "workers"
             rollout_input.mkdir(parents=True, exist_ok=True)
@@ -351,7 +355,7 @@ def run_on_policy_training_controller(
             processes = []
             log_files = []
             try:
-                for spec in worker_specs:
+                for wi, spec in enumerate(worker_specs):
                     runtime_root = Path(spec["runtime_root"])
                     if config.debug_worker_logs:
                         stdout_file = open(runtime_root / "worker_stdout.log", "w", encoding="utf-8")
@@ -377,6 +381,8 @@ def run_on_policy_training_controller(
                         stderr=stderr_arg,
                     )
                     processes.append(p)
+                    if config.worker_spawn_delay_seconds > 0 and wi < len(worker_specs) - 1:
+                        time.sleep(config.worker_spawn_delay_seconds)
                 
                 # Wait for all worker subprocesses to complete, updating progress bar
                 wait_start = time.perf_counter()

@@ -63,6 +63,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", default=False, help="Deprecated no-op flag. Dry run is default.")
     parser.add_argument("--execute", action="store_true", default=False, help="Run real training instead of a dry run.")
     parser.add_argument("--debug-worker-logs", action="store_true", default=False, help="Persist worker stdout/stderr logs for diagnosis.")
+    parser.add_argument("--worker-spawn-delay", type=float, default=5.0, help="Seconds to wait between spawning each worker subprocess (default 5.0). Prevents memory spikes from simultaneous startup.")
     parser.add_argument("--rts-torch-threads", type=int, default=None)
     parser.add_argument("--rts-torch-interop-threads", type=int, default=None)
     parser.set_defaults(charging_mode="inherit")
@@ -116,6 +117,7 @@ def main(argv=None):
         robot_task_allocator=args.robot_task_allocator,
         regret_k=args.regret_k if args.robot_task_allocator == "regret_k" else None,
         debug_worker_logs=args.debug_worker_logs,
+        worker_spawn_delay_seconds=args.worker_spawn_delay,
         rts_torch_threads=args.rts_torch_threads,
         rts_torch_interop_threads=args.rts_torch_interop_threads,
     )
