@@ -378,6 +378,11 @@ def test_no_next_task_censored_and_dataset_rejected():
     start_return(robot)
     finish_return(robot)
     event_rows = rows(inv)
+    decisions = [row for row in event_rows if row.get("event_type") == "decision"]
+    assert len(decisions) == 1
+    assert decisions[0]["eligible_job_pool_size"] == 0
+    assert decisions[0]["eligible_job_queue_length"] == 0
+    assert decisions[0]["eligible_job_rejection_counts_by_reason"] == {}
     censored = [row for row in event_rows if row.get("paper_cycle_status") == "censored_no_next_task"]
     assert len(censored) == 1
     dataset = build_on_policy_training_steps(event_rows, required_policy_checkpoint_id="smoke_checkpoint")

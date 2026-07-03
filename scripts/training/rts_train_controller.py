@@ -12,6 +12,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.rmfs.rl.rts.training.controller import run_on_policy_training_controller
 from src.rmfs.rl.rts.training.on_policy_config import RTSOnPolicyTrainingConfig
+from src.rmfs.rl.rts.training.timebase import warehouse_horizon_seconds_to_netlogo_steps
+from src.rmfs.runtime_io.run_profiles import TICK_TO_SECOND
 
 
 def main(argv=None):
@@ -20,7 +22,15 @@ def main(argv=None):
     parser.add_argument("--output-root", default="data/runtime/rts_training", help="Training run output root directory.")
     parser.add_argument("--batches", type=int, required=True, help="Number of PPO collect-update cycles (batches) to run.")
     parser.add_argument("--workers", type=int, required=True, help="Number of isolated worker rollouts (workers) inside a batch.")
-    parser.add_argument("--netlogo-steps-per-run", type=int, required=True, help="Requested number of NetLogo steps for one worker run.")
+    horizon = parser.add_mutually_exclusive_group(required=True)
+    horizon.add_argument(
+        "--simulated-seconds-per-run",
+        "--warehouse-seconds-per-run",
+        type=float,
+        default=None,
+        help="Requested simulated warehouse seconds for one worker run. Converted to backend steps using tick_to_second=0.15.",
+    )
+    horizon.add_argument("--netlogo-steps-per-run", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--seed", type=int, default=42, help="Seed base for training.")
     parser.add_argument("--cycle-reference", default=None, help="Optional legacy cycle_reference.json path (compatibility only).")
     parser.add_argument("--initial-checkpoint-dir", default=None, help="Initial policy checkpoint directory.")
@@ -62,6 +72,17 @@ def main(argv=None):
         if not args.initial_checkpoint_dir and not args.resume_latest:
             parser.error("real execution (--execute) requires either --initial-checkpoint-dir or --resume-latest")
 
+    simulated_seconds_per_run = args.simulated_seconds_per_run
+    if simulated_seconds_per_run is not None:
+        netlogo_steps_per_run = warehouse_horizon_seconds_to_netlogo_steps(simulated_seconds_per_run, TICK_TO_SECOND)
+    else:
+        print(
+            "warning: --netlogo-steps-per-run is deprecated for RTS training; "
+            "use --simulated-seconds-per-run so the requested horizon is expressed in warehouse seconds.",
+            file=sys.stderr,
+        )
+        netlogo_steps_per_run = args.netlogo_steps_per_run
+
     zone_ids = ()
     if args.zone_ids:
         zone_ids = tuple(z.strip() for z in args.zone_ids.split(",") if z.strip())
@@ -74,8 +95,9 @@ def main(argv=None):
         output_root=output_root,
         batches=args.batches,
         workers=args.workers,
-        netlogo_steps_per_run=args.netlogo_steps_per_run,
+        netlogo_steps_per_run=netlogo_steps_per_run,
         seed=args.seed,
+        simulated_seconds_per_run=simulated_seconds_per_run,
         cycle_reference_path=Path(args.cycle_reference).resolve() if args.cycle_reference else None,
         device=args.device,
         worker_device=args.worker_device,

@@ -624,6 +624,46 @@ def _get_pile_on_rate(universe):
     return _get_picked_quantity(universe) / pod_visits
 
 
+def _print_gui_tick_status(warehouse):
+    cadence = _env_int("RMFS_GUI_TICK_PRINT_CADENCE", 1) or 1
+    step = _netlogo_step(warehouse)
+    if step is not None and step % max(1, cadence) != 0:
+        return
+    robots = [
+        obj for obj in getattr(warehouse, "_objects", []) or []
+        if getattr(obj, "object_type", None) == "robot"
+    ]
+    robot_states = defaultdict(int)
+    charging_count = 0
+    for robot in robots:
+        robot_states[str(getattr(robot, "current_state", "unknown"))] += 1
+        if (
+            bool(getattr(robot, "is_charging", False))
+            or bool(getattr(robot, "is_charging_pending", False))
+            or getattr(robot, "_claimed_charger", None) is not None
+        ):
+            charging_count += 1
+    orders_loaded = len(getattr(warehouse.order_manager, "orders", []) or [])
+    orders_unfinished = len(getattr(warehouse.order_manager, "unfinished_orders", []) or [])
+    orders_completed = max(orders_loaded - orders_unfinished, 0)
+    state_text = ",".join(f"{name}:{count}" for name, count in sorted(robot_states.items()))
+    print(
+        "[RMFS_TICK] "
+        f"step={step} "
+        f"warehouse_seconds={float(getattr(warehouse, '_tick', 0.0)):.2f} "
+        f"job_queue={len(getattr(warehouse, 'job_queue', []) or [])} "
+        f"robots={state_text} "
+        f"charging_active={charging_count} "
+        f"charging_enabled={bool(getattr(warehouse, 'charging_enabled', False))} "
+        f"rts_controls_replenishment={bool(getattr(warehouse, 'rts_controls_post_pick_replenishment', False))} "
+        f"orders_completed={orders_completed} "
+        f"orders_loaded={orders_loaded} "
+        f"orders_unfinished={orders_unfinished} "
+        f"pod_visits={_get_pod_visits(warehouse)} "
+        f"picked_quantity={_get_picked_quantity(warehouse)}"
+    )
+
+
 
 class DirectedGraph:
     key = ''
@@ -1730,6 +1770,7 @@ def tick():
                 terminal_reason=SimulationTermination.MAXIMUM_HORIZON.value,
             )
         payload = _run_semantic_tick(warehouse)
+        _print_gui_tick_status(warehouse)
         _persist_universe(warehouse)
         return payload
     except Exception:

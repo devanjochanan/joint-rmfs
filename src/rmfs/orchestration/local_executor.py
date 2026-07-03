@@ -605,6 +605,42 @@ def load_worker_summary(runtime_root: Path):
         return json.load(fh)
 
 
+def _read_worker_progress(specs: list[RunSpec]) -> int:
+    completed_steps = 0
+    for spec in specs:
+        status_path = spec.runtime_root / "worker_status.json"
+        if not status_path.exists():
+            continue
+        try:
+            with status_path.open() as fh:
+                status = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        current = status.get("current_progress_steps", 0)
+        try:
+            completed_steps += max(0, int(current))
+        except (TypeError, ValueError):
+            continue
+    return completed_steps
+
+
+def _make_controller_progress_bar(enabled: bool, total_steps: int):
+    if not enabled:
+        return None
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        print("warning: tqdm is not installed; controller progress bar disabled", file=sys.stderr)
+        return None
+    return tqdm(
+        total=max(0, int(total_steps)),
+        desc="RMFS backend steps",
+        unit="step",
+        dynamic_ncols=True,
+        leave=True,
+    )
+
+
 def run_controller(
     repo_root: Path,
     output_root: Path,
@@ -641,6 +677,7 @@ def run_controller(
     full_raw_order_replay: bool = False,
     rts_torch_threads: int | None = None,
     rts_torch_interop_threads: int | None = None,
+    progress: bool = False,
 ):
     output_root.mkdir(parents=True, exist_ok=True)
     profile_cfg = resolve_run_profile(
@@ -824,6 +861,8 @@ def run_controller(
     snapshot_before = hash_snapshot_files(input_snapshot_root) if snapshot_inputs else {}
     processes = []
     completed = []
+    progress_bar = _make_controller_progress_bar(progress, runs * ticks)
+    progress_last = 0
 
     def launch(spec: RunSpec):
         stdout_path = spec.runtime_root / "worker_stdout.log"
@@ -847,23 +886,46 @@ def run_controller(
         return {"spec": spec, "proc": proc, "stdout": stdout_fh, "stderr": stderr_fh}
 
     pending = list(specs)
-    while pending or processes:
-        while pending and len(processes) < max_workers:
-            processes.append(launch(pending.pop(0)))
+    try:
+        while pending or processes:
+            while pending and len(processes) < max_workers:
+                processes.append(launch(pending.pop(0)))
 
-        still_running = []
-        for item in processes:
-            return_code = item["proc"].poll()
-            if return_code is None:
-                still_running.append(item)
-                continue
-            item["stdout"].close()
-            item["stderr"].close()
-            completed.append({"spec": item["spec"], "return_code": return_code})
-        processes = still_running
+            still_running = []
+            for item in processes:
+                return_code = item["proc"].poll()
+                if return_code is None:
+                    still_running.append(item)
+                    continue
+                item["stdout"].close()
+                item["stderr"].close()
+                completed.append({"spec": item["spec"], "return_code": return_code})
+            processes = still_running
 
-        if processes and (pending or len(processes) >= max_workers):
-            processes[0]["proc"].wait(timeout=None)
+            if progress_bar is not None:
+                current_progress = min(runs * ticks, _read_worker_progress(specs))
+                if current_progress > progress_last:
+                    progress_bar.update(current_progress - progress_last)
+                    progress_last = current_progress
+                progress_bar.set_postfix(
+                    running=len(processes),
+                    pending=len(pending),
+                    completed=len(completed),
+                    refresh=False,
+                )
+                progress_bar.refresh()
+
+            if processes and (pending or len(processes) >= max_workers):
+                if progress_bar is None:
+                    processes[0]["proc"].wait(timeout=None)
+                else:
+                    time.sleep(0.5)
+    finally:
+        if progress_bar is not None:
+            current_progress = min(runs * ticks, _read_worker_progress(specs))
+            if current_progress > progress_last:
+                progress_bar.update(current_progress - progress_last)
+            progress_bar.close()
 
     root_after = snapshot_root(repo_root)
     root_changed = changed_root_files(root_before, root_after)
@@ -1042,6 +1104,7 @@ def main(argv=None):
     controller_parser.add_argument("--keep-runtime-artifacts", action="store_true", default=False)
     controller_parser.add_argument("--detail-db", action="store_true", default=None, help="Enable detail SQLite DB writes in workers. Disabled by default for headless runs.")
     controller_parser.add_argument("--timing", action="store_true", default=False, help="Collect compact worker timing summaries.")
+    controller_parser.add_argument("--progress", action="store_true", default=False, help="Show a tqdm progress bar for completed backend steps.")
     controller_parser.add_argument("--worker-status-cadence", type=int, default=100, help="Write worker_status.json every N ticks, plus start/final status.")
     controller_parser.add_argument("--bootstrap-n-orders", type=int, default=None)
     controller_parser.add_argument("--demand-horizon-ticks", type=int, default=None)
@@ -1122,6 +1185,7 @@ def main(argv=None):
         keep_runtime_artifacts=args.keep_runtime_artifacts,
         detail_db=args.detail_db,
         timing=args.timing,
+        progress=args.progress,
         worker_status_cadence=args.worker_status_cadence,
         profile=args.profile,
         bootstrap_n_orders=args.bootstrap_n_orders,

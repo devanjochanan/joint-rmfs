@@ -126,6 +126,8 @@ class CommittedNextEligibleJobPool:
     build_seconds: float
     queue_scan_count: int
     loaded_distance_lookup_count: int
+    queue_length: int = 0
+    rejection_counts_by_reason: Mapping[str, int] | None = None
 
     @property
     def size(self) -> int:
@@ -184,6 +186,8 @@ class CommittedNextRegistry:
         diagnostics: dict[str, Any] = {
             "queue_scan_count": 0,
             "eligible_job_pool_size": 0,
+            "eligible_job_queue_length": 0,
+            "eligible_job_rejection_counts_by_reason": {},
             "loaded_distance_lookup_count": 0,
             "empty_distance_lookup_count": 0,
             "proposal_construction_count": 0,
@@ -200,6 +204,8 @@ class CommittedNextRegistry:
             eligible_pool = self.build_eligible_job_pool(inventory, registry=registry)
         diagnostics["queue_scan_count"] = eligible_pool.queue_scan_count
         diagnostics["eligible_job_pool_size"] = eligible_pool.size
+        diagnostics["eligible_job_queue_length"] = eligible_pool.queue_length
+        diagnostics["eligible_job_rejection_counts_by_reason"] = dict(eligible_pool.rejection_counts_by_reason or {})
         diagnostics["loaded_distance_lookup_count"] = eligible_pool.loaded_distance_lookup_count
         diagnostics["eligible_pool_build_seconds"] = eligible_pool.build_seconds
         contexts_by_zone = {}
@@ -296,6 +302,8 @@ class CommittedNextRegistry:
             "selected_revalidation_queue_scan_count": 0,
             "selected_proposal_refresh_count": 1,
             "eligible_job_pool_size": 0,
+            "eligible_job_queue_length": 0,
+            "eligible_job_rejection_counts_by_reason": {},
             "loaded_distance_lookup_count": 0,
             "empty_distance_lookup_count": 0,
             "selected_zone_refresh_seconds": 0.0,
@@ -323,6 +331,8 @@ class CommittedNextRegistry:
         diagnostics["queue_scan_count"] = eligible_pool.queue_scan_count
         diagnostics["selected_revalidation_queue_scan_count"] = eligible_pool.queue_scan_count
         diagnostics["eligible_job_pool_size"] = eligible_pool.size
+        diagnostics["eligible_job_queue_length"] = eligible_pool.queue_length
+        diagnostics["eligible_job_rejection_counts_by_reason"] = dict(eligible_pool.rejection_counts_by_reason or {})
         diagnostics["loaded_distance_lookup_count"] = eligible_pool.loaded_distance_lookup_count
         diagnostics["eligible_pool_build_seconds"] = eligible_pool.build_seconds
         proposal = self._build_proposal_for_storage(
@@ -562,6 +572,8 @@ class CommittedNextRegistry:
         start = time.perf_counter()
         candidates: list[CommittedNextEligibleJob] = []
         loaded_distance_lookup_count = 0
+        rejection_counts: dict[str, int] = {}
+        queue = list(getattr(inventory, "job_queue", []) or [])
         if registry is None:
             runtime = getattr(inventory, "rts_rollout_runtime", None)
             config = getattr(runtime, "config", None)
@@ -569,23 +581,29 @@ class CommittedNextRegistry:
                 registry = _runtime_zone_registry(inventory, getattr(config, "zone_ids", ()) or ())
             except Exception:
                 registry = None
-        for queue_index, job in enumerate(getattr(inventory, "job_queue", []) or []):
-            eligible, station, pod, zone_id = self._candidate_context(inventory, job, registry)
+        for queue_index, job in enumerate(queue):
+            eligible, station, pod, zone_id, reason = self._candidate_context_with_reason(inventory, job, registry)
             if not eligible:
+                _increment(rejection_counts, reason)
                 continue
             if self.job_id_to_reservation.get(job_id(job)) is not None:
+                _increment(rejection_counts, "job_already_reserved")
                 continue
             if self.pod_id_to_reservation.get(pod_id(pod)) is not None:
+                _increment(rejection_counts, "pod_already_reserved")
                 continue
             if _active_robot_has_job_or_pod(inventory, job, pod):
+                _increment(rejection_counts, "active_robot_owns_job_or_pod")
                 continue
             try:
                 loaded_distance_lookup_count += 1
                 loaded_leg = graph_distance_or_fallback(inventory, job.pod_coordinate, station, topology=LOADED_ROBOT)
                 if loaded_leg.distance is None:
+                    _increment(rejection_counts, "loaded_pod_to_picker_unreachable")
                     continue
                 pod_to_picker = float(loaded_leg.distance)
             except Exception:
+                _increment(rejection_counts, "loaded_distance_error")
                 continue
             candidates.append(
                 CommittedNextEligibleJob(
@@ -609,6 +627,8 @@ class CommittedNextRegistry:
             build_seconds=max(0.0, time.perf_counter() - start),
             queue_scan_count=1,
             loaded_distance_lookup_count=loaded_distance_lookup_count,
+            queue_length=len(queue),
+            rejection_counts_by_reason=dict(sorted(rejection_counts.items())),
         )
 
     def _proposal_from_decision(self, inventory: Any, robot: Any, decision: Any) -> CommittedNextProposal | None:
@@ -747,43 +767,47 @@ class CommittedNextRegistry:
         return candidates
 
     def _candidate_context(self, inventory: Any, job: Any, registry: Any):
+        eligible, station, pod, zone_id, _reason = self._candidate_context_with_reason(inventory, job, registry)
+        return eligible, station, pod, zone_id
+
+    def _candidate_context_with_reason(self, inventory: Any, job: Any, registry: Any):
         if job is None or getattr(job, "is_finished", False):
-            return False, None, None, ""
+            return False, None, None, "", "job_missing_or_finished"
         if getattr(job, "rts_continuation_active", False):
-            return False, None, None, ""
+            return False, None, None, "", "rts_continuation_active"
         if getattr(job, "committed_next_reservation_id", None):
-            return False, None, None, ""
+            return False, None, None, "", "job_has_committed_next_reservation"
         if not list(getattr(job, "orders", []) or []):
-            return False, None, None, ""
+            return False, None, None, "", "job_has_no_customer_order_lines"
         pod = getattr(job, "pod", None)
         if pod is None:
-            return False, None, None, ""
+            return False, None, None, "", "job_has_no_pod"
         if getattr(pod, "rts_return_in_progress", False):
-            return False, None, None, ""
+            return False, None, None, "", "pod_rts_return_in_progress"
         if getattr(pod, "committed_next_owner_robot_id", None):
-            return False, None, None, ""
+            return False, None, None, "", "pod_has_committed_next_owner"
         if getattr(pod, "is_awaiting_replenishment", False):
-            return False, None, None, ""
+            return False, None, None, "", "pod_awaiting_replenishment"
         if getattr(pod, "must_replenish_before_pick", False):
-            return False, None, None, ""
+            return False, None, None, "", "pod_must_replenish_before_pick"
         try:
             station = inventory.station_manager.get_station_by_id(job.station_id)
         except Exception:
-            return False, None, None, ""
+            return False, None, None, "", "picking_station_lookup_error"
         if station is None or not station.is_picker_station():
-            return False, None, None, ""
+            return False, None, None, "", "picking_station_invalid"
         storage = inventory.storage_manager.getStorageByPod(pod)
         if storage is None:
-            return False, None, None, ""
+            return False, None, None, "", "pod_has_no_storage"
         if registry is None:
-            return False, None, None, ""
+            return False, None, None, "", "zone_registry_missing"
         try:
             zone_id = registry.zone_id_for_storage(storage)
         except Exception:
             zone_id = ""
         if not zone_id:
-            return False, None, None, ""
-        return True, station, pod, str(zone_id)
+            return False, None, None, "", "pod_storage_zone_missing"
+        return True, station, pod, str(zone_id), ""
 
     def _validate_activation(self, inventory: Any, reservation: CommittedNextReservation) -> tuple[bool, str]:
         job = reservation.job
@@ -956,6 +980,11 @@ def _identity_index(items: list[Any], target: Any) -> int | None:
         if item is target:
             return index
     return None
+
+
+def _increment(counts: dict[str, int], reason: str | None) -> None:
+    key = str(reason or "unknown")
+    counts[key] = int(counts.get(key, 0)) + 1
 
 
 def _active_robot_has_job_or_pod(inventory: Any, job: Any, pod: Any) -> bool:

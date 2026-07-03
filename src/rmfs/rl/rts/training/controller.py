@@ -28,6 +28,7 @@ from .on_policy_config import RTSOnPolicyTrainingConfig, validate_on_policy_trai
 from .progress import progress_bar, resolve_progress_enabled, RTSTrainingProgressBar
 from .seeding import derive_worker_seed
 from .tensorboard import RTSTensorBoardLogger
+from .timebase import netlogo_steps_to_warehouse_time
 from .reward_normalizer import (
     apply_cold_start_rewards,
     choose_reward_metadata_for_batch,
@@ -95,6 +96,8 @@ def run_on_policy_training_controller(
     commit = git_value(repo_root, "rev-parse", "HEAD")
 
     config_dict = config.to_json_dict()
+    resolved_simulated_horizon_seconds = netlogo_steps_to_warehouse_time(config.netlogo_steps_per_run, 0.15)
+    config_dict["resolved_simulated_horizon_seconds"] = resolved_simulated_horizon_seconds
     ablation = resolve_ablation(config.feature_ablation)
     scheduler = scheduler_metadata(
         robot_task_allocator=config.robot_task_allocator,
@@ -273,6 +276,8 @@ def run_on_policy_training_controller(
                     "batch_id": batch_id,
                     "status": "dry_run",
                     "netlogo_steps_per_run": config.netlogo_steps_per_run,
+                    "simulated_seconds_per_run": config.simulated_seconds_per_run,
+                    "resolved_simulated_horizon_seconds": resolved_simulated_horizon_seconds,
                     "workers": config.workers,
                     "active_checkpoint_id": active_checkpoint_id,
                     "worker_specs_written": len(worker_specs),
@@ -293,6 +298,7 @@ def run_on_policy_training_controller(
                 tb.log_scalars(
                     {
                         "time/netlogo_steps_per_run": config.netlogo_steps_per_run,
+                        "time/resolved_simulated_horizon_seconds": resolved_simulated_horizon_seconds,
                         "rollout/trainable_step_count": 0,
                         "checkpoint/batch_id": batch_id,
                         "checkpoint/latest_updated": 0,
@@ -575,6 +581,9 @@ def run_on_policy_training_controller(
                     "batch_id": batch_id,
                     "status": "skipped_insufficient_trainable_steps",
                     "active_checkpoint_id": active_checkpoint_id,
+                    "netlogo_steps_per_run": config.netlogo_steps_per_run,
+                    "simulated_seconds_per_run": config.simulated_seconds_per_run,
+                    "resolved_simulated_horizon_seconds": resolved_simulated_horizon_seconds,
                     "dataset_summary": dataset.summary,
                     "latest_updated": False,
                     "zone_ids": list(active_zone_ids or ()),
@@ -642,6 +651,8 @@ def run_on_policy_training_controller(
                 "batch_id": batch_id,
                 "status": "updated",
                 "netlogo_steps_per_run": config.netlogo_steps_per_run,
+                "simulated_seconds_per_run": config.simulated_seconds_per_run,
+                "resolved_simulated_horizon_seconds": resolved_simulated_horizon_seconds,
                 "workers": config.workers,
                 "active_checkpoint_id": active_checkpoint_id,
                 "worker_specs_written": len(worker_specs),
@@ -707,6 +718,8 @@ def run_on_policy_training_controller(
                     "worker/failure_count": worker_failures,
                     "worker/elapsed_wall_time_avg_sec": worker_elapsed_avg,
                     "worker/controller_wait_time_sec": wait_time,
+                    "time/netlogo_steps_per_run": config.netlogo_steps_per_run,
+                    "time/resolved_simulated_horizon_seconds": resolved_simulated_horizon_seconds,
                     "warehouse/orders_completed": 0.0,
                     "warehouse/orders_completed_available": 0.0,
                     "warehouse/avg_order_cycle_time": 0.0,

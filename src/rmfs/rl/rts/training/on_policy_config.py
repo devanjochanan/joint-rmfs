@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -18,6 +19,7 @@ class RTSOnPolicyTrainingConfig:
     workers: int
     netlogo_steps_per_run: int
     seed: int
+    simulated_seconds_per_run: float | None = None
     cycle_reference_path: Path | None = None
     device: str = "auto"
     worker_device: str = "cpu"
@@ -100,6 +102,10 @@ def validate_on_policy_training_config(
         raise ValueError("workers must be >= 1")
     if int(config.netlogo_steps_per_run) < 1:
         raise ValueError("netlogo_steps_per_run must be >= 1")
+    if config.simulated_seconds_per_run is not None:
+        simulated_seconds = float(config.simulated_seconds_per_run)
+        if not math.isfinite(simulated_seconds) or simulated_seconds <= 0.0:
+            raise ValueError("simulated_seconds_per_run must be finite and positive when supplied")
     if require_cycle_reference_exists and config.cycle_reference_path is not None and not Path(config.cycle_reference_path).exists():
         raise ValueError("cycle_reference_path must exist")
     if config.policy_action_mode not in {"sample", "greedy"}:

@@ -27,6 +27,13 @@ def warehouse_time_to_netlogo_steps(warehouse_time: float, tick_to_second: float
     return int(round(value / validate_tick_to_second(tick_to_second)))
 
 
+def warehouse_horizon_seconds_to_netlogo_steps(warehouse_time: float, tick_to_second: float) -> int:
+    value = float(warehouse_time)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("warehouse_time horizon must be finite and positive")
+    return int(math.ceil(value / validate_tick_to_second(tick_to_second)))
+
+
 @dataclass(frozen=True)
 class RMFSTimebase:
     netlogo_steps_completed: int

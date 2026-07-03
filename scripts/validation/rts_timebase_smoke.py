@@ -12,6 +12,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.rmfs.rl.rts.training.seeding import derive_worker_seed
 from src.rmfs.rl.rts.training.timebase import (
     RMFSTimebase,
+    warehouse_horizon_seconds_to_netlogo_steps,
     netlogo_steps_to_warehouse_time,
     validate_tick_to_second,
     warehouse_time_to_netlogo_steps,
@@ -32,6 +33,10 @@ def main():
     assert warehouse_time_to_netlogo_steps(2.0, 0.5) == 4
     assert warehouse_time_to_netlogo_steps(0.45, 0.15) == 3
     assert warehouse_time_to_netlogo_steps(1.5, 0.15) == 10
+    assert warehouse_horizon_seconds_to_netlogo_steps(750.0, 0.15) == 5000
+    assert warehouse_horizon_seconds_to_netlogo_steps(900.0, 0.15) == 6000
+    assert warehouse_horizon_seconds_to_netlogo_steps(5000.0, 0.15) == 33334
+    assert netlogo_steps_to_warehouse_time(33334, 0.15) >= 5000.0
     tb = RMFSTimebase(
         netlogo_steps_completed=4,
         tick_to_second=0.5,
@@ -44,6 +49,7 @@ def main():
     assert derive_worker_seed(42, 1, 2) != derive_worker_seed(42, 1, 3)
     assert_raises(lambda: validate_tick_to_second(0), ValueError)
     assert_raises(lambda: netlogo_steps_to_warehouse_time(-1, 0.5), ValueError)
+    assert_raises(lambda: warehouse_horizon_seconds_to_netlogo_steps(0, 0.15), ValueError)
     print("rts timebase smoke ok")
 
 

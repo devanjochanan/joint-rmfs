@@ -49,8 +49,8 @@ def main():
             "1",
             "--workers",
             "2",
-            "--netlogo-steps-per-run",
-            "3",
+            "--simulated-seconds-per-run",
+            "0.45",
             "--seed",
             "42",
             "--no-progress",
@@ -65,6 +65,9 @@ def main():
     with (run_root / "training_config.json").open() as fh:
         cfg = json.load(fh)
     assert cfg.get("debug_worker_logs") is False
+    assert cfg["netlogo_steps_per_run"] == 3
+    assert cfg["simulated_seconds_per_run"] == 0.45
+    assert cfg["resolved_simulated_horizon_seconds"] == 0.44999999999999996
 
     assert (run_root / "batch_000001" / "rollout_input" / "active_checkpoint_ref.json").exists()
     assert not (run_root / "batch_000001" / "rollout_input" / "cycle_reference.json").exists()
@@ -72,7 +75,72 @@ def main():
     assert (run_root / "batch_000001" / "workers" / "run_002" / "run_spec.json").exists()
     shutil.rmtree(output_root, ignore_errors=True)
 
-    # 1b. Resume dry-run appends additional batches after latest.json
+    # 1a. Simulated-second horizon is converted upward to backend steps.
+    shutil.rmtree(output_root, ignore_errors=True)
+    output_root.mkdir(parents=True, exist_ok=True)
+    controller_main(
+        [
+            "--artifact-label",
+            "phase9_dry_run_smoke",
+            "--output-root",
+            str(output_root),
+            "--batches",
+            "1",
+            "--workers",
+            "1",
+            "--simulated-seconds-per-run",
+            "5000",
+            "--seed",
+            "42",
+            "--no-progress",
+            "--no-tensorboard",
+            "--dry-run",
+        ]
+    )
+    run_root = output_root / "phase9_dry_run_smoke"
+    with (run_root / "training_config.json").open() as fh:
+        cfg = json.load(fh)
+    assert cfg["simulated_seconds_per_run"] == 5000.0
+    assert cfg["netlogo_steps_per_run"] == 33334
+    assert cfg["resolved_simulated_horizon_seconds"] >= 5000.0
+    with (run_root / "batch_000001" / "workers" / "run_001" / "run_spec.json").open() as fh:
+        spec = json.load(fh)
+    assert spec["ticks"] == 33334
+    assert spec["netlogo_steps_requested"] == 33334
+    assert spec["simulated_horizon_seconds"] >= 5000.0
+    shutil.rmtree(output_root, ignore_errors=True)
+
+    # 1b. Deprecated backend-step horizon remains available for compatibility.
+    shutil.rmtree(output_root, ignore_errors=True)
+    output_root.mkdir(parents=True, exist_ok=True)
+    controller_main(
+        [
+            "--artifact-label",
+            "phase9_dry_run_smoke",
+            "--output-root",
+            str(output_root),
+            "--batches",
+            "1",
+            "--workers",
+            "1",
+            "--netlogo-steps-per-run",
+            "3",
+            "--seed",
+            "42",
+            "--no-progress",
+            "--no-tensorboard",
+            "--dry-run",
+        ]
+    )
+    run_root = output_root / "phase9_dry_run_smoke"
+    with (run_root / "training_config.json").open() as fh:
+        cfg = json.load(fh)
+    assert cfg["netlogo_steps_per_run"] == 3
+    assert cfg["simulated_seconds_per_run"] is None
+    assert cfg["resolved_simulated_horizon_seconds"] == 0.44999999999999996
+    shutil.rmtree(output_root, ignore_errors=True)
+
+    # 1c. Resume dry-run appends additional batches after latest.json
     shutil.rmtree(output_root, ignore_errors=True)
     output_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -92,8 +160,8 @@ def main():
                 "2",
                 "--workers",
                 "1",
-                "--netlogo-steps-per-run",
-                "3",
+                "--simulated-seconds-per-run",
+                "0.45",
                 "--seed",
                 "42",
                 "--no-progress",
@@ -120,8 +188,8 @@ def main():
             "1",
             "--workers",
             "2",
-            "--netlogo-steps-per-run",
-            "3",
+            "--simulated-seconds-per-run",
+            "0.45",
             "--seed",
             "42",
             "--no-progress",
@@ -162,8 +230,8 @@ def main():
                             "1",
                             "--workers",
                             "2",
-                            "--netlogo-steps-per-run",
-                            "3",
+                            "--simulated-seconds-per-run",
+                            "0.45",
                             "--seed",
                             "42",
                             "--no-progress",
@@ -230,8 +298,8 @@ def main():
                             "1",
                             "--workers",
                             "2",
-                            "--netlogo-steps-per-run",
-                            "3",
+                            "--simulated-seconds-per-run",
+                            "0.45",
                             "--seed",
                             "42",
                             "--no-progress",

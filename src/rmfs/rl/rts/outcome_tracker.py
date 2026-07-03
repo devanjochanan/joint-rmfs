@@ -722,6 +722,10 @@ def _proposal_diagnostics_payload(context: Any, robot: Any) -> dict[str, Any]:
         refresh_diagnostics = {}
     return {
         "eligible_job_pool_size": _int_or_zero(diagnostics.get("eligible_job_pool_size")),
+        "eligible_job_queue_length": _int_or_zero(diagnostics.get("eligible_job_queue_length")),
+        "eligible_job_rejection_counts_by_reason": dict(
+            diagnostics.get("eligible_job_rejection_counts_by_reason") or {}
+        ),
         "proposal_queue_scan_count": _int_or_zero(diagnostics.get("queue_scan_count")),
         "loaded_distance_lookup_count": _int_or_zero(diagnostics.get("loaded_distance_lookup_count")),
         "empty_distance_lookup_count": _int_or_zero(diagnostics.get("empty_distance_lookup_count")),
