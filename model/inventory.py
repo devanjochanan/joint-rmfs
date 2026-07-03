@@ -151,6 +151,22 @@ class Inventory(Universe):
         self.pod_replenishment_threshold = float(
             os.environ.get("RMFS_POD_REPLENISHMENT_THRESHOLD", "0.4")
         )
+        # Approved replenishment capacity policy.
+        #   soft cap: at most 3 proactive replenishment robot commitments during
+        #             busy operation (bypassed only for genuinely idle robots
+        #             that have no assignable picking job).
+        #   hard cap: at most 11 total unique replenishment commitments across
+        #             all sources; load is counted by unique committed pods.
+        self.replenishment_soft_cap = int(
+            os.environ.get("RMFS_REPLENISHMENT_SOFT_CAP", "3")
+        )
+        self.replenishment_hard_cap = int(
+            os.environ.get("RMFS_REPLENISHMENT_HARD_CAP", "11")
+        )
+        self.proactive_replenishment_enabled = (
+            os.environ.get("RMFS_PROACTIVE_REPLENISHMENT", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
 
         self.priority_order = False
         self.robot_task_allocator = DEFAULT_ROBOT_TASK_ALLOCATOR
@@ -266,16 +282,94 @@ class Inventory(Universe):
             return 1.0
         return float(sum(fill_ratios) / len(fill_ratios))
 
+    def get_pod_local_fill_ratio(self, pod: Pod):
+        """Aggregate local fill ratio over the pod's valid SKU compartments.
+
+        Computed as the mean of ``current_qty / limit_qty`` across compartments
+        with a strictly positive capacity. Invalid (zero/negative capacity)
+        compartments are ignored rather than dividing by zero. Returns ``None``
+        when the pod has no valid compartment. This aggregate is independent of
+        the globally-low SKU subset.
+        """
+        if pod is None or not pod.skus:
+            return None
+        ratios = []
+        for details in pod.skus.values():
+            limit_qty = details.get("limit_qty", 0)
+            if limit_qty is None or limit_qty <= 0:
+                continue
+            current_qty = details.get("current_qty", 0)
+            ratios.append(max(0.0, float(current_qty) / float(limit_qty)))
+        if not ratios:
+            return None
+        return float(sum(ratios) / len(ratios))
+
+    def get_globally_low_refillable_skus_for_pod(self, pod: Pod) -> list[int]:
+        """SKUs on this pod that are globally low AND locally refillable.
+
+        A globally-low SKU is refillable on the pod only when the SKU exists on
+        that pod and its ``current_qty < limit_qty`` (there is headroom to add).
+        """
+        if pod is None or not pod.skus:
+            return []
+        result = []
+        for sku_id, details in pod.skus.items():
+            limit_qty = details.get("limit_qty", 0)
+            current_qty = details.get("current_qty", 0)
+            if limit_qty is None or current_qty >= limit_qty:
+                continue
+            _, needs_replenishment = self.pod_manager.is_sku_need_replenished(sku_id)
+            if needs_replenishment:
+                self.global_critical_skus.add(sku_id)
+                result.append(sku_id)
+        return sorted(set(result))
+
+    def evaluate_pod_replenishment_eligibility(self, pod: Pod) -> dict:
+        """Independent OR eligibility: local_trigger OR global_trigger.
+
+        Keeps trigger diagnostics separate: the local aggregate fill, the set of
+        globally-low refillable SKUs, and which branch(es) fired.
+        """
+        local_fill = self.get_pod_local_fill_ratio(pod)
+        local_trigger = (
+            local_fill is not None and local_fill < self.pod_replenishment_threshold
+        )
+        global_low_refillable = self.get_globally_low_refillable_skus_for_pod(pod)
+        global_trigger = len(global_low_refillable) > 0
+        branches = []
+        if local_trigger:
+            branches.append("local")
+        if global_trigger:
+            branches.append("global")
+        trigger_skus = sorted(
+            set(self.get_local_replenishment_skus_for_pod(pod)) | set(global_low_refillable)
+        )
+        return {
+            "eligible": bool(local_trigger or global_trigger),
+            "local_fill": local_fill,
+            "local_trigger": bool(local_trigger),
+            "global_low_refillable_skus": global_low_refillable,
+            "global_trigger": bool(global_trigger),
+            "trigger_skus": trigger_skus,
+            "branches": branches,
+        }
+
+    def is_pod_replenishment_eligible(self, pod: Pod) -> bool:
+        return bool(self.evaluate_pod_replenishment_eligibility(pod)["eligible"])
+
     def get_replenishment_skus_for_pod(self, pod: Pod) -> tuple[list[int], float]:
         if pod is None or not pod.skus:
             return [], 1.0
-        critical_skus = self.get_below_reorder_skus_for_pod(pod)
-        if not critical_skus:
-            return [], 1.0
-        qj_score = self.get_pod_critical_fill_score(pod, critical_skus)
-        if qj_score >= self.pod_replenishment_threshold:
-            return [], qj_score
-        return critical_skus, qj_score
+        plan = self.evaluate_pod_replenishment_eligibility(pod)
+        local_fill = plan["local_fill"] if plan["local_fill"] is not None else 1.0
+        if not plan["eligible"]:
+            return [], local_fill
+        # Restoration is always full-pod; the returned trigger list is diagnostic
+        # only. When the pod is eligible purely on the aggregate-local trigger and
+        # no individual SKU is flagged, fall back to the full compartment set so
+        # downstream non-empty checks do not treat an eligible pod as ineligible.
+        trigger_skus = plan["trigger_skus"] or sorted(pod.skus.keys())
+        return trigger_skus, local_fill
 
     def get_pending_replenishment_dispatch(self, pod_id: int):
         for request in self.pending_replenishment_dispatches:
@@ -292,12 +386,85 @@ class Inventory(Universe):
         wait_time = current_tick - int(request.get("created_tick", current_tick))
         return wait_time >= self.replenishment_dispatch_aging_ticks
 
+    def _iter_robots(self):
+        for obj in self.get_movable_objects():
+            if getattr(obj, "object_type", None) == "robot":
+                yield obj
+
+    def replenishment_commitments_by_pod(self) -> dict[int, str]:
+        """Unique committed replenishment pods → source.
+
+        Capacity is accounted by *unique committed pods* so that a single
+        commitment which flows pending → queued → active is counted exactly
+        once. The commitment sources are pending replenishment requests, queued
+        replenishment jobs, and active robot replenishment jobs.
+        """
+        commitments: dict[int, str] = {}
+        # Active robot replenishment jobs (authoritative source label).
+        for robot in self._iter_robots():
+            job = getattr(robot, "job", None)
+            if job is None or getattr(job, "is_finished", False):
+                continue
+            if getattr(robot, "current_state", None) == "idle":
+                continue
+            if not getattr(job, "is_replenishment_job", False):
+                continue
+            pod = getattr(job, "pod", None)
+            if pod is None:
+                continue
+            commitments[int(pod.pod_id)] = getattr(job, "replenishment_source", None) or "post_pick"
+        # Queued replenishment jobs.
+        for job in self.job_queue:
+            if not getattr(job, "is_replenishment_job", False):
+                continue
+            pod = getattr(job, "pod", None)
+            if pod is None:
+                continue
+            commitments.setdefault(
+                int(pod.pod_id),
+                getattr(job, "replenishment_source", None) or "post_pick",
+            )
+        # Pending replenishment requests.
+        for request in self.pending_replenishment_dispatches:
+            pid = int(request["pod_id"])
+            commitments.setdefault(pid, request.get("source", "post_pick"))
+        return commitments
+
+    def total_replenishment_load(self) -> int:
+        return len(self.replenishment_commitments_by_pod())
+
+    def proactive_replenishment_load(self) -> int:
+        return sum(
+            1 for source in self.replenishment_commitments_by_pod().values()
+            if source == "proactive"
+        )
+
+    def can_admit_replenishment(self, source: str, *, idle_bypass: bool = False) -> bool:
+        """Admission decision for a *new* replenishment commitment.
+
+        Hard cap (11) blocks every new source once total unique load is already
+        at the cap. The soft cap (3) blocks *normal* proactive admissions once
+        proactive load reaches the cap; the idle-no-picking-job bypass may admit
+        proactive work beyond the soft cap but still strictly below the hard cap.
+        """
+        commitments = self.replenishment_commitments_by_pod()
+        total = len(commitments)
+        if total >= self.replenishment_hard_cap:
+            return False
+        if source == "proactive" and not idle_bypass:
+            proactive = sum(1 for value in commitments.values() if value == "proactive")
+            if proactive >= self.replenishment_soft_cap:
+                return False
+        return True
+
     def enqueue_pending_replenishment_dispatch(
         self,
         pod: Pod,
         skus_to_replenish,
         *,
+        source: str = "post_pick",
         guaranteed_on_release: bool = False,
+        idle_bypass: bool = False,
     ) -> bool:
         if pod is None:
             return False
@@ -313,6 +480,8 @@ class Inventory(Universe):
 
         existing = self.get_pending_replenishment_dispatch(pod.pod_id)
         if existing is not None:
+            # Merging into an already-admitted request does not create a new
+            # commitment and must not re-apply admission caps or change load.
             existing["skus_to_replenish"] = sorted(
                 set(existing.get("skus_to_replenish", [])).union(normalized_skus)
             )
@@ -325,12 +494,21 @@ class Inventory(Universe):
                 pod.must_replenish_before_pick = True
             return False
 
+        # Duplicate request for a pod already committed elsewhere (queued/active)
+        # must not increase load.
+        if int(pod.pod_id) in self.replenishment_commitments_by_pod():
+            return False
+
+        if not self.can_admit_replenishment(source, idle_bypass=idle_bypass):
+            return False
+
         self.pending_replenishment_dispatches.append(
             {
                 "pod_id": int(pod.pod_id),
                 "skus_to_replenish": list(normalized_skus),
                 "created_tick": int(self._tick),
                 "guaranteed_on_release": bool(guaranteed_on_release),
+                "source": str(source),
             }
         )
         pod.has_pending_replenishment_dispatch = True
@@ -364,15 +542,19 @@ class Inventory(Universe):
                 continue
             if getattr(pod, "committed_next_owner_robot_id", None):
                 continue
-            skus_to_replenish, qj_score = self.get_replenishment_skus_for_pod(pod)
-            if sku_id not in skus_to_replenish:
+            plan = self.evaluate_pod_replenishment_eligibility(pod)
+            # For a specific globally-low SKU, only consider pods where this SKU
+            # is genuinely refillable (present and below its limit).
+            if sku_id not in plan["global_low_refillable_skus"]:
                 continue
+            skus_to_replenish = plan["trigger_skus"] or sorted(pod.skus.keys())
+            local_fill = plan["local_fill"] if plan["local_fill"] is not None else 1.0
             sku_details = pod.skus.get(sku_id, {})
             limit_qty = sku_details.get("limit_qty", 0)
             current_qty = sku_details.get("current_qty", 0)
             fill_ratio = current_qty / limit_qty if limit_qty > 0 else 1.0
             candidate_key = (
-                qj_score,
+                local_fill,
                 fill_ratio,
                 0 if pod.is_idle else 1,
                 int(pod.pod_id),
@@ -390,6 +572,7 @@ class Inventory(Universe):
         return self.enqueue_pending_replenishment_dispatch(
             pod,
             skus_to_replenish,
+            source="proactive",
             guaranteed_on_release=False,
         )
 
@@ -421,6 +604,7 @@ class Inventory(Universe):
         station: Station,
         skus_to_replenish,
         robot: Robot | None = None,
+        source: str = "post_pick",
     ) -> bool:
         if pod is None or station is None:
             return False
@@ -435,7 +619,7 @@ class Inventory(Universe):
             return False
 
         new_job = RobotJob(pod.coordinate, station_id=station.station_id, pod=pod)
-        new_job.add_replenishment_task(pod, replenishment_skus)
+        new_job.add_replenishment_task(pod, replenishment_skus, source=source)
         station.add_pod(pod.pod_id)
         pod.station = station
         self.pod_manager.mark_pod_not_available(pod)
@@ -487,19 +671,17 @@ class Inventory(Universe):
             if not pod.is_idle:
                 continue
 
-            skus_to_replenish, _ = self.get_replenishment_skus_for_pod(pod)
-            if not skus_to_replenish and guaranteed_request:
-                requested_skus = [
-                    int(sku)
-                    for sku in request.get("skus_to_replenish", [])
-                    if sku in pod.skus
-                ]
-                skus_to_replenish = sorted(set(requested_skus)) or self.get_local_replenishment_skus_for_pod(pod)
-            if not skus_to_replenish:
-                self.remove_pending_replenishment_dispatch(pod.pod_id)
-                continue
+            # A previously admitted request is a stable commitment: it is NOT
+            # revoked merely because an eligibility recheck (qj/local fill) now
+            # reads differently. Restoration is full-pod, so the trigger list is
+            # only diagnostic metadata carried through to the job.
+            plan = self.evaluate_pod_replenishment_eligibility(pod)
+            skus_to_replenish = plan["trigger_skus"] or sorted(
+                {int(sku) for sku in request.get("skus_to_replenish", []) if sku in pod.skus}
+            ) or sorted(pod.skus.keys())
+            source = request.get("source", "post_pick")
 
-            if self.send_pod_for_replenishment(pod, station, skus_to_replenish):
+            if self.send_pod_for_replenishment(pod, station, skus_to_replenish, source=source):
                 dispatched += 1
         return dispatched
 
@@ -512,16 +694,101 @@ class Inventory(Universe):
             for sku in (critical_skus or [])
             if sku is not None
         }
-        skus_to_replenish = set(self.get_local_replenishment_skus_for_pod(pod))
-        skus_to_replenish.update(critical_set)
-        if not skus_to_replenish:
+        plan = self.evaluate_pod_replenishment_eligibility(pod)
+        # Eligible on the approved OR rule, or forced by a globally-critical SKU
+        # discovered at pick time.
+        if not plan["eligible"] and not critical_set:
             return False
+        skus_to_replenish = set(plan["trigger_skus"]) | critical_set
+        if not skus_to_replenish:
+            skus_to_replenish = set(pod.skus.keys())
 
         return self.enqueue_pending_replenishment_dispatch(
             pod,
             sorted(skus_to_replenish),
+            source="post_pick",
             guaranteed_on_release=bool(critical_set),
         )
+
+    def _picking_jobs_assignable_now(self):
+        """Picking jobs currently eligible for allocation to an idle robot.
+
+        Mirrors the allocator's eligibility filter (excludes RTS-return pods,
+        committed-next-owned pods, and committed-next-reserved jobs). Only
+        picking jobs (not replenishment jobs) are counted.
+        """
+        assignable = []
+        for job in self.job_queue:
+            if getattr(job, "is_replenishment_job", False):
+                continue
+            pod = getattr(job, "pod", None)
+            if pod is None:
+                continue
+            if getattr(pod, "rts_return_in_progress", False):
+                continue
+            if getattr(pod, "committed_next_owner_robot_id", None):
+                continue
+            if getattr(job, "committed_next_reservation_id", None):
+                continue
+            assignable.append(job)
+        return assignable
+
+    def _idle_robots_available_for_replenishment(self):
+        return [
+            robot for robot in self._iter_robots()
+            if (robot.job is None or getattr(robot.job, "is_finished", False))
+            and getattr(robot, "current_state", None) == "idle"
+            and not getattr(robot, "is_charging_pending", False)
+            and not getattr(robot, "is_charging", False)
+            and getattr(robot, "_claimed_charger", None) is None
+        ]
+
+    def run_proactive_replenishment_pass(self) -> int:
+        """Enqueue proactive replenishment requests under the approved caps.
+
+        Normal proactive admission is bounded by the soft cap (3). When there
+        are genuinely idle robots that have no assignable picking job, the
+        idle-no-picking-job bypass permits additional proactive commitments
+        beyond the soft cap, still strictly below the hard cap (11).
+        """
+        if not self.proactive_replenishment_enabled:
+            return 0
+        if self.total_replenishment_load() >= self.replenishment_hard_cap:
+            return 0
+
+        # Bypass budget: idle robots with no assignable picking job may each back
+        # one soft-cap-bypass proactive commitment.
+        if self._picking_jobs_assignable_now():
+            bypass_budget = 0
+        else:
+            bypass_budget = len(self._idle_robots_available_for_replenishment())
+
+        admitted = 0
+        critical_skus = sorted(self.global_critical_skus)
+        for sku_id in critical_skus:
+            if self.total_replenishment_load() >= self.replenishment_hard_cap:
+                break
+            proactive_load = self.proactive_replenishment_load()
+            normal_ok = proactive_load < self.replenishment_soft_cap
+            bypass_ok = bypass_budget > 0
+            if not normal_ok and not bypass_ok:
+                continue
+            candidate = self.get_most_depleted_eligible_pod_for_sku(sku_id)
+            if candidate is None:
+                continue
+            pod, skus_to_replenish = candidate
+            idle_bypass = not normal_ok and bypass_ok
+            if self.enqueue_pending_replenishment_dispatch(
+                pod,
+                skus_to_replenish,
+                source="proactive",
+                guaranteed_on_release=False,
+                idle_bypass=idle_bypass,
+            ):
+                admitted += 1
+                if idle_bypass:
+                    bypass_budget -= 1
+        return admitted
 
     def ensure_committed_next_reservation(self, robot: Robot):
         if not self.committed_next_reservations_enabled:
@@ -570,6 +837,42 @@ class Inventory(Universe):
         registry = getattr(self, "committed_next_registry", None)
         if registry is not None:
             registry.link_decision_event(robot, decision_event_id)
+
+    def finalize_completed_return(self, job) -> None:
+        """Finalize the old pod after a robot physically completes storage return.
+
+        This must run BEFORE any committed-next activation (which replaces
+        ``robot.job``) so that replacement never bypasses cleanup of the pod that
+        was just returned. The pod is now physically at storage, so it is safe to
+        clear ``pod.station``; membership in a station's incoming set is removed
+        if it is somehow still present. Idempotent for the ordinary idle path.
+        """
+        if job is None:
+            return
+        pod = getattr(job, "pod", None)
+        if pod is None:
+            return
+        # Remove stale station incoming membership (pod is no longer at a station).
+        station = getattr(pod, "station", None)
+        if station is not None:
+            try:
+                station.remove_pod(pod.pod_id)
+            except Exception:
+                pass
+        try:
+            source_station = self.station_manager.get_station_by_id(job.station_id)
+        except Exception:
+            source_station = None
+        if source_station is not None and source_station is not station:
+            try:
+                source_station.remove_pod(pod.pod_id)
+            except Exception:
+                pass
+        # Clear pod.station only now that the pod has physically returned.
+        pod.remove_pod_station()
+        # Mark the returned pod available so replacement of robot.job cannot leave
+        # an unavailable, unowned pod behind.
+        self.pod_manager.mark_pod_available(pod)
 
     def activate_committed_next_after_return(self, robot: Robot) -> bool:
         if not self.committed_next_reservations_enabled:
@@ -811,17 +1114,31 @@ class Inventory(Universe):
             order.deliver_quantity(sku, quantity)
             print("order, sku, quantity :" ,order_id, sku, quantity)
 
+            # Authoritative PPS picked-quantity accounting happens at successful
+            # delivery (including dynamically added tasks), counting the actual
+            # delivered quantity — not at job-creation time.
+            self.pps_picked_quantity = getattr(self, "pps_picked_quantity", 0) + quantity
+
             # Check for SKU Replenishment
             # sku is sku_id (String)
-            
+
             sku, replenished_status = self.pod_manager.is_sku_need_replenished(sku)
 
             # SKU Replenished Triggered
             if(replenished_status == True): sku_need_replenished.append(sku)
-            assign_order_df = pd.read_csv(self.assign_order_csv)
-            assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
-            assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'order_finished'] = int(self._tick)
-            assign_order_df.to_csv(self.assign_order_csv, index=False)
+            # Mark the (order_id, SKU) rows finished in assign_order.csv only when
+            # the aggregate delivered quantity has reached the aggregate required
+            # quantity for that SKU. A single partial delivery must not flip every
+            # row for the (order_id, SKU) to finished.
+            sku_details = order.skus.get(sku, {})
+            sku_fully_delivered = (
+                sku_details.get("quantity_delivered", 0) >= sku_details.get("total_quantity", 0)
+            )
+            if sku_fully_delivered:
+                assign_order_df = pd.read_csv(self.assign_order_csv)
+                assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
+                assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'order_finished'] = int(self._tick)
+                assign_order_df.to_csv(self.assign_order_csv, index=False)
             new_row = {
                 "pod_id": pod.pod_id,
                 "item_id": sku,
@@ -867,34 +1184,25 @@ class Inventory(Universe):
     def finish_replenishment_task(self, job: RobotJob):
         # pod: Pod = self.pod_manager.get_pod_by_coordinate(job.pod_coordinate.x, job.pod_coordinate.y)
         pod: Pod = self.pod_manager.get_pod_by_id(job.pod.pod_id)
-        replenishment_skus = list(getattr(job, "replenishment_skus", []) or [])
+        # Full-pod replenishment: every visit restores ALL SKU compartments on
+        # the pod to their limit, regardless of the (diagnostic) trigger-SKU
+        # list. Capture each SKU's old quantity, restore to limit, and apply the
+        # exact positive per-SKU delta to the global inventory once (no double
+        # counting). Pod mass is updated inside replenish_all_skus().
         restored_quantities = {}
-        if replenishment_skus:
-            before_qty = {
-                sku_id: pod.skus[sku_id]['current_qty']
-                for sku_id in replenishment_skus
-                if sku_id in pod.skus
-            }
-            replenished_count = pod.replenish_specific_skus(replenishment_skus)
-            for sku_id, old_qty in before_qty.items():
-                new_qty = pod.skus[sku_id]['current_qty']
-                restored_qty = max(0, new_qty - old_qty)
-                if restored_qty > 0:
-                    restored_quantities[sku_id] = restored_qty
-                    self.pod_manager.increase_sku_data(sku_id, restored_qty)
-        else:
-            before_qty = {
-                sku_id: details['current_qty']
-                for sku_id, details in pod.skus.items()
-            }
-            pod.replenish_all_skus()
-            replenished_count = len(pod.skus)
-            for sku_id, old_qty in before_qty.items():
-                new_qty = pod.skus[sku_id]['current_qty']
-                restored_qty = max(0, new_qty - old_qty)
-                if restored_qty > 0:
-                    restored_quantities[sku_id] = restored_qty
-                    self.pod_manager.increase_sku_data(sku_id, restored_qty)
+        before_qty = {
+            sku_id: details['current_qty']
+            for sku_id, details in pod.skus.items()
+        }
+        pod.replenish_all_skus()
+        replenished_count = 0
+        for sku_id, old_qty in before_qty.items():
+            new_qty = pod.skus[sku_id]['current_qty']
+            restored_qty = max(0, new_qty - old_qty)
+            if restored_qty > 0:
+                restored_quantities[sku_id] = restored_qty
+                self.pod_manager.increase_sku_data(sku_id, restored_qty)
+                replenished_count += 1
         new_row = {
                 "pod_id": pod.pod_id,
                 "item_id": -1,
@@ -1044,6 +1352,7 @@ class Inventory(Universe):
             if order.process_start_time <= 0:
                 order.start_processing(int(self._tick))
         self.refresh_mandatory_replenishment_pods()
+        self.run_proactive_replenishment_pass()
         assign_order_df = pd.read_csv(self.assign_order_csv)
         assign_order_df.to_csv(self.assign_order_csv, index=False)
         # Step 7: Process PPS logic (skip when RL controls PPS)
@@ -1088,13 +1397,17 @@ class Inventory(Universe):
                                 sku_to_quantity = {sku: qty for sku, qty in remaining_skus.items()}
                                 sku_to_order_map = {sku: [(order_id, qty)] for sku, qty in remaining_skus.items()}
                                 job = self.add_picking_task_after_pps(station, pod, sku_to_order_map, sku_to_quantity)
+                                if len(job.orders) == 0:
+                                    # Transactional PPS produced no task (no
+                                    # usable stock): do not queue an empty job.
+                                    continue
                                 self.job_queue.append(job)
-                                for sku, qty in sku_to_quantity.items():
+                                for triplet in job.orders:
                                     upsert_job_task(
-                                        pod_id=str(pod.pod_id),
-                                        order_id=str(order_id),
-                                        sku=str(sku),
-                                        qty=str(qty),
+                                        pod_id=str(job.pod.pod_id),
+                                        order_id=str(triplet[0]),
+                                        sku=str(triplet[1]),
+                                        qty=str(triplet[2]),
                                         assigned_station=station.station_id,
                                         pod_assigned_time=self._tick,
                                         status="queue",
@@ -1323,51 +1636,69 @@ class Inventory(Universe):
         if latest_pod_location:
             pod.pos_x, pod.pos_y = latest_pod_location
         job = RobotJob(pod.coordinate, station_id=station.station_id, pod=pod)
+
+        # --- Phase 1: inspect and construct the task plan WITHOUT mutating any
+        # order, pod, station, or global counter. Discard zero-quantity and
+        # missing-order entries as we build.
+        plan_entries = []          # list of (order, sku, qty) to apply
+        per_sku_take = {}          # sku -> total quantity to remove from pod/global
         for sku in sku_to_list_order_id_and_quantity:
             # sort based on the least quantity for each sku
             sku_to_list_order_id_and_quantity[sku] = sorted(sku_to_list_order_id_and_quantity[sku], key=lambda x: x[1])
-            if sku in pod.skus:
-                if pod.get_quantity(sku) >= sku_to_quantity[sku]:
-                    quantity_to_take = sku_to_quantity[sku]
-                    # set the order list for job
-                else:
-                    quantity_to_take = pod.get_quantity(sku)
-                    # set the order list for job
-                
-                tmp = quantity_to_take
-                for o_id, qty in sku_to_list_order_id_and_quantity[sku]:
-                    if tmp <= 0:
-                        break
-                    order = self._get_order_by_id_flexible(o_id)
-                    if order is None:
-                        print(
-                            f"[WARN] skipping PPS task for missing order: "
-                            f"station={station.station_id} pod={pod.pod_id} order={o_id} sku={sku}"
-                        )
-                        continue
-                    if order.station_id is None:
-                        order.assign_station(station.station_id)
-                    # order.commit_quantity
-                    order.commit_quantity(sku, min(qty, tmp))
-                    # job.add_picking_tas
-                    job.add_picking_task(order.order_id, sku, min(qty, tmp))
-                    tmp = tmp - min(qty, tmp)
-                
-                # pod.pick_sku
-                pod.pick_sku(sku, quantity_to_take)
-                # self.pod_manager
-                self.pod_manager.reduce_sku_data(sku, quantity_to_take)
-                # station.reduce_sku
-                station.reduce_sku_from_station(sku, quantity_to_take)
- 
+            if sku not in pod.skus:
+                continue
+            available = pod.get_quantity(sku)
+            requested = sku_to_quantity.get(sku, 0)
+            quantity_to_take = requested if available >= requested else available
+            if quantity_to_take <= 0:
+                continue
+
+            tmp = quantity_to_take
+            allocated = 0
+            for o_id, qty in sku_to_list_order_id_and_quantity[sku]:
+                if tmp <= 0:
+                    break
+                order = self._get_order_by_id_flexible(o_id)
+                if order is None:
+                    print(
+                        f"[WARN] skipping PPS task for missing order: "
+                        f"station={station.station_id} pod={pod.pod_id} order={o_id} sku={sku}"
+                    )
+                    continue
+                take = min(qty, tmp)
+                if take <= 0:
+                    continue
+                plan_entries.append((order, sku, take))
+                allocated += take
+                tmp -= take
+            if allocated > 0:
+                per_sku_take[sku] = allocated
+
+        # --- Phase 2: verify a non-empty, positive-quantity plan was produced.
+        total_planned = sum(take for _order, _sku, take in plan_entries)
+        if total_planned <= 0:
+            # No task produced: return an empty job and leave every order, pod,
+            # station, and global counter unchanged.
+            return job
+
+        # --- Phase 3: apply all commitments and stock mutations atomically.
+        for order, sku, take in plan_entries:
+            if order.station_id is None:
+                order.assign_station(station.station_id)
+            order.commit_quantity(sku, take)
+            job.add_picking_task(order.order_id, sku, take)
+        for sku, take in per_sku_take.items():
+            pod.pick_sku(sku, take)
+            self.pod_manager.reduce_sku_data(sku, take)
+            station.reduce_sku_from_station(sku, take)
+
+        # --- Phase 4: reserve the pod and return the non-empty job.
         station.add_pod(pod.pod_id)
         pod.station = station
-        # print(f"[DEBUG] assign job pod {pod.id} coordinate {pod.coordinate}")
         self.pod_manager.mark_pod_not_available(pod)
-        picked_quantity = sum(qty for _order_id, _sku, qty in job.orders)
-        if picked_quantity > 0:
-            self.pps_picked_quantity = getattr(self, "pps_picked_quantity", 0) + picked_quantity
-            self.pps_pod_visits = getattr(self, "pps_pod_visits", 0) + 1
+        # pps_picked_quantity is now counted authoritatively at delivery time;
+        # pps_pod_visits still counts one visit per non-empty PPS assignment.
+        self.pps_pod_visits = getattr(self, "pps_pod_visits", 0) + 1
         return job
 
     def find_pod_with_the_highest_pile_on(self, sku_to_quantity: dict) -> (Pod, int): # type: ignore

@@ -7,8 +7,10 @@ from .tools.pod_location import upsert_pod_location
 
 
 def replenishment_service_steps_for_skus(pod, skus_to_replenish=None, *, delay_per_sku=20):
-    skus = list(skus_to_replenish or [])
-    total_skus = len(skus) if skus else len(getattr(pod, "skus", []) or [])
+    # Full-pod replenishment service time: every visit restores all SKU
+    # compartments on the pod, so the service time is always sized by the number
+    # of distinct SKUs physically present on the pod (not the trigger subset).
+    total_skus = len(getattr(pod, "skus", {}) or {})
     return int(total_skus) * int(delay_per_sku)
 
 
@@ -28,6 +30,11 @@ class RobotJob:
         self.replenishment_delay_per_sku = 20
         self.replenishment_delay = 0
         self.replenishment_skus = []
+        # Replenishment job identity + explicit source ("proactive" | "post_pick"
+        # | "rts"). Source is preserved through pending/queued/active/completion
+        # states and drives capacity accounting and diagnostics.
+        self.is_replenishment_job = False
+        self.replenishment_source = None
         self.is_finished = False
         self.rts_continuation_active = False
         self.rts_decision_identity = None
@@ -56,8 +63,14 @@ class RobotJob:
         self.orders.append((order_id, sku, quantity))
         self.picking_delay += self.picking_delay_per_sku * quantity
     
-    def add_replenishment_task(self, pod, skus_to_replenish=None):
+    def add_replenishment_task(self, pod, skus_to_replenish=None, source=None):
+        # ``skus_to_replenish`` is retained only as diagnostic trigger metadata;
+        # the physical restoration is always full-pod and the service time is
+        # sized by the pod's distinct SKU count.
         self.replenishment_skus = list(skus_to_replenish or [])
+        self.is_replenishment_job = True
+        if source is not None:
+            self.replenishment_source = source
         self.replenishment_delay += replenishment_service_steps_for_skus(
             pod,
             self.replenishment_skus,

@@ -14,6 +14,7 @@ HARD_VIOLATION_CODES = {
     "robot_customer_job_with_charger_claim",
     "pod_carried_and_available",
     "pod_assigned_to_multiple_jobs",
+    "pod_unavailable_without_owner",
     "charger_claimed_by_multiple_robots",
     "robot_claim_absent_from_occupied_chargers",
     "occupied_charger_without_matching_robot",
@@ -145,16 +146,82 @@ def _check_pod_ownership(violations, warehouse, job_queue, robots) -> None:
             )
 
     pod_manager = getattr(warehouse, "pod_manager", None)
-    available = getattr(pod_manager, "available_pods", None)
-    if available is None:
+    if pod_manager is None:
         return
-    for pod in list(available):
-        if getattr(pod, "committed_next_owner_robot_id", None):
+    all_pods = getattr(pod_manager, "get_all_pods", None)
+    if all_pods is None:
+        return
+    pods = list(all_pods() or [])
+    pod_idle = getattr(pod_manager, "pod_idle", {}) or {}
+
+    # Legitimate ownership sources for an unavailable pod.
+    queued_pod_ids = {
+        getattr(getattr(job, "pod", None), "pod_id", None)
+        for job in job_queue
+        if getattr(job, "pod", None) is not None
+    }
+    active_pod_ids = set()
+    for robot in robots:
+        job = getattr(robot, "job", None)
+        pod = getattr(job, "pod", None)
+        if pod is not None and getattr(robot, "current_state", None) != "idle":
+            active_pod_ids.add(getattr(pod, "pod_id", None))
+    pending_pod_ids = {
+        int(request["pod_id"])
+        for request in (getattr(warehouse, "pending_replenishment_dispatches", []) or [])
+    }
+    registry = getattr(warehouse, "committed_next_registry", None)
+    reserved_pod_ids = set(getattr(registry, "pod_id_to_reservation", {}) or {}) if registry is not None else set()
+
+    for pod in pods:
+        pod_id = getattr(pod, "pod_id", None)
+        raw_idle = bool(pod_idle.get(int(str(pod_id)), True)) if pod_id is not None else True
+        if raw_idle:
+            # An available pod must not still be owned by committed-next / RTS
+            # return continuations.
+            if getattr(pod, "committed_next_owner_robot_id", None):
+                _add(
+                    violations,
+                    "pod_committed_next_and_available",
+                    pod_id=pod_id,
+                    owner=getattr(pod, "committed_next_owner_robot_id", None),
+                )
+            if getattr(pod, "rts_return_in_progress", False):
+                _add(
+                    violations,
+                    "pod_return_in_progress_and_available",
+                    pod_id=pod_id,
+                )
+            continue
+        # Unavailable pod: must be owned by at least one legitimate state.
+        owner_states = []
+        if pod_id in queued_pod_ids:
+            owner_states.append("queued_job")
+        if pod_id in active_pod_ids:
+            owner_states.append("active_robot_job")
+        if (
+            getattr(pod, "is_awaiting_replenishment", False)
+            or getattr(pod, "has_pending_replenishment_dispatch", False)
+            or (pod_id in pending_pod_ids)
+        ):
+            owner_states.append("replenishment_commitment")
+        if getattr(pod, "rts_return_in_progress", False):
+            owner_states.append("rts_return_continuation")
+        if getattr(pod, "committed_next_owner_robot_id", None) or (pod_id in reserved_pod_ids):
+            owner_states.append("committed_next_reservation")
+        if not owner_states:
             _add(
                 violations,
-                "pod_committed_next_and_available",
-                pod_id=getattr(pod, "pod_id", None),
-                owner=getattr(pod, "committed_next_owner_robot_id", None),
+                "pod_unavailable_without_owner",
+                pod_id=pod_id,
+                observed={
+                    "is_awaiting_replenishment": bool(getattr(pod, "is_awaiting_replenishment", False)),
+                    "has_pending_replenishment_dispatch": bool(getattr(pod, "has_pending_replenishment_dispatch", False)),
+                    "must_replenish_before_pick": bool(getattr(pod, "must_replenish_before_pick", False)),
+                    "rts_return_in_progress": bool(getattr(pod, "rts_return_in_progress", False)),
+                    "committed_next_owner_robot_id": getattr(pod, "committed_next_owner_robot_id", None),
+                    "station": str(getattr(pod, "station", None)),
+                },
             )
 
 

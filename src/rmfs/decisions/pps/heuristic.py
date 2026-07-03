@@ -55,7 +55,12 @@ def find_best_pod(
     )
 
     logger.debug("ranked_pods (mode=%s) = %s", mode, ranked_pods)
-    return ranked_pods[0]
+    best_pod, best_score = ranked_pods[0]
+    # Reject zero-value candidates: never dispatch a pod merely because it holds
+    # the SKU key when its usable quantity contributes nothing (score <= 0).
+    if best_score <= 0:
+        return None, best_score
+    return best_pod, best_score
 
 
 def find_pod_with_the_highest_pile_on(universe: Inventory, sku_to_quantity: dict) -> tuple[Pod, int]:
@@ -83,13 +88,20 @@ def find_pod_with_the_highest_pile_on(universe: Inventory, sku_to_quantity: dict
             score = -1
         return score
 
+    if not pod_candidates:
+        return None, -1
+
     ranked_pods = sorted(
         [(pod, pile_on_score(pod)) for pod in pod_candidates],
         key=lambda x: x[1],
         reverse=True
     )
     logger.debug("ranked_pods %s", ranked_pods)
-    return ranked_pods[0]
+    best_pod, best_score = ranked_pods[0]
+    # Reject zero-value (and ineligible-only, score == -1) candidates.
+    if best_score <= 0:
+        return None, best_score
+    return best_pod, best_score
 
 
 def find_pod_with_the_highest_demand(
@@ -136,4 +148,8 @@ def find_pod_with_the_highest_demand(
         reverse=True
     )
     logger.debug("ranked_pods %s", ranked_pods)
-    return ranked_pods[0]
+    best_pod, best_score = ranked_pods[0]
+    # Reject zero-value candidates so no pod is dispatched with no usable stock.
+    if best_score <= 0:
+        return None, best_score
+    return best_pod, best_score

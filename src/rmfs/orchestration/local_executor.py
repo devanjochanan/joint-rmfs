@@ -504,6 +504,33 @@ def run_worker(spec: RunSpec):
         summary["warehouse_time_elapsed"] = summary["warehouse_time_end"] - summary["warehouse_time_start"]
         summary["worker_wall_time_elapsed"] = time.perf_counter() - worker_start
 
+        # ── Derive authoritative order metrics from OrderManager ──
+        if final_warehouse is not None and hasattr(final_warehouse, "order_manager"):
+            om = final_warehouse.order_manager
+            completed_orders = [
+                o for o in getattr(om, "orders", [])
+                if o.is_order_completed()
+            ]
+            orders_completed = len(completed_orders)
+            if orders_completed > 0:
+                cycle_times = [
+                    o.order_complete_time - o.process_start_time
+                    for o in completed_orders
+                    if o.order_complete_time >= 0 and o.process_start_time >= 0
+                ]
+                avg_cycle_time = (
+                    sum(cycle_times) / len(cycle_times) if cycle_times else 0.0
+                )
+            else:
+                avg_cycle_time = 0.0
+
+            if summary.get("final_metrics") is None:
+                summary["final_metrics"] = {}
+            summary["final_metrics"]["warehouse_orders_completed"] = orders_completed
+            summary["final_metrics"]["warehouse_orders_completed_available"] = True
+            summary["final_metrics"]["warehouse_average_order_cycle_time"] = avg_cycle_time
+            summary["final_metrics"]["warehouse_average_order_cycle_time_available"] = True
+
         summary["status"] = "success"
 
         if spec.debug_trace and debug_rows:

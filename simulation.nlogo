@@ -242,7 +242,7 @@ MONITOR
 110
 953
 167
-Order
+Picking Job Queue
 order_count
 17
 1

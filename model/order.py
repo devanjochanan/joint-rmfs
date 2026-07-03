@@ -16,11 +16,15 @@ class Order:
         self.station_id = station_id
 
     def add_sku(self, sku, total_quantity):
-        self.skus[sku] = {
-            'total_quantity': total_quantity,
-            'quantity_committed': 0,
-            'quantity_delivered': 0
-        }
+        if sku in self.skus:
+            # Aggregate: add to existing demand, preserve committed/delivered state.
+            self.skus[sku]['total_quantity'] += total_quantity
+        else:
+            self.skus[sku] = {
+                'total_quantity': total_quantity,
+                'quantity_committed': 0,
+                'quantity_delivered': 0
+            }
 
     def has_sku(self, sku):
         if sku in self.skus:

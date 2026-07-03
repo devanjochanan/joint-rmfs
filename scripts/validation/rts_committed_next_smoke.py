@@ -429,7 +429,15 @@ def test_conflict_guards_and_multiple_reservations():
     first_pod = first_job.pod
 
     assert not inv.pod_manager.is_idle(first_pod.pod_id)
-    assert inv.get_most_depleted_eligible_pod_for_sku(101) is None
+    # Approved OR eligibility: a proactive candidate for a globally-low SKU may
+    # exist on an *unguarded* pod, but the committed-next-reserved pod and the
+    # in-return pod must never be offered.
+    candidate = inv.get_most_depleted_eligible_pod_for_sku(101)
+    candidate_pod = candidate[0] if candidate else None
+    assert candidate_pod is not first_pod
+    assert candidate_pod is not _pod
+    assert candidate_pod is None or not getattr(candidate_pod, "rts_return_in_progress", False)
+    assert candidate_pod is None or not getattr(candidate_pod, "committed_next_owner_robot_id", None)
     inv.pending_replenishment_dispatches.append(
         {"pod_id": first_pod.pod_id, "skus_to_replenish": [101], "created_tick": 0, "guaranteed_on_release": False}
     )

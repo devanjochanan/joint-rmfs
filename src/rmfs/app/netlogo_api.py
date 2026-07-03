@@ -1489,24 +1489,96 @@ def assign_skus_to_pods(pod_manager):
 
 def assign_skus_to_pods_from_file(pod_manager: PodManager):
 
+    # ── Phase 1: read all rows and aggregate duplicates per (pod_id, item) ──
+    raw_rows = []
     with open(_str_path("pods_csv"), mode='r', newline='') as file:
         reader = csv.DictReader(file)
         for row in reader:
-            pod_id = int(row['pod_id'])
-            sku = int(row['item'])
-            limit_qty = int(row['max_qty'])
-            current_qty = int(row['qty'])
-            threshold = row['item_pod_inventory_level']
-            global_threshold_inv_level = row['item_warehouse_inventory_level']
-            weight = float(row['item_weight'])
+            raw_rows.append(row)
 
-            # Find the pod by id
-            pod: Pod = pod_manager.get_pod_by_id(pod_id)
-            pod.add_sku(sku, limit_qty=limit_qty, current_qty=current_qty, threshold=threshold, weight=weight)
-            pod_manager.add_sku_to_pod(sku, pod)
+    # Group by (pod_id, item) and aggregate additive fields.
+    # Validate that non-additive metadata are identical within each group.
+    from collections import OrderedDict
+    aggregated = OrderedDict()  # key: (pod_id, sku) -> aggregated record
+    for row in raw_rows:
+        pod_id = int(row['pod_id'])
+        sku = int(row['item'])
+        qty = int(row['qty'])
+        max_qty = int(row['max_qty'])
+        weight = float(row['item_weight'])
+        threshold = row['item_pod_inventory_level']
+        global_threshold = row['item_warehouse_inventory_level']
+        key = (pod_id, sku)
 
-            # Add SKU Data of level
-            pod_manager.add_sku_data(sku, current_qty, limit_qty, global_threshold_inv_level)
+        if key not in aggregated:
+            aggregated[key] = {
+                'pod_id': pod_id,
+                'sku': sku,
+                'qty': qty,
+                'max_qty': max_qty,
+                'weight': weight,
+                'threshold': threshold,
+                'global_threshold': global_threshold,
+            }
+        else:
+            entry = aggregated[key]
+            # Accumulate additive quantities
+            entry['qty'] += qty
+            entry['max_qty'] += max_qty
+            # Validate non-additive metadata consistency
+            for field, new_val in [
+                ('weight', weight),
+                ('threshold', threshold),
+                ('global_threshold', global_threshold),
+            ]:
+                if str(entry[field]) != str(new_val):
+                    raise ValueError(
+                        f"Conflicting non-additive metadata for pod_id={pod_id}, "
+                        f"item={sku}: field='{field}', "
+                        f"values=[{entry[field]!r}, {new_val!r}]. "
+                        f"Cannot safely aggregate duplicate pod-SKU rows."
+                    )
+
+    # ── Phase 2: apply aggregated entries to Pod and PodManager ──
+    for (pod_id, sku), entry in aggregated.items():
+        pod: Pod = pod_manager.get_pod_by_id(pod_id)
+        pod.add_sku(
+            sku,
+            limit_qty=entry['max_qty'],
+            current_qty=entry['qty'],
+            threshold=entry['threshold'],
+            weight=entry['weight'],
+        )
+        pod_manager.add_sku_to_pod(sku, pod)
+        pod_manager.add_sku_data(
+            sku,
+            entry['qty'],
+            entry['max_qty'],
+            entry['global_threshold'],
+        )
+
+    # ── Phase 3: post-load inventory invariant check ──
+    for sku_id, global_data in pod_manager.skus_data.items():
+        pod_current_sum = 0
+        pod_max_sum = 0
+        for pod in pod_manager.sku_to_pods.get(sku_id, []):
+            if sku_id in pod.skus:
+                pod_current_sum += pod.skus[sku_id]['current_qty']
+                pod_max_sum += pod.skus[sku_id]['limit_qty']
+        expected_current = int(global_data['current_global_qty'])
+        expected_max = int(global_data['max_global_qty'])
+        if pod_current_sum != expected_current:
+            raise RuntimeError(
+                f"[INVENTORY INVARIANT] SKU {sku_id}: "
+                f"global current_qty={expected_current} != "
+                f"sum-of-pod current_qty={pod_current_sum}"
+            )
+        if pod_max_sum != expected_max:
+            raise RuntimeError(
+                f"[INVENTORY INVARIANT] SKU {sku_id}: "
+                f"global max_qty={expected_max} != "
+                f"sum-of-pod max_qty={pod_max_sum}"
+            )
 
     csv_file = _str_path("skus_data_csv")
     if os.path.exists(csv_file):

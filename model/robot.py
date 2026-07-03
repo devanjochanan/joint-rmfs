@@ -293,6 +293,11 @@ class Robot(Object):
             upsert_pod_location(completed_job.pod.pod_id, completed_job.pod.pos_x, completed_job.pod.pos_y)
             self.warehouse.rts_rollout_runtime.on_return_completed(robot=self)
             self._clear_rts_return_ownership()
+            # Finalize the just-returned pod (mark available, clear pod.station,
+            # drop stale station incoming membership) BEFORE any committed-next
+            # activation replaces robot.job — otherwise the completed pod's
+            # cleanup would be bypassed and it would be left unavailable/unowned.
+            self.warehouse.finalize_completed_return(completed_job)
             e_li = self.load_mass * self._gravity * self._lift_coef
             self.energy_consumption += e_li
             self.load_mass = 0
@@ -1251,9 +1256,11 @@ class Robot(Object):
                 raise RuntimeError("RTS replenish_store decision is missing replenishment station")
             skus_to_replenish, _ = self.warehouse.get_replenishment_skus_for_pod(self.job.pod)
             if not skus_to_replenish:
-                raise RuntimeError(
-                    f"no eligible replenishment SKU set for RTS pod {self.job.pod.pod_id}"
-                )
+                # The RTS policy selected replenish_store for this pod. Physical
+                # restoration is always full-pod, so fall back to the pod's full
+                # compartment set as the (diagnostic) trigger list rather than
+                # aborting the policy-chosen action.
+                skus_to_replenish = sorted(self.job.pod.skus.keys())
 
             pending_request = self.warehouse.get_pending_replenishment_dispatch(self.job.pod.pod_id)
             self.job.rts_pending_replenishment_request_snapshot = (
@@ -1265,7 +1272,7 @@ class Robot(Object):
             self.job.station_id = replenishment_station.station_id
             self.job.replenishment_skus = []
             self.job.replenishment_delay = 0
-            self.job.add_replenishment_task(self.job.pod, skus_to_replenish)
+            self.job.add_replenishment_task(self.job.pod, skus_to_replenish, source="rts")
             self.job.is_finished = False
             self.job.rts_replenishment_station = replenishment_station
             self.job.rts_replenishment_station_id = getattr(decision, "replenishment_station_id", None) or str(
