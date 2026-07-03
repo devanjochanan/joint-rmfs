@@ -34,6 +34,7 @@ ACTION_FEATURE_ZERO_MAP: dict[str, tuple[str, ...]] = {
         "zone_present_robot_pressure",
         "zone_destination_robot_pressure",
         "selected_replenishment_station_destination_pressure",
+        "replenishment_station_load_pressure",
     ),
     "no_source_picker_coordinates": ("source_picker_x_norm", "source_picker_y_norm"),
     "no_sku_similarity": ("sku_similarity_fraction",),

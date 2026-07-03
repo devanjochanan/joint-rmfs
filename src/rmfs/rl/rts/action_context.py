@@ -165,6 +165,7 @@ def build_action_contexts(
         rows_by_zone=rows_by_zone,
         static_index=static_index,
     ))
+    replenishment_hard_cap_reached = _replenishment_hard_cap_reached(context)
     contexts: list[RTSActionContext] = []
     for action_index in range(len(zones) * 2):
         action = decode_action(action_index, zones)
@@ -181,6 +182,7 @@ def build_action_contexts(
             and station_feasibility is not None
             and station_feasibility.admission_possible
             and station_feasibility.structurally_reachable
+            and not replenishment_hard_cap_reached
         )
         action_valid = store_valid if action.branch == STORE else replenish_valid
         reasons = list(storage_feasibility.reason_codes)
@@ -193,6 +195,8 @@ def build_action_contexts(
                 reasons.append("no_replenishment_station")
             else:
                 reasons.extend(station_feasibility.reason_codes)
+            if replenishment_hard_cap_reached:
+                reasons.append("replenishment_hard_cap_reached")
         reasons = tuple(sorted(set(reasons)))
         proposal = proposal_by_key.get(action.zone_id) or proposal_by_key.get(action_key(action.branch, action.zone_id))
         storage_coord = _coord(storage) if storage is not None else None
@@ -290,6 +294,11 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
     station = selected.replenishment_station
     station_feasibility = selected.station_feasibility
     if selected.branch == REPLENISH_STORE:
+        if _replenishment_hard_cap_reached(context):
+            raise RuntimeError(
+                f"selected RTS replenishment action became unavailable for {selected.branch}:{selected.zone_id}: "
+                "replenishment_hard_cap_reached"
+            )
         station, station_feasibility = select_replenishment_station(context, storage, static_index=static_index)
         if station is None or station_feasibility is None or not station_feasibility.admission_possible:
             reasons = station_feasibility.reason_codes if station_feasibility is not None else ("no_replenishment_station",)
@@ -565,6 +574,26 @@ def _static_index_required(warehouse: Any) -> bool:
     if policy_mode in {"random_valid", "rts_rl_explicit"}:
         return True
     return False
+
+
+def _replenishment_hard_cap_reached(context: Any) -> bool:
+    warehouse = getattr(context, "warehouse", None)
+    if warehouse is None:
+        return False
+    checker = getattr(warehouse, "replenishment_hard_cap_reached", None)
+    if checker is not None:
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+    total = getattr(warehouse, "total_replenishment_load", None)
+    cap = getattr(warehouse, "replenishment_hard_cap", None)
+    if total is None or cap is None:
+        return False
+    try:
+        return int(total()) >= int(cap)
+    except Exception:
+        return False
 
 
 def _distance_from_source(context: Any, storage: Any) -> float:

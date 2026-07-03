@@ -19,7 +19,7 @@ from src.rmfs.rl.rts.training.checkpoint import load_training_checkpoint, resolv
 from src.rmfs.rl.rts.training.config import RTSTrainingConfig
 from src.rmfs.rl.rts.training.on_policy_dataset import build_on_policy_ppo_batch, build_on_policy_training_steps
 from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint
-from src.rmfs.rl.rts.features import feature_schema_identity
+from src.rmfs.rl.rts.features import ACTION_FEATURE_SCHEMA_VERSION, build_action_feature_names, feature_schema_identity
 from src.rmfs.rl.rts.ablation import resolve_ablation
 
 from .device import resolve_rts_torch_device
@@ -911,8 +911,13 @@ def _validate_resume_compatibility(
     stock_hidden = tuple(training_config.get("stock_hidden_sizes", (32, 32)))
     if hidden != tuple(training_config.get("hidden_sizes", hidden)):
         raise RuntimeError("resume checkpoint model architecture is inconsistent")
-    if int(loaded.feature_schema.get("action_feature_dim") or 0) != 18:
-        raise RuntimeError("resume checkpoint action feature width is not v4 width 18")
+    expected_action_dim = len(build_action_feature_names(()))
+    if int(loaded.feature_schema.get("action_feature_dim") or 0) != expected_action_dim:
+        raise RuntimeError(
+            "resume checkpoint action feature width is incompatible: "
+            f"runtime expects {ACTION_FEATURE_SCHEMA_VERSION} width {expected_action_dim}; "
+            "fresh training or an explicitly authorized migration is required"
+        )
     if int(loaded.feature_schema.get("stock_feature_dim") or 0) != 4:
         raise RuntimeError("resume checkpoint stock feature width is not width 4")
     if not fresh:

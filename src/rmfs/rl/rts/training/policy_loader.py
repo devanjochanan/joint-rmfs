@@ -51,10 +51,15 @@ def load_policy_from_checkpoint(checkpoint_dir: Path, *, device: str = "cpu") ->
         metadata = json.load(fh)
     with schema_path.open() as fh:
         feature_schema = json.load(fh)
-    if int(feature_schema.get("action_feature_dim") or 0) != 18:
-        raise ValueError("unsupported RTS checkpoint action_feature_schema_version/action_feature_dim; expected v4 width 18")
+    expected_action_dim = len(build_action_feature_names(()))
+    if int(feature_schema.get("action_feature_dim") or 0) != expected_action_dim:
+        raise ValueError(
+            "unsupported RTS checkpoint action_feature_schema_version/action_feature_dim; "
+            f"runtime expects {ACTION_FEATURE_SCHEMA_VERSION} width {expected_action_dim}; "
+            "fresh training or an explicitly authorized migration is required"
+        )
     if int(feature_schema.get("stock_feature_dim") or 0) != 4:
-        raise ValueError("RTS v4 checkpoints must have stock_feature_dim=4")
+        raise ValueError("RTS checkpoints must have stock_feature_dim=4")
     training_config = dict(metadata.get("training_config", {}) or {})
     model = RTSMaskedActorCritic(
         action_feature_dim=int(feature_schema["action_feature_dim"]),

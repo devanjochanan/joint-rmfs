@@ -88,6 +88,13 @@ class StubRobot:
         self.id = _id
         self.job = job
         self.current_state = state
+        self.is_charging_pending = False
+        self.is_charging = False
+        self._claimed_charger = None
+
+    def assign_job_and_set_move_to_station(self, job):
+        self.job = job
+        self.current_state = "delivering_pod"
 
 
 def add_stub_robot(inv, robot):
@@ -197,37 +204,51 @@ def _make_pending(inv, pod_id, source):
     )
 
 
+def _make_queued_replenishment_job(inv, pod_id, source):
+    pod = pod_with(pod_id, 5 + pod_id, 5, {1000 + pod_id: (10, 2, 0.5, 1.0)})
+    register_pod(inv, pod)
+    job = RobotJob(pod.coordinate, station_id="replenishment-1", pod=pod)
+    job.add_replenishment_task(pod, [1000 + pod_id], source=source)
+    inv.job_queue.append(job)
+    return job
+
+
 def test_caps_accounting_and_admission():
     inv, _root = make_inventory()
-    # proactive load 2 -> normal proactive admitted.
+    # Passive pending proactive requests count toward the hard cap but do not
+    # consume proactive robot slots.
     _make_pending(inv, 1, "proactive")
     _make_pending(inv, 2, "proactive")
-    assert inv.proactive_replenishment_load() == 2
+    assert inv.total_replenishment_load() == 2
+    assert inv.proactive_replenishment_load() == 0
     assert inv.can_admit_replenishment("proactive") is True
+    assert inv.can_admit_replenishment("proactive", consume_robot_slot=True) is True
 
-    # proactive load 3 -> normal proactive blocked; idle bypass allowed.
-    _make_pending(inv, 3, "proactive")
+    # Queued/active proactive jobs consume soft-cap robot slots.
+    for pid in range(3, 6):
+        _make_queued_replenishment_job(inv, pid, "proactive")
     assert inv.proactive_replenishment_load() == 3
-    assert inv.can_admit_replenishment("proactive") is False
-    assert inv.can_admit_replenishment("proactive", idle_bypass=True) is True
+    assert inv.can_admit_replenishment("proactive") is True
+    assert inv.can_admit_replenishment("proactive", consume_robot_slot=True) is False
+    assert inv.can_admit_replenishment("proactive", consume_robot_slot=True, idle_bypass=True) is True
     # post_pick and rts are not subject to the soft cap (only hard cap).
     assert inv.can_admit_replenishment("post_pick") is True
     assert inv.can_admit_replenishment("rts") is True
 
     # Fill up to total 10 with mixed sources -> one more admission allowed.
-    for pid in range(4, 11):
+    for pid in range(6, 11):
         _make_pending(inv, pid, "post_pick")
     assert inv.total_replenishment_load() == 10
     assert inv.can_admit_replenishment("post_pick") is True
     assert inv.can_admit_replenishment("rts") is True
-    assert inv.can_admit_replenishment("proactive", idle_bypass=True) is True
+    assert inv.can_admit_replenishment("proactive", consume_robot_slot=True, idle_bypass=True) is True
 
     # total 11 -> every new admission blocked.
     _make_pending(inv, 11, "post_pick")
     assert inv.total_replenishment_load() == 11
     assert inv.can_admit_replenishment("post_pick") is False
     assert inv.can_admit_replenishment("rts") is False
-    assert inv.can_admit_replenishment("proactive", idle_bypass=True) is False
+    assert inv.can_admit_replenishment("proactive", consume_robot_slot=True, idle_bypass=True) is False
     print("PASS test_caps_accounting_and_admission")
 
 
@@ -271,46 +292,31 @@ def test_idle_bypass_permits_beyond_soft_cap():
     repl = station(1, "replenishment", 8, 5)
     inv.station_manager.add_station(repl)
 
-    # Saturate proactive at the soft cap (3).
+    # Saturate proactive robot usage at the soft cap (3).
     for pid in range(1, 4):
-        _make_pending(inv, pid, "proactive")
+        _make_queued_replenishment_job(inv, pid, "proactive")
     assert inv.proactive_replenishment_load() == 3
 
-    # A globally-low SKU with an eligible pod available for proactive work.
+    # A globally-low SKU with an eligible pod is discovered directly and may
+    # wait as pending without consuming a fourth proactive robot slot.
     pod = pod_with(20, 5, 5, {101: (10, 2, 0.5, 1.0)})
     register_pod(inv, pod)
     inv.pod_manager.mark_pod_available(pod)
     inv.pod_manager.skus_data[101]["current_global_qty"] = 1
     inv.pod_manager.skus_data[101]["global_inv_level"] = 0.01
     inv.pod_manager.skus_data[101]["global_threshold_inv_level"] = 0.5
-    inv.global_critical_skus.add(101)
-
-    # No picking jobs in queue and (simulated) idle robots present -> bypass.
-    add_stub_robot(inv, StubRobot(1, None, state="idle"))
     admitted = inv.run_proactive_replenishment_pass()
-    assert admitted >= 1, "idle robot with no picking job should permit bypass proactive"
-    assert inv.proactive_replenishment_load() == 4, inv.proactive_replenishment_load()
+    assert admitted >= 1, "direct proactive discovery should enqueue an eligible pending request"
+    assert inv.get_pending_replenishment_dispatch(20) is not None
+    assert inv.proactive_replenishment_load() == 3, inv.proactive_replenishment_load()
 
-    # Blocked when a picking job is assignable (job_queue has an assignable pick).
-    inv2, _root2 = make_inventory()
-    for pid in range(1, 4):
-        _make_pending(inv2, pid, "proactive")
-    pod2 = pod_with(21, 5, 5, {101: (10, 2, 0.5, 1.0)})
-    register_pod(inv2, pod2)
-    inv2.pod_manager.mark_pod_available(pod2)
-    inv2.pod_manager.skus_data[101]["current_global_qty"] = 1
-    inv2.pod_manager.skus_data[101]["global_inv_level"] = 0.01
-    inv2.pod_manager.skus_data[101]["global_threshold_inv_level"] = 0.5
-    inv2.global_critical_skus.add(101)
-    # An assignable picking job in the queue.
-    pick_pod = pod_with(22, 6, 6, {101: (10, 9, 0.5, 1.0)})
-    register_pod(inv2, pick_pod)
-    pick_job = RobotJob(pick_pod.coordinate, station_id="picker-1", pod=pick_pod)
-    pick_job.add_picking_task(900, 101, 1)
-    inv2.job_queue.append(pick_job)
-    add_stub_robot(inv2, StubRobot(1, None, state="idle"))
-    admitted2 = inv2.run_proactive_replenishment_pass()
-    assert admitted2 == 0, "no bypass when a picking job is assignable"
+    # An unmatched idle robot may dispatch that pending request beyond the soft
+    # cap, still subject to the hard cap.
+    idle_robot = StubRobot(1, None, state="idle")
+    add_stub_robot(inv, idle_robot)
+    dispatched = inv.dispatch_proactive_replenishment_to_unmatched_idle_robots([idle_robot])
+    assert dispatched == 1
+    assert inv.proactive_replenishment_load() == 4, inv.proactive_replenishment_load()
     print("PASS test_idle_bypass_permits_beyond_soft_cap")
 
 

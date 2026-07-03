@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from src.rmfs.rl.rts.action_space import action_mask_entry, validate_action_mask
-from src.rmfs.rl.rts.features import build_feature_bundle
+from src.rmfs.rl.rts.features import build_action_feature_names, build_feature_bundle
 from src.rmfs.rl.rts.ablation import resolve_ablation
 from src.rmfs.rl.rts.rollout_schema import DECISION_EVENT, OUTCOME_EVENT
 from src.rmfs.rl.rts.training.metrics import finite_float, mean_or_none
@@ -278,7 +278,7 @@ def _build_step(
         return None, "rejected_reward_uncomputed_count"
     try:
         bundle = build_feature_bundle(zone_ids, mask, state_json)
-        if len(bundle.action_feature_names) != 18:
+        if len(bundle.action_feature_names) != len(build_action_feature_names(zone_ids)):
             return None, "rejected_feature_error_count"
         if len(bundle.stock_feature_names) != 4:
             return None, "rejected_feature_error_count"

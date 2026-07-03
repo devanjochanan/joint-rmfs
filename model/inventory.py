@@ -391,23 +391,27 @@ class Inventory(Universe):
             if getattr(obj, "object_type", None) == "robot":
                 yield obj
 
-    def replenishment_commitments_by_pod(self) -> dict[int, str]:
+    def replenishment_commitments_by_pod(self, *, include_pending: bool = True) -> dict[int, str]:
         """Unique committed replenishment pods → source.
 
         Capacity is accounted by *unique committed pods* so that a single
         commitment which flows pending → queued → active is counted exactly
         once. The commitment sources are pending replenishment requests, queued
-        replenishment jobs, and active robot replenishment jobs.
+        replenishment jobs, active robot replenishment jobs, returning
+        replenishment robots, and RTS replenish-store continuations.
         """
         commitments: dict[int, str] = {}
-        # Active robot replenishment jobs (authoritative source label).
+        # Active/returning robot replenishment jobs (authoritative source label).
+        # Do not drop a job merely because station service set is_finished=True:
+        # the commitment remains live until the pod physically returns to storage.
         for robot in self._iter_robots():
             job = getattr(robot, "job", None)
-            if job is None or getattr(job, "is_finished", False):
+            if job is None:
                 continue
-            if getattr(robot, "current_state", None) == "idle":
+            state = getattr(robot, "current_state", None)
+            if state == "idle":
                 continue
-            if not getattr(job, "is_replenishment_job", False):
+            if not self._is_replenishment_commitment_job(job):
                 continue
             pod = getattr(job, "pod", None)
             if pod is None:
@@ -425,35 +429,93 @@ class Inventory(Universe):
                 getattr(job, "replenishment_source", None) or "post_pick",
             )
         # Pending replenishment requests.
-        for request in self.pending_replenishment_dispatches:
-            pid = int(request["pod_id"])
-            commitments.setdefault(pid, request.get("source", "post_pick"))
+        if include_pending:
+            for request in self.pending_replenishment_dispatches:
+                pid = int(request["pod_id"])
+                commitments.setdefault(pid, request.get("source", "post_pick"))
         return commitments
+
+    def _is_replenishment_commitment_job(self, job) -> bool:
+        return bool(
+            getattr(job, "is_replenishment_job", False)
+            or getattr(job, "rts_continuation_active", False)
+            or getattr(job, "rts_branch", None) == "replenish_store"
+        )
 
     def total_replenishment_load(self) -> int:
         return len(self.replenishment_commitments_by_pod())
 
     def proactive_replenishment_load(self) -> int:
+        return self.proactive_replenishment_robot_load()
+
+    def proactive_replenishment_robot_commitments_by_pod(self) -> dict[int, str]:
+        """Unique proactive pods already committed to queued/active robots.
+
+        Passive pending requests are excluded so the soft cap reflects robot
+        usage rather than merely discovered demand.
+        """
+        return {
+            pod_id: source
+            for pod_id, source in self.replenishment_commitments_by_pod(include_pending=False).items()
+            if source == "proactive"
+        }
+
+    def proactive_replenishment_robot_load(self) -> int:
         return sum(
-            1 for source in self.replenishment_commitments_by_pod().values()
+            1 for source in self.proactive_replenishment_robot_commitments_by_pod().values()
             if source == "proactive"
         )
 
-    def can_admit_replenishment(self, source: str, *, idle_bypass: bool = False) -> bool:
+    def replenishment_hard_cap_reached(self) -> bool:
+        return self.total_replenishment_load() >= self.replenishment_hard_cap
+
+    def can_admit_replenishment(
+        self,
+        source: str,
+        *,
+        idle_bypass: bool = False,
+        consume_robot_slot: bool = False,
+    ) -> bool:
         """Admission decision for a *new* replenishment commitment.
 
         Hard cap (11) blocks every new source once total unique load is already
-        at the cap. The soft cap (3) blocks *normal* proactive admissions once
-        proactive load reaches the cap; the idle-no-picking-job bypass may admit
-        proactive work beyond the soft cap but still strictly below the hard cap.
+        at the cap. The soft cap (3) only applies when proactive work consumes a
+        queued/active robot slot; passive pending requests may wait without
+        consuming the soft-cap budget.
         """
         commitments = self.replenishment_commitments_by_pod()
         total = len(commitments)
         if total >= self.replenishment_hard_cap:
             return False
-        if source == "proactive" and not idle_bypass:
-            proactive = sum(1 for value in commitments.values() if value == "proactive")
+        if source == "proactive" and consume_robot_slot and not idle_bypass:
+            proactive = self.proactive_replenishment_robot_load()
             if proactive >= self.replenishment_soft_cap:
+                return False
+        return True
+
+    def can_start_replenishment_commitment(
+        self,
+        pod: Pod,
+        *,
+        source: str,
+        idle_bypass: bool = False,
+    ) -> bool:
+        if pod is None:
+            return False
+        try:
+            pod_id = int(pod.pod_id)
+        except (TypeError, ValueError):
+            return False
+        commitments = self.replenishment_commitments_by_pod()
+        if pod_id not in commitments and len(commitments) >= self.replenishment_hard_cap:
+            return False
+        if source == "proactive":
+            proactive_robot_commitments = self.proactive_replenishment_robot_commitments_by_pod()
+            if (
+                pod_id not in proactive_robot_commitments
+                and len(proactive_robot_commitments) >= self.replenishment_soft_cap
+                and not idle_bypass
+            ):
                 return False
         return True
 
@@ -576,6 +638,58 @@ class Inventory(Universe):
             guaranteed_on_release=False,
         )
 
+    def iter_proactive_replenishment_candidates(self):
+        """Deterministic direct proactive candidates using the approved OR rule."""
+        committed = self.replenishment_commitments_by_pod()
+        candidates = []
+        for pod in self.pod_manager.get_all_pods():
+            if pod is None:
+                continue
+            try:
+                pod_id = int(pod.pod_id)
+            except (TypeError, ValueError):
+                continue
+            if pod_id in committed:
+                continue
+            if getattr(pod, "is_awaiting_replenishment", False):
+                continue
+            if getattr(pod, "rts_return_in_progress", False):
+                continue
+            if getattr(pod, "committed_next_owner_robot_id", None):
+                continue
+            plan = self.evaluate_pod_replenishment_eligibility(pod)
+            if not plan["eligible"]:
+                continue
+            skus_to_replenish = plan["trigger_skus"] or sorted(pod.skus.keys())
+            if not skus_to_replenish:
+                continue
+            local_fill = plan["local_fill"] if plan["local_fill"] is not None else 1.0
+            global_fill = 1.0
+            global_skus = plan.get("global_low_refillable_skus") or ()
+            if global_skus:
+                ratios = []
+                for sku_id in global_skus:
+                    details = pod.skus.get(sku_id, {}) or {}
+                    limit_qty = details.get("limit_qty", 0)
+                    current_qty = details.get("current_qty", 0)
+                    ratios.append((current_qty / limit_qty) if limit_qty else 1.0)
+                global_fill = min(ratios) if ratios else 1.0
+            candidates.append(
+                (
+                    (
+                        float(local_fill),
+                        float(global_fill),
+                        0 if getattr(pod, "is_idle", False) else 1,
+                        pod_id,
+                    ),
+                    pod,
+                    skus_to_replenish,
+                    plan,
+                )
+            )
+        for _key, pod, skus_to_replenish, plan in sorted(candidates, key=lambda item: item[0]):
+            yield pod, skus_to_replenish, plan
+
     def refresh_mandatory_replenishment_pods(self):
         current_tick = int(self._tick)
         for pod in self.pod_manager.get_all_pods():
@@ -605,6 +719,7 @@ class Inventory(Universe):
         skus_to_replenish,
         robot: Robot | None = None,
         source: str = "post_pick",
+        idle_bypass: bool = False,
     ) -> bool:
         if pod is None or station is None:
             return False
@@ -616,6 +731,12 @@ class Inventory(Universe):
             return False
         replenishment_skus = sorted({int(sku) for sku in skus_to_replenish if sku is not None})
         if not replenishment_skus:
+            return False
+        if not self.can_start_replenishment_commitment(
+            pod,
+            source=str(source),
+            idle_bypass=idle_bypass,
+        ):
             return False
 
         new_job = RobotJob(pod.coordinate, station_id=station.station_id, pod=pod)
@@ -681,7 +802,13 @@ class Inventory(Universe):
             ) or sorted(pod.skus.keys())
             source = request.get("source", "post_pick")
 
-            if self.send_pod_for_replenishment(pod, station, skus_to_replenish, source=source):
+            if self.send_pod_for_replenishment(
+                pod,
+                station,
+                skus_to_replenish,
+                source=source,
+                idle_bypass=False,
+            ):
                 dispatched += 1
         return dispatched
 
@@ -743,52 +870,139 @@ class Inventory(Universe):
             and getattr(robot, "_claimed_charger", None) is None
         ]
 
-    def run_proactive_replenishment_pass(self) -> int:
-        """Enqueue proactive replenishment requests under the approved caps.
+    def _unmatched_idle_robots_after_picking_allocation(self, idle_robots):
+        """Idle robots that cannot receive a currently eligible picking job.
 
-        Normal proactive admission is bounded by the soft cap (3). When there
-        are genuinely idle robots that have no assignable picking job, the
-        idle-no-picking-job bypass permits additional proactive commitments
-        beyond the soft cap, still strictly below the hard cap (11).
+        Use the existing allocator one robot at a time against a shrinking copy
+        of eligible picking jobs. This keeps allocator semantics intact while
+        avoiding the old warehouse-global "any picking job exists" bypass gate.
         """
+        unmatched = []
+        remaining_jobs = [
+            job
+            for job in self._picking_jobs_assignable_now()
+            if not getattr(job, "is_replenishment_job", False)
+        ]
+        for robot in idle_robots:
+            if not remaining_jobs:
+                unmatched.append(robot)
+                continue
+            allocation = select_active_job_queue_assignment(
+                jobs=remaining_jobs,
+                robots=[robot],
+                cost_fn=lambda job, candidate_robot: calculateDistance(
+                    candidate_robot.pos_x,
+                    candidate_robot.pos_y,
+                    job.pod_coordinate.x,
+                    job.pod_coordinate.y,
+                ),
+                robot_task_allocator=self.robot_task_allocator,
+                regret_k=self.regret_k,
+                job_id_fn=lambda job: f"{getattr(job.pod, 'pod_id', job.pod)}:{job.station_id}",
+                robot_id_fn=lambda candidate_robot: getattr(candidate_robot, "_id", None),
+            )
+            if allocation is None:
+                unmatched.append(robot)
+                continue
+            del remaining_jobs[allocation.queue_index]
+        return unmatched
+
+    def run_proactive_replenishment_pass(self) -> int:
+        """Directly discover eligible pods and enqueue stable pending requests."""
         if not self.proactive_replenishment_enabled:
             return 0
         if self.total_replenishment_load() >= self.replenishment_hard_cap:
             return 0
 
-        # Bypass budget: idle robots with no assignable picking job may each back
-        # one soft-cap-bypass proactive commitment.
-        if self._picking_jobs_assignable_now():
-            bypass_budget = 0
-        else:
-            bypass_budget = len(self._idle_robots_available_for_replenishment())
-
         admitted = 0
-        critical_skus = sorted(self.global_critical_skus)
-        for sku_id in critical_skus:
+        for pod, skus_to_replenish, _plan in self.iter_proactive_replenishment_candidates():
             if self.total_replenishment_load() >= self.replenishment_hard_cap:
                 break
-            proactive_load = self.proactive_replenishment_load()
-            normal_ok = proactive_load < self.replenishment_soft_cap
-            bypass_ok = bypass_budget > 0
-            if not normal_ok and not bypass_ok:
-                continue
-            candidate = self.get_most_depleted_eligible_pod_for_sku(sku_id)
-            if candidate is None:
-                continue
-            pod, skus_to_replenish = candidate
-            idle_bypass = not normal_ok and bypass_ok
             if self.enqueue_pending_replenishment_dispatch(
                 pod,
                 skus_to_replenish,
                 source="proactive",
                 guaranteed_on_release=False,
-                idle_bypass=idle_bypass,
             ):
                 admitted += 1
-                if idle_bypass:
-                    bypass_budget -= 1
         return admitted
+
+    def dispatch_proactive_replenishment_to_unmatched_idle_robots(self, idle_robots) -> int:
+        """Dispatch at most one proactive job per unmatched idle robot.
+
+        This is the soft-cap bypass seam: the caller supplies robots left idle
+        after normal picking allocation has been attempted.
+        """
+        if not self.proactive_replenishment_enabled:
+            return 0
+        if not idle_robots:
+            return 0
+        self.run_proactive_replenishment_pass()
+        dispatched = 0
+        current_tick = int(self._tick)
+        for robot in idle_robots:
+            if self.total_replenishment_load() >= self.replenishment_hard_cap:
+                break
+            if getattr(robot, "current_state", None) != "idle":
+                continue
+            if getattr(robot, "job", None) is not None and not getattr(robot.job, "is_finished", False):
+                continue
+            if getattr(robot, "is_charging_pending", False) or getattr(robot, "is_charging", False):
+                continue
+            if getattr(robot, "_claimed_charger", None) is not None:
+                continue
+            station = self.station_manager.find_available_replenish_station()
+            if station is None:
+                break
+            requests = sorted(
+                [
+                    request
+                    for request in self.pending_replenishment_dispatches
+                    if request.get("source") == "proactive"
+                ],
+                key=lambda request: (
+                    0 if self.should_guarantee_replenishment_request(request, current_tick) else 1,
+                    -(current_tick - int(request.get("created_tick", current_tick))),
+                    int(request.get("pod_id", 0)),
+                ),
+            )
+            selected_request = None
+            selected_pod = None
+            selected_skus = None
+            for request in requests:
+                pod = self.pod_manager.get_pod_by_id(int(request["pod_id"]))
+                if pod is None:
+                    self.remove_pending_replenishment_dispatch(int(request["pod_id"]))
+                    continue
+                if getattr(pod, "is_awaiting_replenishment", False):
+                    self.remove_pending_replenishment_dispatch(pod.pod_id)
+                    continue
+                if getattr(pod, "rts_return_in_progress", False):
+                    continue
+                if getattr(pod, "committed_next_owner_robot_id", None):
+                    continue
+                if not getattr(pod, "is_idle", False):
+                    continue
+                plan = self.evaluate_pod_replenishment_eligibility(pod)
+                selected_request = request
+                selected_pod = pod
+                selected_skus = plan["trigger_skus"] or sorted(
+                    {int(sku) for sku in request.get("skus_to_replenish", []) if sku in pod.skus}
+                ) or sorted(pod.skus.keys())
+                break
+            if selected_request is None or selected_pod is None or not selected_skus:
+                break
+            idle_bypass = self.proactive_replenishment_robot_load() >= self.replenishment_soft_cap
+            if self.send_pod_for_replenishment(
+                selected_pod,
+                station,
+                selected_skus,
+                robot=robot,
+                source="proactive",
+                idle_bypass=idle_bypass,
+            ):
+                dispatched += 1
+        return dispatched
 
     def ensure_committed_next_reservation(self, robot: Robot):
         if not self.committed_next_reservations_enabled:
@@ -952,37 +1166,52 @@ class Inventory(Universe):
 
         print(f"Current job queue length: {len(self.job_queue)}")
 
+        idle_robots = [
+            o for o in self.get_movable_objects()
+            if o.object_type == "robot"
+            and (o.job is None or o.job.is_finished)
+            and o.current_state == 'idle'
+            and not getattr(o, "is_charging_pending", False)
+            and not getattr(o, "is_charging", False)
+            and getattr(o, "_claimed_charger", None) is None
+        ]
+        assigned_robot = None
+
         if len(self.job_queue) > 0:
-            idle_robots = [
-                o for o in self.get_movable_objects()
-                if o.object_type == "robot"
-                and (o.job is None or o.job.is_finished)
-                and o.current_state == 'idle'
-                and not getattr(o, "is_charging_pending", False)
-                and not getattr(o, "is_charging", False)
-                and getattr(o, "_claimed_charger", None) is None
-            ]
-            allocatable_jobs = [
+            eligible_jobs = [
                 (queue_index, job)
                 for queue_index, job in enumerate(self.job_queue)
                 if not getattr(getattr(job, "pod", None), "rts_return_in_progress", False)
                 and not getattr(getattr(job, "pod", None), "committed_next_owner_robot_id", None)
                 and not getattr(job, "committed_next_reservation_id", None)
             ]
-            allocation = select_active_job_queue_assignment(
-                jobs=[job for _queue_index, job in allocatable_jobs],
-                robots=idle_robots,
-                cost_fn=lambda job, robot: calculateDistance(
-                    robot.pos_x,
-                    robot.pos_y,
-                    job.pod_coordinate.x,
-                    job.pod_coordinate.y,
-                ),
-                robot_task_allocator=self.robot_task_allocator,
-                regret_k=self.regret_k,
-                job_id_fn=lambda job: f"{getattr(job.pod, 'pod_id', job.pod)}:{job.station_id}",
-                robot_id_fn=lambda robot: getattr(robot, "_id", None),
-            )
+            picking_jobs = [
+                (queue_index, job)
+                for queue_index, job in eligible_jobs
+                if not getattr(job, "is_replenishment_job", False)
+            ]
+            replenishment_jobs = [
+                (queue_index, job)
+                for queue_index, job in eligible_jobs
+                if getattr(job, "is_replenishment_job", False)
+            ]
+            allocatable_jobs = picking_jobs or replenishment_jobs
+            allocation = None
+            if allocatable_jobs and idle_robots:
+                allocation = select_active_job_queue_assignment(
+                    jobs=[job for _queue_index, job in allocatable_jobs],
+                    robots=idle_robots,
+                    cost_fn=lambda job, robot: calculateDistance(
+                        robot.pos_x,
+                        robot.pos_y,
+                        job.pod_coordinate.x,
+                        job.pod_coordinate.y,
+                    ),
+                    robot_task_allocator=self.robot_task_allocator,
+                    regret_k=self.regret_k,
+                    job_id_fn=lambda job: f"{getattr(job.pod, 'pod_id', job.pod)}:{job.station_id}",
+                    robot_id_fn=lambda robot: getattr(robot, "_id", None),
+                )
 
             if allocation is not None:
                 job = allocation.job
@@ -1004,6 +1233,15 @@ class Inventory(Universe):
                             db_path=self.sqlite_db_path,
                         )
             
+        remaining_idle_robots = [
+            robot for robot in idle_robots
+            if robot is not assigned_robot
+            and getattr(robot, "current_state", None) == "idle"
+            and (getattr(robot, "job", None) is None or getattr(robot.job, "is_finished", False))
+        ]
+        unmatched_idle_robots = self._unmatched_idle_robots_after_picking_allocation(remaining_idle_robots)
+        if unmatched_idle_robots:
+            self.dispatch_proactive_replenishment_to_unmatched_idle_robots(unmatched_idle_robots)
 
         # Update object positions and collect metrics
         total_energy = 0

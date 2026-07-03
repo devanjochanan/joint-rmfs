@@ -71,9 +71,9 @@ def main():
         assert reward_metadata.get("reward_reference_required") is False
         assert reward_metadata.get("cycle_reference_enabled") is False
         assert reward_metadata.get("alpha_enabled") is False
-        assert loaded.feature_schema["action_feature_dim"] == 18
+        assert loaded.feature_schema["action_feature_dim"] == 21
         assert loaded.feature_schema["stock_feature_dim"] == 4
-        assert loaded.feature_schema["action_feature_schema_version"] == "rts_action_features.v4"
+        assert loaded.feature_schema["action_feature_schema_version"] == "rts_action_features.v5"
         assert loaded.metadata["checkpoint_kind"] == "initial_untrained"
         assert loaded.metadata["initialization_seed"] == 42
         assert loaded.metadata["optimizer"]["type"] == "Adam"

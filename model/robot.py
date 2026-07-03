@@ -1239,6 +1239,8 @@ class Robot(Object):
             raise
 
     def _start_rts_replenish_store_return(self, decision, station: "Station", context):
+        if self.warehouse.replenishment_hard_cap_reached():
+            raise RuntimeError("replenishment_hard_cap_reached")
         storage = None
         replenishment_station = None
         try:
