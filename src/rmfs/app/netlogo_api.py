@@ -83,8 +83,6 @@ from model.tools.pod_travel import (
 from model.tools.job_task import clear_job_task_table, initialize_job_task_table, upsert_job_task
 from model.tools.order_history import clear_order_history, initialize_order_history_table
 
-from pip._internal import main as pipmain
-
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 __all__ = [
@@ -1877,7 +1875,7 @@ def console_tick():
 
 def setup_py():
     def install_package(package_name):
-        """Install a Python package using pip."""
+        from pip._internal import main as pipmain
         pipmain(['install', package_name])
 
     # List of packages to install
