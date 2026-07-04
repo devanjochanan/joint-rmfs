@@ -20,11 +20,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="RTS on-policy PPO training controller.")
     parser.add_argument("--artifact-label", default=None, help="Optional artifact label. If omitted, one is auto-generated.")
     parser.add_argument("--output-root", default="data/runtime/rts_training", help="Training run output root directory.")
-    parser.add_argument("--batches", type=int, required=True, help="Number of PPO collect-update cycles (batches) to run.")
+    parser.add_argument("--batches", type=int, required=True, help="Total number of PPO batches (end batch ID). With --resume-latest, training continues from the last checkpoint up to this batch.")
     parser.add_argument("--workers", type=int, required=True, help="Number of isolated worker rollouts (workers) inside a batch.")
     horizon = parser.add_mutually_exclusive_group(required=True)
     horizon.add_argument(
         "--simulated-seconds-per-run",
+        "--simulated-seconds",
         "--warehouse-seconds-per-run",
         type=float,
         default=None,

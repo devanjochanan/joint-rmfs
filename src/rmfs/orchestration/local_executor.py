@@ -16,6 +16,7 @@ import traceback
 from src.rmfs.orchestration.input_snapshot import create_input_snapshot
 from src.rmfs.orchestration.run_manifest import write_run_manifest
 from src.rmfs.orchestration.run_spec import RunSpec
+from src.rmfs.decisions.pps.modes import normalize_pps_mode
 from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
 from src.rmfs.runtime_io.timing import configure_timing, timed, write_timing_summary
 
@@ -59,8 +60,12 @@ def expected_worker_files(detail_db: bool = False) -> list[str]:
 
 
 def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
+    pps_mode = normalize_pps_mode(spec.pps_mode)
     env = {
         "RMFS_RUN_PROFILE": spec.run_profile,
+        "RMFS_NUM_ROBOTS": str(int(spec.robot_count)),
+        "PPS_MODE": pps_mode,
+        "PPS_RL_ENABLED": "1" if pps_mode == "ppo" else "0",
         "RMFS_ORDER_GENERATION_MODE": spec.order_generation_mode,
         "RMFS_FULL_RAW_ORDER_REPLAY": "1" if spec.full_raw_order_replay else "0",
         "RMFS_DETAIL_DB": "1" if spec.detail_db else "0",
@@ -69,6 +74,12 @@ def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
         "RMFS_COMMITTED_NEXT_RESERVATIONS": "1" if spec.committed_next_reservations_enabled else "0",
         "RMFS_POD_LOCATION_MODE": spec.pod_location_mode,
     }
+    if spec.pps_model_path:
+        env["PPS_RL_MODEL_PATH"] = spec.pps_model_path
+    if spec.charging_enabled is not None:
+        env["RMFS_CHARGING_ENABLED"] = "1" if spec.charging_enabled else "0"
+    if spec.charging_config_path:
+        env["RMFS_CHARGING_CONFIG"] = spec.charging_config_path
     if spec.rts_policy_mode == "rts_rl_explicit":
         torch_threads = spec.rts_torch_threads if spec.rts_torch_threads is not None else 1
         torch_interop_threads = spec.rts_torch_interop_threads if spec.rts_torch_interop_threads is not None else 1
@@ -335,6 +346,12 @@ def run_worker(spec: RunSpec):
         "final_metrics": None,
         "runtime_root": str(spec.runtime_root),
         "repo_root": str(spec.repo_root),
+        "requested_robot_count": int(spec.robot_count),
+        "realized_robot_count": None,
+        "expected_picking_station_count": spec.expected_picking_station_count,
+        "realized_picking_station_count": None,
+        "expected_replenishment_station_count": spec.expected_replenishment_station_count,
+        "realized_replenishment_station_count": None,
     }
     debug_rows = []
 
@@ -399,6 +416,35 @@ def run_worker(spec: RunSpec):
         summary["setup_signature"] = return_signature(setup_result)
 
         warehouse = session.warehouse
+        if warehouse is not None:
+            robots = [
+                obj
+                for obj in warehouse.get_movable_objects()
+                if getattr(obj, "object_type", None) == "robot"
+            ]
+            station_manager = getattr(warehouse, "station_manager", None)
+            picking_stations = list(getattr(station_manager, "picking_stations", []) or [])
+            replenishment_stations = list(getattr(station_manager, "replenishment_stations", []) or [])
+            summary["realized_robot_count"] = len(robots)
+            summary["realized_picking_station_count"] = len(picking_stations)
+            summary["realized_replenishment_station_count"] = len(replenishment_stations)
+            if spec.expected_picking_station_count is not None and len(picking_stations) != spec.expected_picking_station_count:
+                raise RuntimeError(
+                    "picking station count mismatch: "
+                    f"expected {spec.expected_picking_station_count}, realized {len(picking_stations)}"
+                )
+            if (
+                spec.expected_replenishment_station_count is not None
+                and len(replenishment_stations) != spec.expected_replenishment_station_count
+            ):
+                raise RuntimeError(
+                    "replenishment station count mismatch: "
+                    f"expected {spec.expected_replenishment_station_count}, realized {len(replenishment_stations)}"
+                )
+            if len(robots) != int(spec.robot_count):
+                raise RuntimeError(
+                    f"robot count mismatch: requested {int(spec.robot_count)}, realized {len(robots)}"
+                )
         if warehouse is not None:
             try:
                 finalized_rts = finalize_rts_static_runtime_after_setup(warehouse, spec.rts_zone_ids)
@@ -619,10 +665,17 @@ def run_worker(spec: RunSpec):
             "committed_next_reservations_enabled": spec.committed_next_reservations_enabled,
             "rts_torch_threads": spec.rts_torch_threads if spec.rts_torch_threads is not None else (1 if spec.rts_policy_mode == "rts_rl_explicit" else None),
             "rts_torch_interop_threads": spec.rts_torch_interop_threads if spec.rts_torch_interop_threads is not None else (1 if spec.rts_policy_mode == "rts_rl_explicit" else None),
+            "rts_policy_mode": spec.rts_policy_mode,
+            "rts_rollout_enabled": spec.rts_rollout_enabled,
             "rts_state_capture_mode": spec.rts_state_capture_mode,
             "detail_db": spec.detail_db,
             "timing": spec.timing,
             "worker_status_cadence": spec.worker_status_cadence,
+            "pps_mode": normalize_pps_mode(spec.pps_mode),
+            "pps_model_path": spec.pps_model_path,
+            "pps_rl_enabled": normalize_pps_mode(spec.pps_mode) == "ppo",
+            "charging_enabled": spec.charging_enabled,
+            "charging_config_path": spec.charging_config_path,
         })
         write_json(spec.runtime_root / "worker_summary.json", summary)
         write_worker_status("success" if summary["status"] == "success" else "failure", force=True)
@@ -671,6 +724,93 @@ def _make_controller_progress_bar(enabled: bool, total_steps: int):
         dynamic_ncols=True,
         leave=True,
     )
+
+
+def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
+    if max_workers < 1:
+        raise ValueError("max_workers must be >= 1")
+    if not specs:
+        return []
+
+    for spec in specs:
+        spec.runtime_root.mkdir(parents=True, exist_ok=True)
+        write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
+
+    processes = []
+    completed = []
+    total_steps = sum(int(spec.ticks) for spec in specs)
+    progress_bar = _make_controller_progress_bar(progress, total_steps)
+    progress_last = 0
+
+    def launch(spec: RunSpec):
+        stdout_path = spec.runtime_root / "worker_stdout.log"
+        stderr_path = spec.runtime_root / "worker_stderr.log"
+        stdout_fh = stdout_path.open("w")
+        stderr_fh = stderr_path.open("w")
+        proc = subprocess.Popen(
+            [
+                spec.python_executable or sys.executable,
+                "-m",
+                "src.rmfs.orchestration.local_executor",
+                "worker",
+                "--spec",
+                str(spec.runtime_root / "run_spec.json"),
+            ],
+            cwd=spec.repo_root,
+            stdout=stdout_fh,
+            stderr=stderr_fh,
+            text=True,
+        )
+        return {"spec": spec, "proc": proc, "stdout": stdout_fh, "stderr": stderr_fh}
+
+    pending = list(specs)
+    try:
+        while pending or processes:
+            while pending and len(processes) < max_workers:
+                processes.append(launch(pending.pop(0)))
+
+            still_running = []
+            for item in processes:
+                return_code = item["proc"].poll()
+                if return_code is None:
+                    still_running.append(item)
+                    continue
+                item["stdout"].close()
+                item["stderr"].close()
+                completed.append({"spec": item["spec"], "return_code": return_code})
+            processes = still_running
+
+            if progress_bar is not None:
+                current_progress = min(total_steps, _read_worker_progress(specs))
+                if current_progress > progress_last:
+                    progress_bar.update(current_progress - progress_last)
+                    progress_last = current_progress
+                progress_bar.set_postfix(
+                    running=len(processes),
+                    pending=len(pending),
+                    completed=len(completed),
+                    refresh=False,
+                )
+                progress_bar.refresh()
+
+            if processes and (pending or len(processes) >= max_workers):
+                if progress_bar is None:
+                    processes[0]["proc"].wait(timeout=None)
+                else:
+                    time.sleep(0.5)
+    finally:
+        if progress_bar is not None:
+            current_progress = min(total_steps, _read_worker_progress(specs))
+            if current_progress > progress_last:
+                progress_bar.update(current_progress - progress_last)
+            progress_bar.close()
+        for item in processes:
+            if not item["stdout"].closed:
+                item["stdout"].close()
+            if not item["stderr"].closed:
+                item["stderr"].close()
+
+    return completed
 
 
 def run_controller(
@@ -891,73 +1031,7 @@ def run_controller(
 
     root_before = snapshot_root(repo_root)
     snapshot_before = hash_snapshot_files(input_snapshot_root) if snapshot_inputs else {}
-    processes = []
-    completed = []
-    progress_bar = _make_controller_progress_bar(progress, runs * ticks)
-    progress_last = 0
-
-    def launch(spec: RunSpec):
-        stdout_path = spec.runtime_root / "worker_stdout.log"
-        stderr_path = spec.runtime_root / "worker_stderr.log"
-        stdout_fh = stdout_path.open("w")
-        stderr_fh = stderr_path.open("w")
-        proc = subprocess.Popen(
-            [
-                python_executable,
-                "-m",
-                "src.rmfs.orchestration.local_executor",
-                "worker",
-                "--spec",
-                str(spec.runtime_root / "run_spec.json"),
-            ],
-            cwd=repo_root,
-            stdout=stdout_fh,
-            stderr=stderr_fh,
-            text=True,
-        )
-        return {"spec": spec, "proc": proc, "stdout": stdout_fh, "stderr": stderr_fh}
-
-    pending = list(specs)
-    try:
-        while pending or processes:
-            while pending and len(processes) < max_workers:
-                processes.append(launch(pending.pop(0)))
-
-            still_running = []
-            for item in processes:
-                return_code = item["proc"].poll()
-                if return_code is None:
-                    still_running.append(item)
-                    continue
-                item["stdout"].close()
-                item["stderr"].close()
-                completed.append({"spec": item["spec"], "return_code": return_code})
-            processes = still_running
-
-            if progress_bar is not None:
-                current_progress = min(runs * ticks, _read_worker_progress(specs))
-                if current_progress > progress_last:
-                    progress_bar.update(current_progress - progress_last)
-                    progress_last = current_progress
-                progress_bar.set_postfix(
-                    running=len(processes),
-                    pending=len(pending),
-                    completed=len(completed),
-                    refresh=False,
-                )
-                progress_bar.refresh()
-
-            if processes and (pending or len(processes) >= max_workers):
-                if progress_bar is None:
-                    processes[0]["proc"].wait(timeout=None)
-                else:
-                    time.sleep(0.5)
-    finally:
-        if progress_bar is not None:
-            current_progress = min(runs * ticks, _read_worker_progress(specs))
-            if current_progress > progress_last:
-                progress_bar.update(current_progress - progress_last)
-            progress_bar.close()
+    completed = run_specs(specs, max_workers=max_workers, progress=progress)
 
     root_after = snapshot_root(repo_root)
     root_changed = changed_root_files(root_before, root_after)

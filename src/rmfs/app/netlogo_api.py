@@ -852,7 +852,9 @@ stations = [
 
 def initRobots(universe: Inventory):
 
-    num_robot = 20  # Number of robots
+    num_robot = _env_int("RMFS_NUM_ROBOTS", 20)
+    if num_robot < 1:
+        raise ValueError(f"RMFS_NUM_ROBOTS must be >= 1; got {num_robot}")
 
     layout_frame = pd.read_csv(_str_path("generated_pod_csv"), header=None)
     row_count, col_count = layout_frame.shape

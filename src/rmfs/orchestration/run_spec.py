@@ -35,6 +35,13 @@ class RunSpec:
     rts_feature_ablation_hash: str | None = None
     rts_state_capture_mode: str = "auto"
     rts_charging_mode: str = "inherit"
+    robot_count: int = 20
+    expected_picking_station_count: int | None = None
+    expected_replenishment_station_count: int | None = None
+    pps_mode: str = "heuristic"
+    pps_model_path: str | None = None
+    charging_enabled: bool | None = None
+    charging_config_path: str | None = None
     keep_runtime_artifacts: bool = False
     detail_db: bool = False
     timing: bool = False
@@ -96,6 +103,8 @@ class RunSpec:
     def validate_runtime_semantics(self) -> None:
         if int(self.ticks) <= 0:
             raise ValueError("RunSpec.ticks must be positive backend / NetLogo steps")
+        if int(self.robot_count) < 1:
+            raise ValueError("RunSpec.robot_count must be >= 1")
         if self.order_rate_per_hour is not None and int(self.order_rate_per_hour) <= 0:
             raise ValueError("RunSpec.order_rate_per_hour must be positive when supplied")
         if not str(self.order_generation_mode or "").strip():

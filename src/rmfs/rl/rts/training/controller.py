@@ -751,6 +751,8 @@ def run_on_policy_training_controller(
                 batch_id,
             )
             batch_summaries.append(summary)
+            if not dry_run:
+                shutil.rmtree(workers_dir, ignore_errors=True)
         tb.close()
 
         if dry_run:
