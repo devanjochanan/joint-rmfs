@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
-"""Two-treatment RMFS capacity-study preparation and bounded execution.
+"""RMFS capacity-study: one non-RL treatment, varied robot count and order rate.
 
-This keeps the historical four-researcher compatibility script as the study
-entry point while resolving the matrix to two explicit treatments:
-``all_off`` and ``all_on``.  Prepare-only is the default.  Execution uses the
-Stage 1 ``RunSpec`` contract and ``run_specs`` scheduler.
+Uses the canonical training NetLogo environment (data/input/base) as the fixed
+warehouse configuration.  Varies robot count and order arrival rate across
+replications.  Reuses existing RunSpec, run_specs scheduler, local_executor,
+and worker_summary infrastructure.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import datetime as dt
 import hashlib
 import json
 import math
-import os
-import random
-import shutil
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -30,27 +26,17 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from model.layout import Layout
-from scripts.data.build_adaptive_hybrid import build as build_adaptive_hybrid
-from scripts.data.build_baseline_random import build as build_baseline_random
-from src.rmfs.decisions.pps.model_paths import DEFAULT_PPS_MODEL_PATH
-from src.rmfs.decisions.pps.runtime import (
-    PPS_RL_NUM_STATIONS,
-    load_pps_rl_model_strict,
-)
 from src.rmfs.experiments.identity import short_hash
 from src.rmfs.orchestration.local_executor import git_value, load_worker_summary, run_specs
 from src.rmfs.orchestration.run_spec import RunSpec
-from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint
-from src.rmfs.runtime_io.run_profiles import DEFAULT_RTS_ORDER_RATE_PER_HOUR, TICK_TO_SECOND
-from src.rmfs.runtime_io.scenario_bundle import activate_scenario_inputs, read_scenario_inputs
+from src.rmfs.runtime_io.run_profiles import TICK_TO_SECOND
 
-
-MATRIX_SCHEMA_VERSION = "capacity_study_two_treatment.v1"
+MATRIX_SCHEMA_VERSION = "capacity_study_order_rate.v1"
 ROBOT_COUNTS = (10, 15, 20, 25, 30)
-PICKER_COUNTS = (2, 3, 4)
-REPLENISHMENT_COUNTS = (1,)
-TREATMENTS = ("all_off", "all_on")
+ORDER_RATES = (400, 500, 600)
+PICKER_COUNT = 3
+REPLENISHMENT_COUNT = 1
+REPLICATIONS = 20
 OPERATIONAL_METRIC_FIELDS = (
     "orders_completed",
     "average_order_cycle_time",
@@ -58,15 +44,6 @@ OPERATIONAL_METRIC_FIELDS = (
     "stop_and_go_count",
     "turning_count",
 )
-
-
-@dataclass
-class FactorResolution:
-    ok: bool
-    requested: str
-    actual: str
-    detail: dict[str, Any] = field(default_factory=dict)
-    failures: list[str] = field(default_factory=list)
 
 
 def sha256_file(path: Path) -> str:
@@ -91,139 +68,11 @@ def file_digest_map(root: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
-def derive_seed(root_seed: int, *parts: Any) -> int:
-    payload = json.dumps([int(root_seed), *parts], sort_keys=True, separators=(",", ":"), default=str)
-    return int(hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8], 16)
-
-
-def charger_budget(robot_count: int) -> int:
-    return int(round(0.6 * int(robot_count)))
-
-
 def ticks_from_seconds(seconds: float) -> int:
     ticks = int(round(float(seconds) / TICK_TO_SECOND))
     if not math.isclose(ticks * TICK_TO_SECOND, float(seconds), rel_tol=0.0, abs_tol=1e-9):
         raise ValueError(f"simulated seconds {seconds} is not exactly representable at tick_to_second={TICK_TO_SECOND}")
     return ticks
-
-
-def resolve_dewa(treatment: str, rts_checkpoint: dict[str, Any] | None) -> FactorResolution:
-    if treatment == "all_off":
-        return FactorResolution(True, "all_off.dewa", "current_nearest", {
-            "rts_policy_mode": "current",
-            "rts_rollout_enabled": False,
-            "committed_next_reservations_enabled": False,
-        })
-    failures = [] if rts_checkpoint else ["rts_checkpoint_missing_or_incompatible"]
-    return FactorResolution(not failures, "all_on.dewa", "rts_rl_explicit", {
-        "rts_policy_mode": "rts_rl_explicit",
-        "rts_rollout_enabled": True,
-        "committed_next_reservations_enabled": True,
-        "rts_policy_checkpoint_dir": None if rts_checkpoint is None else rts_checkpoint["path"],
-        "rts_policy_checkpoint_id": None if rts_checkpoint is None else rts_checkpoint["policy_checkpoint_id"],
-        "rts_policy_action_mode": "greedy",
-        "rts_policy_device": "cpu",
-        "rts_zone_ids": ["auto"],
-    }, failures)
-
-
-def resolve_devan(treatment: str, picker_count: int, pps_checkpoint: dict[str, Any] | None) -> FactorResolution:
-    if treatment == "all_off":
-        return FactorResolution(True, "all_off.devan", "rika_heuristic", {
-            "pps_mode": "heuristic",
-            "pps_model_path": None,
-            "pps_rl_enabled": False,
-        })
-    failures: list[str] = []
-    if pps_checkpoint is None:
-        failures.append("pps_checkpoint_missing_or_incompatible")
-    if int(picker_count) != int(PPS_RL_NUM_STATIONS):
-        failures.append(
-            f"pps_fixed_station_count:{PPS_RL_NUM_STATIONS}:requested_pickers:{int(picker_count)}"
-        )
-    return FactorResolution(not failures, "all_on.devan", "ppo_strict_legacy_checkpoint", {
-        "pps_mode": "ppo",
-        "pps_model_path": None if pps_checkpoint is None else pps_checkpoint["path"],
-        "pps_rl_enabled": True,
-        "strict_loading": True,
-        "trained_station_count": PPS_RL_NUM_STATIONS,
-    }, failures)
-
-
-def resolve_lukman(treatment: str, bundle: str) -> FactorResolution:
-    try:
-        canonical, items, pods = read_scenario_inputs(bundle)
-        detail = {
-            "bundle_name": canonical,
-            "items_rows": int(len(items)),
-            "pods_rows": int(len(pods)),
-            "unique_items": int(items["item_id"].nunique()),
-            "unique_pods": int(pods["pod_id"].nunique()),
-        }
-        return FactorResolution(True, f"{treatment}.lukman", f"bundle:{canonical}", detail)
-    except Exception as exc:
-        return FactorResolution(False, f"{treatment}.lukman", "unresolved", {
-            "bundle_name": bundle,
-        }, [f"bundle_resolution_failed:{bundle}:{type(exc).__name__}:{exc}"])
-
-
-def resolve_salsa(treatment: str, charging_config: dict[str, Any]) -> FactorResolution:
-    if treatment == "all_off":
-        return FactorResolution(True, "all_off.salsa", "yang_random_baseline", {
-            "charging_enabled": True,
-            "charging_method": "yang_random_baseline",
-            **charging_config,
-        })
-    return FactorResolution(True, "all_on.salsa", "adaptive_hybrid", {
-        "charging_enabled": True,
-        "charging_method": "adaptive_hybrid",
-        **charging_config,
-    })
-
-
-def discover_rts_checkpoint() -> dict[str, Any] | None:
-    candidates = []
-    for checkpoint in sorted((REPO_ROOT / "data" / "runtime").rglob("checkpoint")):
-        if (checkpoint / "model.pt").exists():
-            candidates.append(checkpoint)
-    for checkpoint in reversed(candidates):
-        try:
-            loaded = load_policy_from_checkpoint(checkpoint, device="cpu")
-        except Exception:
-            continue
-        return {
-            "path": str(checkpoint),
-            "policy_checkpoint_id": loaded.policy_checkpoint_id,
-            "model_sha256": sha256_file(checkpoint / "model.pt"),
-            "feature_schema_sha256": sha256_file(checkpoint / "feature_schema.json"),
-            "action_feature_dim": int(loaded.feature_schema.get("action_feature_dim")),
-            "stock_feature_dim": int(loaded.feature_schema.get("stock_feature_dim")),
-        }
-    return None
-
-
-def inspect_pps_checkpoint() -> dict[str, Any] | None:
-    if not DEFAULT_PPS_MODEL_PATH.exists():
-        return None
-    model = load_pps_rl_model_strict(DEFAULT_PPS_MODEL_PATH)
-    spaces = model.observation_space.spaces
-    return {
-        "path": str(DEFAULT_PPS_MODEL_PATH),
-        "sha256": sha256_file(DEFAULT_PPS_MODEL_PATH),
-        "action_space": str(model.action_space),
-        "observation_shapes": {key: list(value.shape) for key, value in spaces.items()},
-        "trained_station_count": PPS_RL_NUM_STATIONS,
-    }
-
-
-def generate_layout(path: Path, picker_count: int, replenishment_count: int, seed: int) -> None:
-    random.seed(int(seed))
-    layout = Layout()
-    layout.order_picker_total = int(picker_count)
-    layout.order_replenishment_total = int(replenishment_count)
-    layout.total_charging_stations = 0
-    path.parent.mkdir(parents=True, exist_ok=True)
-    layout.generate(output_path=str(path))
 
 
 def station_coordinates(grid: np.ndarray) -> dict[str, list[list[int]]]:
@@ -272,17 +121,19 @@ def graph_connected(grid: np.ndarray) -> bool:
     return len(seen) == len(nodes)
 
 
-def layout_metadata(layout_path: Path, picker_count: int, replenishment_count: int) -> dict[str, Any]:
+def layout_metadata(layout_path: Path) -> dict[str, Any]:
     frame = pd.read_csv(layout_path, header=None)
     grid = frame.to_numpy(dtype=int)
     coords = station_coordinates(grid)
     spawn = legal_spawn_cells(grid)
     pod_count = int((grid == 1).sum())
     storage_count = int(((grid == 0) | (grid == 1)).sum())
-    if len(coords["picking"]) != int(picker_count):
-        raise RuntimeError(f"layout picker count mismatch for {layout_path}")
-    if len(coords["replenishment"]) != int(replenishment_count):
-        raise RuntimeError(f"layout replenishment count mismatch for {layout_path}")
+    if len(coords["picking"]) != PICKER_COUNT:
+        raise RuntimeError(f"layout picker count mismatch: expected {PICKER_COUNT}, got {len(coords['picking'])}")
+    if len(coords["replenishment"]) != REPLENISHMENT_COUNT:
+        raise RuntimeError(f"layout replenishment count mismatch: expected {REPLENISHMENT_COUNT}, got {len(coords['replenishment'])}")
+    if pod_count != 121:
+        raise RuntimeError(f"layout pod count mismatch: expected 121, got {pod_count}")
     if len(spawn) < max(ROBOT_COUNTS):
         raise RuntimeError(f"layout has only {len(spawn)} legal spawn cells; need {max(ROBOT_COUNTS)}")
     return {
@@ -299,65 +150,21 @@ def layout_metadata(layout_path: Path, picker_count: int, replenishment_count: i
     }
 
 
-def materialize_input_root(
-    output_root: Path,
-    treatment: str,
-    picker_count: int,
-    replenishment_count: int,
-    bundle: str,
-    seed: int,
-) -> dict[str, Any]:
-    root = output_root / "inputs" / f"{treatment}__p{picker_count}__q{replenishment_count}"
-    root.mkdir(parents=True, exist_ok=True)
-    scenario_meta = activate_scenario_inputs(bundle, target_root=root, metadata_path=root / "active_scenario.json", dry_run=False)
-    layout_path = root / "generated_pod.csv"
-    generate_layout(layout_path, picker_count, replenishment_count, seed)
-    meta = {
-        "treatment": treatment,
-        "input_root": str(root),
-        "scenario": scenario_meta,
-        "layout": layout_metadata(layout_path, picker_count, replenishment_count),
-        "file_digests": file_digest_map(root),
-    }
-    write_json(root / "source_metadata.json", meta)
-    return meta
-
-
-def build_charging_config(
-    output_root: Path,
-    treatment: str,
-    picker_count: int,
-    robot_count: int,
-    layout_meta: dict[str, Any],
-    seed: int,
-) -> dict[str, Any]:
-    grid = pd.read_csv(layout_meta["layout_path"], header=None).to_numpy(dtype=int)
-    budget = charger_budget(robot_count)
-    if treatment == "all_off":
-        cfg = build_baseline_random(grid.tolist(), num_chargers=budget, seed=seed)
-        method = "yang_random_baseline"
-        extra = {}
-    else:
-        cfg, n_picker, n_depot = build_adaptive_hybrid(grid, n_robots=robot_count, rho=0.6)
-        method = "adaptive_hybrid"
-        extra = {"adaptive_picker_cells": n_picker, "adaptive_depot_cells": n_depot}
-    cfg_path = output_root / "charging" / treatment / f"p{picker_count}" / f"robots_{robot_count}.json"
-    write_json(cfg_path, cfg)
+def validate_input_root(input_root: Path) -> dict[str, Any]:
+    required = ["generated_pod.csv", "items.csv", "pods.csv", "raw_order.csv"]
+    for name in required:
+        if not (input_root / name).exists():
+            raise RuntimeError(f"input root missing required file: {input_root / name}")
+    layout_meta = layout_metadata(input_root / "generated_pod.csv")
     return {
-        "method": method,
-        "robot_count": int(robot_count),
-        "charger_budget": budget,
-        "positions": cfg.get("charger_positions", []),
-        "source_layout_hash": layout_meta["layout_sha256"],
-        "config_path": str(cfg_path),
-        "config_sha256": sha256_file(cfg_path),
-        "generation_seed": int(seed),
-        **extra,
+        "input_root": str(input_root),
+        "layout": layout_meta,
+        "file_digests": file_digest_map(input_root),
     }
 
 
-def run_prefix(treatment: str, robot_count: int, picker_count: int, replenishment_count: int, replication: int) -> str:
-    return f"{treatment}__r{robot_count}__p{picker_count}__q{replenishment_count}__rep{replication:03d}"
+def run_prefix(robot_count: int, order_rate: int, replication: int) -> str:
+    return f"all_off__r{robot_count}__arr{order_rate}__rep{replication:03d}"
 
 
 def build_run_id(prefix: str, identity: dict[str, Any]) -> str:
@@ -371,9 +178,6 @@ def build_spec(
     branch: str,
     commit: str,
 ) -> RunSpec:
-    treatment = condition["treatment"]
-    dewa = condition["resolutions"]["dewa"]["detail"]
-    devan = condition["resolutions"]["devan"]["detail"]
     return RunSpec(
         run_id=condition["run_id"],
         ticks=int(condition["ticks"]),
@@ -384,22 +188,17 @@ def build_spec(
         commit=commit,
         python_executable=python_executable,
         timestamp=condition["spec_timestamp"],
-        rts_policy_mode=dewa["rts_policy_mode"],
-        rts_rollout_enabled=bool(dewa["rts_rollout_enabled"]),
-        rts_zone_ids=dewa.get("rts_zone_ids"),
-        rts_policy_checkpoint_dir=dewa.get("rts_policy_checkpoint_dir"),
-        rts_policy_checkpoint_id=dewa.get("rts_policy_checkpoint_id"),
-        rts_policy_action_mode=dewa.get("rts_policy_action_mode", "sample"),
-        rts_policy_device=dewa.get("rts_policy_device", "cpu"),
-        rts_state_capture_mode="full" if treatment == "all_on" else "auto",
-        committed_next_reservations_enabled=bool(dewa["committed_next_reservations_enabled"]),
+        rts_policy_mode="current",
+        rts_rollout_enabled=False,
+        committed_next_reservations_enabled=False,
+        rts_seed_base=int(condition["run_seed"]),
+        rts_random_seed=int(condition["run_seed"]),
+        rts_state_capture_mode="auto",
         robot_count=int(condition["robot_count"]),
-        expected_picking_station_count=int(condition["picker_count"]),
-        expected_replenishment_station_count=int(condition["replenishment_count"]),
-        pps_mode=devan["pps_mode"],
-        pps_model_path=devan.get("pps_model_path"),
-        charging_enabled=True,
-        charging_config_path=condition["charging"]["config_path"],
+        expected_picking_station_count=PICKER_COUNT,
+        expected_replenishment_station_count=REPLENISHMENT_COUNT,
+        pps_mode="heuristic",
+        pps_model_path=None,
         keep_runtime_artifacts=False,
         detail_db=False,
         timing=False,
@@ -410,9 +209,9 @@ def build_spec(
         demand_buffer_ticks=1000,
         order_generation_mode="shuffled_historical_cycle",
         full_raw_order_replay=False,
-        order_rate_per_hour=DEFAULT_RTS_ORDER_RATE_PER_HOUR,
+        order_rate_per_hour=int(condition["order_rate"]),
         pod_location_mode="randomize_slots",
-        pod_location_seed=int(condition["seeds"]["pod_location_seed"]),
+        pod_location_seed=int(condition["run_seed"]),
         experiment_id=condition["experiment_id"],
         scenario_id=condition["scenario_id"],
         artifact_label=condition["run_id"],
@@ -446,26 +245,25 @@ def condition_summary_row(condition: dict[str, Any], worker_summary: dict[str, A
     finalization = worker_summary.get("finalization", {}) if worker_summary else {}
     row = {
         "run_id": condition["run_id"],
-        "treatment": condition["treatment"],
+        "treatment": "all_off",
         "robot_count": condition["robot_count"],
-        "picker_count": condition["picker_count"],
-        "replenishment_count": condition["replenishment_count"],
+        "order_rate": condition["order_rate"],
+        "picker_count": PICKER_COUNT,
+        "replenishment_count": REPLENISHMENT_COUNT,
         "replication": condition["replication"],
-        "root_seed": condition["root_seed"],
+        "run_seed": condition["run_seed"],
         "runtime_status": None if worker_summary is None else worker_summary.get("status"),
-        "compatibility_failure_count": len(condition["compatibility_failures"]),
-        "compatibility_failures": ";".join(condition["compatibility_failures"]),
+        "compatibility_failure_count": 0,
+        "compatibility_failures": "",
         "requested_robot_count": condition["robot_count"],
         "realized_robot_count": None if worker_summary is None else worker_summary.get("realized_robot_count"),
-        "expected_picking_station_count": condition["picker_count"],
+        "expected_picking_station_count": PICKER_COUNT,
         "realized_picking_station_count": None if worker_summary is None else worker_summary.get("realized_picking_station_count"),
-        "expected_replenishment_station_count": condition["replenishment_count"],
+        "expected_replenishment_station_count": REPLENISHMENT_COUNT,
         "realized_replenishment_station_count": None if worker_summary is None else worker_summary.get("realized_replenishment_station_count"),
         "scenario_id": condition["scenario_id"],
         "scenario_hash": condition["scenario_hash"],
-        "layout_hash": condition["layout"]["layout_sha256"],
-        "charging_method": condition["charging"]["method"],
-        "charging_config_hash": condition["charging"]["config_sha256"],
+        "layout_hash": condition["layout_hash"],
         "ticks_requested": condition["ticks"],
         "ticks_completed": None if worker_summary is None else worker_summary.get("ticks_completed"),
         "completed_simulated_seconds": None if worker_summary is None else worker_summary.get("warehouse_time_elapsed"),
@@ -491,11 +289,10 @@ def condition_summary_row(condition: dict[str, Any], worker_summary: dict[str, A
 
 def write_outputs(output_root: Path, manifest: dict[str, Any], conditions: list[dict[str, Any]]) -> None:
     write_json(output_root / "matrix_manifest.json", manifest)
-    failures = {c["run_id"]: c["compatibility_failures"] for c in conditions if c["compatibility_failures"]}
     write_json(output_root / "compatibility_failures.json", {
         "schema_version": MATRIX_SCHEMA_VERSION,
-        "total_failed_conditions": len(failures),
-        "condition_failures": failures,
+        "total_failed_conditions": 0,
+        "condition_failures": {},
     })
     rows = []
     for condition in conditions:
@@ -511,12 +308,10 @@ def write_outputs(output_root: Path, manifest: dict[str, Any], conditions: list[
 
 def apply_filters(conditions: list[dict[str, Any]], args: argparse.Namespace) -> list[dict[str, Any]]:
     selected = conditions
-    if args.treatment:
-        selected = [c for c in selected if c["treatment"] in set(args.treatment)]
     if args.robots:
         selected = [c for c in selected if c["robot_count"] in set(args.robots)]
-    if args.pickers:
-        selected = [c for c in selected if c["picker_count"] in set(args.pickers)]
+    if args.order_rate:
+        selected = [c for c in selected if c["order_rate"] in set(args.order_rate)]
     if args.replication:
         selected = [c for c in selected if c["replication"] in set(args.replication)]
     if args.limit_runs is not None:
@@ -525,13 +320,13 @@ def apply_filters(conditions: list[dict[str, Any]], args: argparse.Namespace) ->
 
 
 def validate_counts(conditions: list[dict[str, Any]]) -> None:
-    assert len(conditions) == 600
-    assert len({c["run_id"] for c in conditions}) == 600
-    assert Counter(c["treatment"] for c in conditions) == {"all_off": 300, "all_on": 300}
-    assert Counter(c["robot_count"] for c in conditions) == {10: 120, 15: 120, 20: 120, 25: 120, 30: 120}
-    assert Counter(c["picker_count"] for c in conditions) == {2: 200, 3: 200, 4: 200}
-    assert Counter(c["replication"] for c in conditions) == {i: 30 for i in range(1, 21)}
-    assert {c["replenishment_count"] for c in conditions} == {1}
+    assert len(conditions) == 300, f"expected 300 conditions, got {len(conditions)}"
+    assert len({c["run_id"] for c in conditions}) == 300, "duplicate run_ids"
+    assert Counter(c["robot_count"] for c in conditions) == {10: 60, 15: 60, 20: 60, 25: 60, 30: 60}
+    assert Counter(c["order_rate"] for c in conditions) == {400: 100, 500: 100, 600: 100}
+    assert Counter(c["replication"] for c in conditions) == {i: 15 for i in range(1, 21)}
+    assert all(c["picker_count"] == PICKER_COUNT for c in conditions)
+    assert all(c["replenishment_count"] == REPLENISHMENT_COUNT for c in conditions)
 
 
 def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -540,105 +335,65 @@ def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
     branch = git_value(REPO_ROOT, "rev-parse", "--abbrev-ref", "HEAD")
     commit = git_value(REPO_ROOT, "rev-parse", "HEAD")
     ticks = ticks_from_seconds(args.simulated_seconds)
-    rts_checkpoint = discover_rts_checkpoint()
-    pps_checkpoint = inspect_pps_checkpoint()
 
-    input_roots = {}
-    for treatment in TREATMENTS:
-        bundle = "cindy_s3" if treatment == "all_off" else "scenario4_sij"
-        for picker_count in PICKER_COUNTS:
-            seed = derive_seed(args.seed, "layout", picker_count, 1)
-            input_roots[(treatment, picker_count, 1)] = materialize_input_root(
-                output_root, treatment, picker_count, 1, bundle, seed
-            )
-
-    charging_configs = {}
-    for treatment in TREATMENTS:
-        for picker_count in PICKER_COUNTS:
-            layout_meta = input_roots[(treatment, picker_count, 1)]["layout"]
-            for robot_count in ROBOT_COUNTS:
-                seed = derive_seed(args.seed, "charging", treatment, picker_count, robot_count)
-                charging_configs[(treatment, picker_count, robot_count)] = build_charging_config(
-                    output_root, treatment, picker_count, robot_count, layout_meta, seed
-                )
+    input_root = REPO_ROOT / "data" / "input" / "base"
+    input_meta = validate_input_root(input_root)
+    layout_hash = input_meta["layout"]["layout_sha256"]
+    scenario_identity = {
+        "input_root": "data/input/base",
+        "file_digests": {
+            key: value["sha256"]
+            for key, value in input_meta["file_digests"].items()
+        },
+    }
+    scenario_hash = short_hash(scenario_identity)
+    scenario_id = f"scenario_{scenario_hash}"
 
     conditions = []
-    for treatment in TREATMENTS:
-        for robot_count in ROBOT_COUNTS:
-            for picker_count in PICKER_COUNTS:
-                for replenishment_count in REPLENISHMENT_COUNTS:
-                    for replication in range(1, int(args.replications) + 1):
-                        root_seed = derive_seed(args.seed, "replication", replication)
-                        input_meta = input_roots[(treatment, picker_count, replenishment_count)]
-                        charging = charging_configs[(treatment, picker_count, robot_count)]
-                        dewa = resolve_dewa(treatment, rts_checkpoint)
-                        devan = resolve_devan(treatment, picker_count, pps_checkpoint)
-                        lukman = resolve_lukman(treatment, input_meta["scenario"]["scenario_name"])
-                        salsa = resolve_salsa(treatment, charging)
-                        failures = dewa.failures + devan.failures + lukman.failures + salsa.failures
-                        scenario_identity = {
-                            "treatment": treatment,
-                            "scenario": input_meta["scenario"]["scenario_name"],
-                            "scenario_files": {
-                                key: value["sha256"]
-                                for key, value in input_meta["file_digests"].items()
-                                if key in {"items.csv", "pods.csv", "raw_order.csv"}
-                            },
-                        }
-                        scenario_id = f"scenario_{short_hash(scenario_identity)}"
-                        identity = {
-                            "treatment": treatment,
-                            "robot_count": robot_count,
-                            "picker_count": picker_count,
-                            "replenishment_count": replenishment_count,
-                            "replication": replication,
-                            "root_seed": root_seed,
-                            "scenario_identity": scenario_identity,
-                            "layout_hash": input_meta["layout"]["layout_sha256"],
-                            "charging_config_hash": charging["config_sha256"],
-                            "horizon_ticks": ticks,
-                            "simulated_seconds": args.simulated_seconds,
-                            "rts_checkpoint": None if rts_checkpoint is None else rts_checkpoint["policy_checkpoint_id"],
-                            "pps_checkpoint": None if pps_checkpoint is None else pps_checkpoint["sha256"],
-                            "branch": branch,
-                            "commit": commit,
-                        }
-                        prefix = run_prefix(treatment, robot_count, picker_count, replenishment_count, replication)
-                        run_id = build_run_id(prefix, identity)
-                        runtime_root = output_root / "runs" / run_id
-                        conditions.append({
-                            "run_id": run_id,
-                            "run_prefix": prefix,
-                            "experiment_id": "capacity_study_two_treatment",
-                            "treatment": treatment,
-                            "robot_count": robot_count,
-                            "picker_count": picker_count,
-                            "replenishment_count": replenishment_count,
-                            "replication": replication,
-                            "root_seed": root_seed,
-                            "seeds": {
-                                "replication_seed": root_seed,
-                                "pod_location_seed": derive_seed(root_seed, "pod_location", robot_count, picker_count),
-                                "rts_random_seed": derive_seed(root_seed, "rts", treatment),
-                            },
-                            "ticks": ticks,
-                            "simulated_seconds": args.simulated_seconds,
-                            "input_root": input_meta["input_root"],
-                            "runtime_root": str(runtime_root),
-                            "scenario_id": scenario_id,
-                            "scenario_hash": short_hash(scenario_identity),
-                            "layout": input_meta["layout"],
-                            "charging": charging,
-                            "resolutions": {
-                                "dewa": dewa.__dict__,
-                                "devan": devan.__dict__,
-                                "lukman": lukman.__dict__,
-                                "salsa": salsa.__dict__,
-                            },
-                            "compatibility_failures": failures,
-                            "identity": identity,
-                            "spec_timestamp": "capacity_study_two_treatment.v1",
-                        })
+    for robot_count in ROBOT_COUNTS:
+        for order_rate in ORDER_RATES:
+            for replication in range(1, int(args.replications) + 1):
+                run_seed = int(args.seed) + replication - 1
+                identity = {
+                    "treatment": "all_off",
+                    "robot_count": robot_count,
+                    "order_rate": order_rate,
+                    "picker_count": PICKER_COUNT,
+                    "replenishment_count": REPLENISHMENT_COUNT,
+                    "replication": replication,
+                    "run_seed": run_seed,
+                    "input_hash": scenario_hash,
+                    "layout_hash": layout_hash,
+                    "horizon_ticks": ticks,
+                    "simulated_seconds": args.simulated_seconds,
+                    "branch": branch,
+                    "commit": commit,
+                }
+                prefix = run_prefix(robot_count, order_rate, replication)
+                run_id = build_run_id(prefix, identity)
+                runtime_root = output_root / "runs" / run_id
+                conditions.append({
+                    "run_id": run_id,
+                    "run_prefix": prefix,
+                    "experiment_id": "capacity_study_order_rate",
+                    "treatment": "all_off",
+                    "robot_count": robot_count,
+                    "order_rate": order_rate,
+                    "picker_count": PICKER_COUNT,
+                    "replenishment_count": REPLENISHMENT_COUNT,
+                    "replication": replication,
+                    "run_seed": run_seed,
+                    "ticks": ticks,
+                    "simulated_seconds": args.simulated_seconds,
+                    "input_root": str(input_root),
+                    "runtime_root": str(runtime_root),
+                    "scenario_id": scenario_id,
+                    "scenario_hash": scenario_hash,
+                    "layout_hash": layout_hash,
+                    "identity": identity,
+                    "compatibility_failures": [],
+                    "spec_timestamp": MATRIX_SCHEMA_VERSION,
+                })
 
     validate_counts(conditions)
     manifest = {
@@ -651,22 +406,15 @@ def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
         "tick_to_second": TICK_TO_SECOND,
         "simulated_seconds": args.simulated_seconds,
         "ticks": ticks,
-        "order_rate_per_hour": DEFAULT_RTS_ORDER_RATE_PER_HOUR,
+        "order_rates": list(ORDER_RATES),
         "intended_max_workers": int(args.max_workers),
-        "treatments": list(TREATMENTS),
         "robot_counts": list(ROBOT_COUNTS),
-        "picker_counts": list(PICKER_COUNTS),
-        "replenishment_counts": list(REPLENISHMENT_COUNTS),
+        "picker_count": PICKER_COUNT,
+        "replenishment_count": REPLENISHMENT_COUNT,
         "replications": int(args.replications),
         "total_runs": len(conditions),
-        "input_roots": [input_roots[key] for key in sorted(input_roots)],
-        "charging_configs": [charging_configs[key] for key in sorted(charging_configs)],
-        "rts_checkpoint": rts_checkpoint,
-        "pps_checkpoint": pps_checkpoint,
-        "pps_compatibility_note": (
-            f"Legacy PPO checkpoint is fixed to {PPS_RL_NUM_STATIONS} picking stations; "
-            "all_on 2-picker and 4-picker conditions are incompatible unless PPS is explicitly adapted."
-        ),
+        "input_root": str(input_root),
+        "input_meta": input_meta,
         "conditions": conditions,
     }
     return manifest, conditions
@@ -674,12 +422,6 @@ def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
 
 def execute_selected(args: argparse.Namespace, manifest: dict[str, Any], conditions: list[dict[str, Any]]) -> None:
     selected = apply_filters(conditions, args)
-    incompatible = [c for c in selected if c["compatibility_failures"]]
-    if incompatible:
-        raise SystemExit(
-            "selected runs include incompatible conditions; see compatibility_failures.json. "
-            "Use filters to select compatible runs only."
-        )
     specs = []
     skipped = []
     for condition in selected:
@@ -698,19 +440,18 @@ def execute_selected(args: argparse.Namespace, manifest: dict[str, Any], conditi
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prepare or run the two-treatment RMFS capacity study.")
+    parser = argparse.ArgumentParser(description="Prepare or run the RMFS capacity study (robot count × order rate).")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true", default=False)
     mode.add_argument("--execute", action="store_true", default=False)
     parser.add_argument("--max-workers", type=int, default=16)
     parser.add_argument("--replications", type=int, default=20)
     parser.add_argument("--simulated-seconds", type=float, default=87000.0)
-    parser.add_argument("--output-root", default="data/runtime/capacity_study_two_treatment")
+    parser.add_argument("--output-root", default="data/runtime/capacity_study_order_rate")
     parser.add_argument("--resume", action="store_true", default=False)
     parser.add_argument("--limit-runs", type=int, default=None)
-    parser.add_argument("--treatment", action="append", choices=TREATMENTS)
     parser.add_argument("--robots", action="append", type=int, choices=ROBOT_COUNTS)
-    parser.add_argument("--pickers", action="append", type=int, choices=PICKER_COUNTS)
+    parser.add_argument("--order-rate", action="append", type=int, choices=ORDER_RATES)
     parser.add_argument("--replication", action="append", type=int)
     parser.add_argument("--seed", type=int, default=42)
     return parser
@@ -729,8 +470,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         execute_selected(args, manifest, conditions)
     write_outputs(Path(manifest["output_root"]), manifest, conditions)
     print(
-        f"[capacity] wrote 600-run prepare manifest under {manifest['output_root']} "
-        f"(ticks={manifest['ticks']}, incompatible={sum(1 for c in conditions if c['compatibility_failures'])})"
+        f"[capacity] wrote 300-run prepare manifest under {manifest['output_root']} "
+        f"(ticks={manifest['ticks']})"
     )
     return 0
 
