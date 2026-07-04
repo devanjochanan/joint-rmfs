@@ -253,8 +253,6 @@ def condition_summary_row(condition: dict[str, Any], worker_summary: dict[str, A
         "replication": condition["replication"],
         "run_seed": condition["run_seed"],
         "runtime_status": None if worker_summary is None else worker_summary.get("status"),
-        "compatibility_failure_count": 0,
-        "compatibility_failures": "",
         "requested_robot_count": condition["robot_count"],
         "realized_robot_count": None if worker_summary is None else worker_summary.get("realized_robot_count"),
         "expected_picking_station_count": PICKER_COUNT,
@@ -289,11 +287,6 @@ def condition_summary_row(condition: dict[str, Any], worker_summary: dict[str, A
 
 def write_outputs(output_root: Path, manifest: dict[str, Any], conditions: list[dict[str, Any]]) -> None:
     write_json(output_root / "matrix_manifest.json", manifest)
-    write_json(output_root / "compatibility_failures.json", {
-        "schema_version": MATRIX_SCHEMA_VERSION,
-        "total_failed_conditions": 0,
-        "condition_failures": {},
-    })
     rows = []
     for condition in conditions:
         summary = load_worker_summary(Path(condition["runtime_root"])) if (Path(condition["runtime_root"]) / "worker_summary.json").exists() else None
@@ -391,7 +384,6 @@ def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
                     "scenario_hash": scenario_hash,
                     "layout_hash": layout_hash,
                     "identity": identity,
-                    "compatibility_failures": [],
                     "spec_timestamp": MATRIX_SCHEMA_VERSION,
                 })
 
@@ -436,7 +428,7 @@ def execute_selected(args: argparse.Namespace, manifest: dict[str, Any], conditi
         "launched_runs": [spec.run_id for spec in specs],
     }
     if specs:
-        run_specs(specs, max_workers=int(args.max_workers), progress=False)
+        run_specs(specs, max_workers=int(args.max_workers), progress=bool(args.progress))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -454,6 +446,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--order-rate", action="append", type=int, choices=ORDER_RATES)
     parser.add_argument("--replication", action="append", type=int)
     parser.add_argument("--seed", type=int, default=42)
+    progress_group = parser.add_mutually_exclusive_group()
+    progress_group.add_argument("--progress", action="store_true", default=True)
+    progress_group.add_argument("--no-progress", dest="progress", action="store_false")
     return parser
 
 

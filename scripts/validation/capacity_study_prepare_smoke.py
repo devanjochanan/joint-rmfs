@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
-from scripts.experiments import four_researcher_compatibility_matrix as study
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.experiments import capacity_study_order_rate as study
 
 
 def args(root: Path, *, execute: bool = False, seconds: float = 87000.0, **filters):
@@ -26,6 +31,7 @@ def args(root: Path, *, execute: bool = False, seconds: float = 87000.0, **filte
         order_rate=filters.pop("order_rate", None),
         replication=filters.pop("replication", None),
         seed=42,
+        progress=False,
     )
 
 
@@ -64,7 +70,6 @@ def assert_prepare_manifest(manifest: dict) -> None:
         assert len(seeds) == 1, f"replication {rep} has {len(seeds)} distinct seeds"
         assert seeds.pop() == 42 + rep - 1, f"replication {rep} seed mismatch"
 
-    assert not any(c["compatibility_failures"] for c in conditions), "unexpected compatibility failures"
 
 
 def first_worker_summary(root: Path) -> dict:
