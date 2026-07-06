@@ -89,3 +89,4 @@ sorted_skus_data.csv
 _smoke_seed_test/
 scripts/validation/__pycache__/
 create_dummy_pps_model.py
+eval_output.log

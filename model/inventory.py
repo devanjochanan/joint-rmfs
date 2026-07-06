@@ -1113,11 +1113,12 @@ class Inventory(Universe):
                 pending_had_reservation = True
             if registry is not None:
                 registry.clear_action_proposals_for_robot(robot)
-            self.rts_rollout_runtime.censor_pending_for_robot(
-                robot=robot,
-                status="censored_committed_next_cancelled" if pending_had_reservation else "censored_no_next_task",
-                reason="committed_next_cancelled_before_activation" if pending_had_reservation else "no_committed_next_retrieval",
-            )
+            if pending_had_reservation:
+                self.rts_rollout_runtime.censor_pending_for_robot(
+                    robot=robot,
+                    status="censored_committed_next_cancelled",
+                    reason="committed_next_cancelled_before_activation",
+                )
             return False
         activated = registry.activate_for_robot(self, robot)
         if activated is None:

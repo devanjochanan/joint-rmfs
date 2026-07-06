@@ -33,6 +33,7 @@ PAPER_CYCLE_STATUS_CENSORED_NO_ACTIVE_WORK = "censored_no_active_work"
 PAPER_CYCLE_STATUS_CENSORED_MANUAL_CANCELLATION = "censored_manual_cancellation"
 PAPER_CYCLE_STATUS_CENSORED_WORKER_EXCEPTION = "censored_worker_exception"
 PAPER_CYCLE_COMPLETION_RULE_NEXT_ORDER_RETRIEVAL_ARRIVAL = "next_order_retrieval_arrival"
+PAPER_CYCLE_COMPLETION_RULE_NEXT_STATION_ARRIVAL_UNRESERVED = "next_station_arrival_unreserved"
 
 
 @dataclass
@@ -442,14 +443,6 @@ class RTSRolloutRuntime:
         self.writer.write_outcome(row)
         self.summary.add_event(row)
         self._write_summary()
-        if pending.committed_next_reservation_id is None:
-            self._censor_paper_cycle(
-                robot=robot,
-                station=None,
-                pending=pending,
-                status=PAPER_CYCLE_STATUS_CENSORED_NO_NEXT_TASK,
-                reason="no_committed_next_reservation",
-            )
 
     def on_station_arrival(self, *, robot: Any, station: Any) -> None:
         if not self.config.rollout_enabled:
@@ -464,6 +457,11 @@ class RTSRolloutRuntime:
         if station_type in {"picker", "picking"}:
             if self._matches_committed_next_arrival(robot=robot, station=station, pending=pending):
                 self._complete_paper_cycle(robot=robot, station=station, pending=pending)
+            elif pending.committed_next_reservation_id is None:
+                self._complete_paper_cycle(
+                    robot=robot, station=station, pending=pending,
+                    completion_rule=PAPER_CYCLE_COMPLETION_RULE_NEXT_STATION_ARRIVAL_UNRESERVED,
+                )
         elif station_type == "replenishment":
             self._censor_paper_cycle(
                 robot=robot,
@@ -530,7 +528,10 @@ class RTSRolloutRuntime:
             return False
         return _text(getattr(station, "station_id", "")) == pending.committed_next_station_id
 
-    def _complete_paper_cycle(self, *, robot: Any, station: Any, pending: PendingRTSDecision) -> None:
+    def _complete_paper_cycle(
+        self, *, robot: Any, station: Any, pending: PendingRTSDecision,
+        completion_rule: str = PAPER_CYCLE_COMPLETION_RULE_NEXT_ORDER_RETRIEVAL_ARRIVAL,
+    ) -> None:
         tick = float(getattr(getattr(robot, "universe", None), "_tick", getattr(getattr(robot, "warehouse", None), "_tick", 0.0)))
         completed = self.tracker.complete_paper_cycle_for_robot(robot_id=pending.robot_id)
         if completed is None:
@@ -576,7 +577,7 @@ class RTSRolloutRuntime:
             paper_cycle_next_station_arrival_tick=tick,
             paper_cycle_duration=duration,
             paper_cycle_censor_reason="",
-            paper_cycle_completion_rule=PAPER_CYCLE_COMPLETION_RULE_NEXT_ORDER_RETRIEVAL_ARRIVAL,
+            paper_cycle_completion_rule=completion_rule,
         )
         row.update(_pending_committed_next_payload(completed))
         row.update(_reservation_status_payload(getattr(robot, "warehouse", None), completed))

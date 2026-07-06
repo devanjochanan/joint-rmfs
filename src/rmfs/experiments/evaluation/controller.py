@@ -5,13 +5,12 @@ from __future__ import annotations
 import datetime
 import json
 from pathlib import Path
-import subprocess
 import sys
 from typing import Any
 
 from src.rmfs.experiments.identity import short_hash
 from src.rmfs.experiments.ledger.ingest_evaluation import ingest_evaluation_summary
-from src.rmfs.orchestration.local_executor import git_value
+from src.rmfs.orchestration.local_executor import git_value, run_specs
 from src.rmfs.orchestration.run_spec import RunSpec
 from src.rmfs.rl.rts.ablation import resolve_ablation
 from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id
@@ -88,8 +87,11 @@ def run_rts_evaluation(
     rts_torch_threads: int | None = None,
     rts_torch_interop_threads: int | None = None,
     state_capture_mode: str = "auto",
+    max_workers: int = 1,
 ) -> dict[str, Any]:
     repo_root = Path(repo_root)
+    if max_workers < 1:
+        raise ValueError("max_workers must be >= 1")
     with Path(seed_pack_path).open() as fh:
         seed_pack = json.load(fh)
     if charging_mode not in {"inherit", "enabled", "disabled"}:
@@ -125,6 +127,7 @@ def run_rts_evaluation(
         "full_raw_order_replay": False,
         "order_rate_per_hour": DEFAULT_RTS_ORDER_RATE_PER_HOUR,
         "tick_to_second": 0.15,
+        "max_workers": int(max_workers),
     }
     eval_run_id = build_eval_run_id(config)
     run_root = Path(output_root) / eval_run_id
@@ -194,22 +197,27 @@ def run_rts_evaluation(
 
     worker_summaries: list[dict[str, Any]] = []
     rollout_summaries: list[dict[str, Any]] = []
-    failures = 0
+    specs_to_run: list[RunSpec] = []
+    skipped_completed_workers = 0
     for spec in specs:
-        code = subprocess.call(
-            [
-                sys.executable,
-                "-m",
-                "src.rmfs.orchestration.local_executor",
-                "worker",
-                "--spec",
-                str(spec.runtime_root / "run_spec.json"),
-            ],
-            cwd=repo_root,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if code != 0:
+        worker_summary_path = spec.runtime_root / "worker_summary.json"
+        if worker_summary_path.exists():
+            with worker_summary_path.open() as fh:
+                existing_summary = json.load(fh)
+            if existing_summary.get("status") == "success":
+                worker_summaries.append(existing_summary)
+                rollout_summary_path = spec.runtime_root / "rts_rollout_summary.json"
+                if rollout_summary_path.exists():
+                    with rollout_summary_path.open() as fh:
+                        rollout_summaries.append(json.load(fh))
+                skipped_completed_workers += 1
+                continue
+        specs_to_run.append(spec)
+
+    failures = 0
+    for result in run_specs(specs_to_run, max_workers=int(max_workers), progress=False):
+        spec = result["spec"]
+        if int(result.get("return_code") or 0) != 0:
             failures += 1
         worker_summary_path = spec.runtime_root / "worker_summary.json"
         if worker_summary_path.exists():
@@ -236,6 +244,7 @@ def run_rts_evaluation(
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         **config,
         "expected_replications": int(seed_pack["replications"]),
+        "skipped_completed_workers": skipped_completed_workers,
         "completed_replications": len(worker_summaries) - metrics["worker_failures"],
         "failed_replications": failures + metrics["worker_failures"],
         "min_completed_cycles": int(min_completed_cycles),
@@ -333,8 +342,8 @@ def _aggregate_eval_metrics(
             return None, False
         return sum(vals) / len(vals), True
 
-    orders_completed, orders_completed_available = sum_metric("orders_completed")
-    average_order_cycle_time, average_order_cycle_time_available = mean_metric("average_order_cycle_time")
+    orders_completed, orders_completed_available = sum_metric("warehouse_orders_completed")
+    average_order_cycle_time, average_order_cycle_time_available = mean_metric("warehouse_average_order_cycle_time")
     total_energy, total_energy_available = sum_metric("total_energy")
 
     energy_per_order, energy_per_order_available = mean_metric("energy_per_order")
@@ -349,7 +358,7 @@ def _aggregate_eval_metrics(
     robot_distance_per_order, robot_distance_per_order_available = mean_metric("robot_distance_per_order")
     loaded_distance_per_order, loaded_distance_per_order_available = mean_metric("loaded_distance_per_order")
     empty_distance_per_order, empty_distance_per_order_available = mean_metric("empty_distance_per_order")
-    congestion_rate, congestion_rate_available = mean_metric("congestion_rate")
+    congestion_rate, congestion_rate_available = mean_metric("stop_and_go")
     replenishment_count, replenishment_count_available = sum_metric("replenishment_count")
     charging_count, charging_count_available = sum_metric("charging_count")
 

@@ -140,7 +140,7 @@ def main():
     assert cfg["resolved_simulated_horizon_seconds"] == 0.44999999999999996
     shutil.rmtree(output_root, ignore_errors=True)
 
-    # 1c. Resume dry-run appends additional batches after latest.json
+    # 1c. Resume dry-run treats --batches as the target final batch ID.
     shutil.rmtree(output_root, ignore_errors=True)
     output_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -157,7 +157,7 @@ def main():
                 "--output-root",
                 str(output_root),
                 "--batches",
-                "2",
+                "3",
                 "--workers",
                 "1",
                 "--simulated-seconds-per-run",
@@ -173,6 +173,7 @@ def main():
         assert (run_root / "batch_000001").exists()
         assert (run_root / "batch_000002" / "batch_summary.json").exists()
         assert (run_root / "batch_000003" / "batch_summary.json").exists()
+        assert not (run_root / "batch_000004").exists()
     shutil.rmtree(output_root, ignore_errors=True)
 
     # 2. Dry-run debug_worker_logs configuration propagation checks

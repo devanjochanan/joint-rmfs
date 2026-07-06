@@ -24,6 +24,7 @@ def main(argv=None):
     parser.add_argument("--feature-ablation", default="full")
     parser.add_argument("--state-capture-mode", choices=("auto", "full", "minimal"), default="auto")
     parser.add_argument("--min-completed-cycles", type=int, default=1)
+    parser.add_argument("--max-workers", type=int, default=1)
     parser.add_argument("--ledger-path", default=None)
     parser.add_argument("--execute", action="store_true", default=False)
     parser.add_argument("--dry-run", action="store_true", default=False)
@@ -48,6 +49,7 @@ def main(argv=None):
         charging_mode=args.charging_mode,
         dry_run=not args.execute or args.dry_run,
         min_completed_cycles=args.min_completed_cycles,
+        max_workers=args.max_workers,
         ledger_path=Path(args.ledger_path).resolve() if args.ledger_path else None,
         rts_torch_threads=args.rts_torch_threads,
         rts_torch_interop_threads=args.rts_torch_interop_threads,

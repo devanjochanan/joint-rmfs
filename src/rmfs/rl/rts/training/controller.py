@@ -172,7 +172,13 @@ def run_on_policy_training_controller(
     elif active_checkpoint_dir is not None:
         _validate_resume_compatibility(config=config, checkpoint_dir=active_checkpoint_dir, expected_ablation=ablation, fresh=True)
     start_batch_id = int(latest.get("batch_id", 0)) + 1 if latest else 1
-    end_batch_id = start_batch_id + int(config.batches) - 1
+    end_batch_id = int(config.batches)
+    if end_batch_id < start_batch_id:
+        latest_batch_id = start_batch_id - 1
+        raise RuntimeError(
+            f"--batches targets final batch id {end_batch_id}, "
+            f"but latest checkpoint is already batch {latest_batch_id}"
+        )
     batch_summaries = []
     last_update_time = 0.0
 
@@ -577,17 +583,29 @@ def run_on_policy_training_controller(
             checkpoint_lr = _learning_rate_from_checkpoint(active_checkpoint_dir)
             if config.learning_rate is not None and checkpoint_lr is not None:
                 if abs(float(config.learning_rate) - float(checkpoint_lr)) > 1e-12:
-                    raise RuntimeError(
-                        f"CLI --learning-rate={config.learning_rate} differs from "
-                        f"checkpoint learning_rate={checkpoint_lr}. "
-                        f"To resume an existing training line, omit --learning-rate "
-                        f"or supply the exact checkpoint value."
-                    )
-            effective_lr = checkpoint_lr if checkpoint_lr is not None else float(config.learning_rate or 1e-4)
+                    if resume_latest:
+                        raise RuntimeError(
+                            f"CLI --learning-rate={config.learning_rate} differs from "
+                            f"checkpoint learning_rate={checkpoint_lr}. "
+                            f"To resume an existing training line, omit --learning-rate "
+                            f"or supply the exact checkpoint value."
+                        )
+                    else:
+                        print(
+                            f"[lr] overriding checkpoint lr={checkpoint_lr} with "
+                            f"--learning-rate={config.learning_rate} (new training line)",
+                            file=sys.stderr,
+                        )
+            if config.learning_rate is not None:
+                effective_lr = float(config.learning_rate)
+            elif checkpoint_lr is not None:
+                effective_lr = checkpoint_lr
+            else:
+                effective_lr = 1e-4
             lr_diagnostics = {
                 "requested_learning_rate": config.learning_rate,
                 "effective_learning_rate": effective_lr,
-                "learning_rate_source": "checkpoint" if checkpoint_lr is not None else "config_default",
+                "learning_rate_source": "cli_override" if config.learning_rate is not None else ("checkpoint" if checkpoint_lr is not None else "config_default"),
             }
             if dataset.summary["trainable_step_count"] < config.min_trainable_steps:
                 summary = {
@@ -622,7 +640,7 @@ def run_on_policy_training_controller(
             loaded = load_policy_from_checkpoint(active_checkpoint_dir, device=_controller_device(config.device))
             optimizer = torch.optim.Adam(loaded.model.parameters(), lr=effective_lr)
             load_training_checkpoint(active_checkpoint_dir, model=loaded.model, optimizer=optimizer, device=_controller_device(config.device))
-            train_config = _ppo_training_config(config, loaded.metadata)
+            train_config = _ppo_training_config(config, loaded.metadata, effective_lr=effective_lr)
             ppo_batch = build_on_policy_ppo_batch(dataset, gamma=train_config.gamma, gae_lambda=train_config.gae_lambda)
             from src.rmfs.rl.rts.training.ppo import run_ppo_update
 
@@ -753,6 +771,10 @@ def run_on_policy_training_controller(
             batch_summaries.append(summary)
             if not dry_run:
                 shutil.rmtree(workers_dir, ignore_errors=True)
+            del events, normalized_events, dataset, ppo_batch, loaded, optimizer
+            import gc; gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         tb.close()
 
         if dry_run:
@@ -881,15 +903,14 @@ def _learning_rate_from_checkpoint(checkpoint_dir: Path | None) -> float | None:
         return None
 
 
-def _ppo_training_config(config: RTSOnPolicyTrainingConfig, metadata: dict[str, Any]) -> RTSTrainingConfig:
+def _ppo_training_config(config: RTSOnPolicyTrainingConfig, metadata: dict[str, Any], *, effective_lr: float | None = None) -> RTSTrainingConfig:
     base = metadata.get("training_config") or {}
-    # Patch 2: Always use checkpoint learning rate for existing training lines
-    checkpoint_lr = float(base.get("learning_rate", 1e-4))
+    lr = effective_lr if effective_lr is not None else float(base.get("learning_rate", 1e-4))
     return RTSTrainingConfig(
         artifact_label=config.artifact_label,
         output_root=config.output_root,
         seed=config.seed,
-        learning_rate=checkpoint_lr,
+        learning_rate=lr,
         gamma=float(base.get("gamma", 0.99)),
         gae_lambda=float(base.get("gae_lambda", 0.95)),
         ppo_epochs=config.ppo_epochs,
