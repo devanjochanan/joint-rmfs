@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""RMFS capacity-study: one non-RL treatment, varied robot count and order rate.
+"""RMFS capacity-study over robot count x order rate.
 
-Uses the canonical training NetLogo environment (data/input/base) as the fixed
-warehouse configuration.  Varies robot count and order arrival rate across
-replications.  Reuses existing RunSpec, run_specs scheduler, local_executor,
-and worker_summary infrastructure.
+Default behavior stays the same as before:
+- treatment `all_off`
+- heuristic PPS
+- current RTS
+- charging disabled
+
+Opt-in treatment `all_on_rl` reuses the same infrastructure while enabling:
+- PPS PPO from the tracked repo model
+- RTS explicit checkpoint from the tracked repo checkpoint
+- charging with the canonical config
+
+The study remains run-level aggregate only. RTS rollout disk logs stay off.
 """
 
 from __future__ import annotations
@@ -16,7 +24,6 @@ import json
 import math
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -26,17 +33,23 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
+from src.rmfs.decisions.charging.config import canonical_charging_config_path
+from src.rmfs.decisions.pps.runtime import PPS_RL_NUM_STATIONS, load_pps_rl_model_strict
+from src.rmfs.experiments.feature_flags import validate_feature_flags
 from src.rmfs.experiments.identity import short_hash
 from src.rmfs.orchestration.local_executor import git_value, load_worker_summary, run_specs
 from src.rmfs.orchestration.run_spec import RunSpec
+from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id
+from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint
 from src.rmfs.runtime_io.run_profiles import TICK_TO_SECOND
 
-MATRIX_SCHEMA_VERSION = "capacity_study_order_rate.v1"
+MATRIX_SCHEMA_VERSION = "capacity_study_order_rate.v2"
 ROBOT_COUNTS = (10, 15, 20, 25, 30)
 ORDER_RATES = (400, 500, 600)
 PICKER_COUNT = 3
 REPLENISHMENT_COUNT = 1
 REPLICATIONS = 20
+TREATMENTS = ("all_off", "all_on_rl")
 OPERATIONAL_METRIC_FIELDS = (
     "orders_completed",
     "average_order_cycle_time",
@@ -44,6 +57,9 @@ OPERATIONAL_METRIC_FIELDS = (
     "stop_and_go_count",
     "turning_count",
 )
+DEFAULT_PPS_MODEL_PATH = REPO_ROOT / "data" / "models" / "pps" / "pps_rl_best.zip"
+DEFAULT_RTS_CHECKPOINT_DIR = REPO_ROOT / "data" / "models" / "rts" / "batch_000005" / "checkpoint"
+DEFAULT_CHARGING_CONFIG_PATH = canonical_charging_config_path()
 
 
 def sha256_file(path: Path) -> str:
@@ -163,8 +179,118 @@ def validate_input_root(input_root: Path) -> dict[str, Any]:
     }
 
 
-def run_prefix(robot_count: int, order_rate: int, replication: int) -> str:
-    return f"all_off__r{robot_count}__arr{order_rate}__rep{replication:03d}"
+def feature_flags_for_treatment(treatment: str) -> dict[str, Any]:
+    if treatment == "all_on_rl":
+        flags = {
+            "poa": "future_aware",
+            "pps": "ppo",
+            "rts": "rts_rl_explicit",
+            "charging": "enabled",
+            "pps_rl_enabled": True,
+            "rts_rl_enabled": True,
+            "charging_learning_enabled": True,
+            "charging_enabled": True,
+            "advanced_order_generation_enabled": True,
+            "pod_sku_allocation_learning_enabled": True,
+            "pod_sku_allocation_enabled": True,
+        }
+    else:
+        flags = {
+            "poa": "future_aware",
+            "pps": "heuristic",
+            "rts": "current",
+            "charging": "disabled",
+            "pps_rl_enabled": False,
+            "rts_rl_enabled": False,
+            "charging_learning_enabled": False,
+            "charging_enabled": False,
+            "advanced_order_generation_enabled": False,
+            "pod_sku_allocation_learning_enabled": False,
+            "pod_sku_allocation_enabled": False,
+        }
+    validate_feature_flags(flags)
+    return flags
+
+
+def validate_rl_assets(args: argparse.Namespace, layout_meta: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    compatibility_failures: list[dict[str, Any]] = []
+    pps_model_path = Path(args.pps_model_path).resolve()
+    rts_checkpoint_dir = Path(args.rts_checkpoint_dir).resolve()
+    charging_config_path = Path(args.charging_config_path).resolve()
+
+    if not pps_model_path.exists():
+        raise FileNotFoundError(f"missing PPS model: {pps_model_path}")
+    if not rts_checkpoint_dir.exists():
+        raise FileNotFoundError(f"missing RTS checkpoint dir: {rts_checkpoint_dir}")
+    if not charging_config_path.exists():
+        raise FileNotFoundError(f"missing charging config: {charging_config_path}")
+
+    realized_picker_count = int(layout_meta["picking_station_count"])
+    if realized_picker_count != PPS_RL_NUM_STATIONS:
+        compatibility_failures.append({
+            "component": "pps_rl",
+            "reason": "picker_count_mismatch",
+            "expected_picker_count": PPS_RL_NUM_STATIONS,
+            "realized_picker_count": realized_picker_count,
+            "model_path": str(pps_model_path),
+        })
+        return {
+            "pps_model_path": str(pps_model_path),
+            "pps_model_sha256": sha256_file(pps_model_path),
+            "rts_checkpoint_dir": str(rts_checkpoint_dir),
+            "charging_config_path": str(charging_config_path),
+        }, compatibility_failures
+
+    rl_assets: dict[str, Any] = {
+        "pps_model_path": str(pps_model_path),
+        "pps_model_sha256": sha256_file(pps_model_path),
+        "rts_checkpoint_dir": str(rts_checkpoint_dir),
+        "charging_config_path": str(charging_config_path),
+        "charging_config_sha256": sha256_file(charging_config_path),
+    }
+
+    try:
+        load_pps_rl_model_strict(pps_model_path)
+        rl_assets["pps_station_compatibility"] = {
+            "status": "compatible",
+            "required_picker_count": PPS_RL_NUM_STATIONS,
+            "layout_picker_count": realized_picker_count,
+        }
+    except Exception as exc:
+        compatibility_failures.append({
+            "component": "pps_rl",
+            "reason": "load_failed",
+            "model_path": str(pps_model_path),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        })
+
+    try:
+        loaded_rts = load_policy_from_checkpoint(rts_checkpoint_dir, device="cpu")
+        resolved_checkpoint_id = resolve_policy_checkpoint_id(rts_checkpoint_dir)
+        rl_assets.update({
+            "rts_checkpoint_id": loaded_rts.policy_checkpoint_id,
+            "rts_resolved_checkpoint_id": resolved_checkpoint_id,
+            "rts_model_sha256": sha256_file(rts_checkpoint_dir / "model.pt"),
+            "rts_metadata_sha256": sha256_file(rts_checkpoint_dir / "metadata.json"),
+            "rts_feature_schema_sha256": sha256_file(rts_checkpoint_dir / "feature_schema.json"),
+            "rts_action_feature_dim": loaded_rts.feature_schema["action_feature_dim"],
+            "rts_stock_feature_dim": loaded_rts.feature_schema["stock_feature_dim"],
+        })
+    except Exception as exc:
+        compatibility_failures.append({
+            "component": "rts_rl",
+            "reason": "load_failed",
+            "checkpoint_dir": str(rts_checkpoint_dir),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        })
+
+    return rl_assets, compatibility_failures
+
+
+def run_prefix(treatment: str, robot_count: int, order_rate: int, replication: int) -> str:
+    return f"{treatment}__r{robot_count}__arr{order_rate}__rep{replication:03d}"
 
 
 def build_run_id(prefix: str, identity: dict[str, Any]) -> str:
@@ -178,6 +304,62 @@ def build_spec(
     branch: str,
     commit: str,
 ) -> RunSpec:
+    if condition["treatment"] == "all_on_rl":
+        return RunSpec(
+            run_id=condition["run_id"],
+            ticks=int(condition["ticks"]),
+            runtime_root=Path(condition["runtime_root"]),
+            repo_root=repo_root,
+            input_root=Path(condition["input_root"]),
+            branch=branch,
+            commit=commit,
+            python_executable=python_executable,
+            timestamp=condition["spec_timestamp"],
+            rts_policy_mode="rts_rl_explicit",
+            rts_rollout_enabled=True,
+            rts_rollout_write_disk=False,
+            rts_zone_ids=["auto"],
+            rts_seed_base=int(condition["run_seed"]),
+            rts_random_seed=int(condition["run_seed"]),
+            rts_policy_checkpoint_dir=str(condition["rts_checkpoint_dir"]),
+            rts_policy_checkpoint_id=str(condition["rts_policy_checkpoint_id"]),
+            rts_policy_action_mode="greedy",
+            rts_policy_device="cpu",
+            rts_feature_ablation="full",
+            rts_state_capture_mode="full",
+            robot_count=int(condition["robot_count"]),
+            expected_picking_station_count=PICKER_COUNT,
+            expected_replenishment_station_count=REPLENISHMENT_COUNT,
+            pps_mode="ppo",
+            pps_model_path=str(condition["pps_model_path"]),
+            charging_enabled=True,
+            charging_config_path=str(condition["charging_config_path"]),
+            keep_runtime_artifacts=False,
+            detail_db=False,
+            timing=False,
+            worker_status_cadence=1000,
+            run_profile="training",
+            run_horizon_ticks=int(condition["ticks"]),
+            demand_horizon_ticks=int(condition["ticks"]) + 1000,
+            demand_buffer_ticks=1000,
+            order_generation_mode="shuffled_historical_cycle",
+            full_raw_order_replay=False,
+            order_rate_per_hour=int(condition["order_rate"]),
+            pod_location_mode="randomize_slots",
+            pod_location_seed=int(condition["run_seed"]),
+            experiment_id=condition["experiment_id"],
+            scenario_id=condition["scenario_id"],
+            artifact_label=condition["run_id"],
+            batch_id=1,
+            worker_id=int(condition["replication"]),
+            robot_task_allocator="legacy_nearest",
+            regret_k=None,
+            task_allocator_scope="active_job_queue",
+            committed_next_reservations_enabled=True,
+            rts_torch_threads=1,
+            rts_torch_interop_threads=1,
+        )
+
     return RunSpec(
         run_id=condition["run_id"],
         ticks=int(condition["ticks"]),
@@ -245,7 +427,7 @@ def condition_summary_row(condition: dict[str, Any], worker_summary: dict[str, A
     finalization = worker_summary.get("finalization", {}) if worker_summary else {}
     row = {
         "run_id": condition["run_id"],
-        "treatment": "all_off",
+        "treatment": condition["treatment"],
         "robot_count": condition["robot_count"],
         "order_rate": condition["order_rate"],
         "picker_count": PICKER_COUNT,
@@ -267,6 +449,12 @@ def condition_summary_row(condition: dict[str, Any], worker_summary: dict[str, A
         "completed_simulated_seconds": None if worker_summary is None else worker_summary.get("warehouse_time_elapsed"),
         "termination_reason": finalization.get("reason"),
         "worker_wall_time_elapsed": None if worker_summary is None else worker_summary.get("worker_wall_time_elapsed"),
+        "pps_mode": None if worker_summary is None else worker_summary.get("pps_mode"),
+        "pps_rl_enabled": None if worker_summary is None else worker_summary.get("pps_rl_enabled"),
+        "rts_policy_mode": None if worker_summary is None else worker_summary.get("rts_policy_mode"),
+        "rts_rollout_enabled": None if worker_summary is None else worker_summary.get("rts_rollout_enabled"),
+        "charging_enabled": None if worker_summary is None else worker_summary.get("charging_enabled"),
+        "rts_policy_checkpoint_id": condition.get("rts_policy_checkpoint_id"),
     }
     for name in OPERATIONAL_METRIC_FIELDS:
         row[name] = None
@@ -285,8 +473,14 @@ def condition_summary_row(condition: dict[str, Any], worker_summary: dict[str, A
     return row
 
 
-def write_outputs(output_root: Path, manifest: dict[str, Any], conditions: list[dict[str, Any]]) -> None:
+def write_outputs(
+    output_root: Path,
+    manifest: dict[str, Any],
+    conditions: list[dict[str, Any]],
+    compatibility_failures: list[dict[str, Any]],
+) -> None:
     write_json(output_root / "matrix_manifest.json", manifest)
+    write_json(output_root / "compatibility_failures.json", compatibility_failures)
     rows = []
     for condition in conditions:
         summary = load_worker_summary(Path(condition["runtime_root"])) if (Path(condition["runtime_root"]) / "worker_summary.json").exists() else None
@@ -322,8 +516,8 @@ def validate_counts(conditions: list[dict[str, Any]]) -> None:
     assert all(c["replenishment_count"] == REPLENISHMENT_COUNT for c in conditions)
 
 
-def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    output_root = Path(args.output_root).resolve() if Path(args.output_root).is_absolute() else (REPO_ROOT / args.output_root).resolve()
+def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    output_root = Path(args.output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     branch = git_value(REPO_ROOT, "rev-parse", "--abbrev-ref", "HEAD")
     commit = git_value(REPO_ROOT, "rev-parse", "HEAD")
@@ -332,6 +526,38 @@ def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
     input_root = REPO_ROOT / "data" / "input" / "base"
     input_meta = validate_input_root(input_root)
     layout_hash = input_meta["layout"]["layout_sha256"]
+    rl_assets = None
+    compatibility_failures: list[dict[str, Any]] = []
+    if args.treatment == "all_on_rl":
+        rl_assets, compatibility_failures = validate_rl_assets(args, input_meta["layout"])
+
+    if compatibility_failures:
+        manifest = {
+            "schema_version": MATRIX_SCHEMA_VERSION,
+            "mode": "prepare_only" if not args.execute else "execute",
+            "treatment": args.treatment,
+            "repo_root": str(REPO_ROOT),
+            "output_root": str(output_root),
+            "branch": branch,
+            "commit": commit,
+            "tick_to_second": TICK_TO_SECOND,
+            "simulated_seconds": args.simulated_seconds,
+            "ticks": ticks,
+            "order_rates": list(ORDER_RATES),
+            "intended_max_workers": int(args.max_workers),
+            "robot_counts": list(ROBOT_COUNTS),
+            "picker_count": PICKER_COUNT,
+            "replenishment_count": REPLENISHMENT_COUNT,
+            "replications": int(args.replications),
+            "total_runs": 0,
+            "input_root": str(input_root),
+            "input_meta": input_meta,
+            "feature_flags": feature_flags_for_treatment(args.treatment),
+            "rl_assets": rl_assets,
+            "conditions": [],
+        }
+        return manifest, [], compatibility_failures
+
     scenario_identity = {
         "input_root": "data/input/base",
         "file_digests": {
@@ -348,7 +574,7 @@ def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
             for replication in range(1, int(args.replications) + 1):
                 run_seed = int(args.seed) + replication - 1
                 identity = {
-                    "treatment": "all_off",
+                    "treatment": args.treatment,
                     "robot_count": robot_count,
                     "order_rate": order_rate,
                     "picker_count": PICKER_COUNT,
@@ -362,14 +588,10 @@ def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
                     "branch": branch,
                     "commit": commit,
                 }
-                prefix = run_prefix(robot_count, order_rate, replication)
-                run_id = build_run_id(prefix, identity)
-                runtime_root = output_root / "runs" / run_id
-                conditions.append({
-                    "run_id": run_id,
-                    "run_prefix": prefix,
+                condition: dict[str, Any] = {
+                    "run_prefix": run_prefix(args.treatment, robot_count, order_rate, replication),
                     "experiment_id": "capacity_study_order_rate",
-                    "treatment": "all_off",
+                    "treatment": args.treatment,
                     "robot_count": robot_count,
                     "order_rate": order_rate,
                     "picker_count": PICKER_COUNT,
@@ -379,18 +601,30 @@ def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
                     "ticks": ticks,
                     "simulated_seconds": args.simulated_seconds,
                     "input_root": str(input_root),
-                    "runtime_root": str(runtime_root),
                     "scenario_id": scenario_id,
                     "scenario_hash": scenario_hash,
                     "layout_hash": layout_hash,
-                    "identity": identity,
                     "spec_timestamp": MATRIX_SCHEMA_VERSION,
-                })
+                }
+                if args.treatment == "all_on_rl" and rl_assets is not None:
+                    identity["pps_model_sha256"] = rl_assets["pps_model_sha256"]
+                    identity["rts_checkpoint_id"] = rl_assets["rts_checkpoint_id"]
+                    condition.update({
+                        "pps_model_path": rl_assets["pps_model_path"],
+                        "rts_checkpoint_dir": rl_assets["rts_checkpoint_dir"],
+                        "rts_policy_checkpoint_id": rl_assets["rts_checkpoint_id"],
+                        "charging_config_path": rl_assets["charging_config_path"],
+                    })
+                run_id = build_run_id(condition["run_prefix"], identity)
+                condition["run_id"] = run_id
+                condition["runtime_root"] = str(output_root / "runs" / run_id)
+                conditions.append(condition)
 
     validate_counts(conditions)
     manifest = {
         "schema_version": MATRIX_SCHEMA_VERSION,
         "mode": "prepare_only" if not args.execute else "execute",
+        "treatment": args.treatment,
         "repo_root": str(REPO_ROOT),
         "output_root": str(output_root),
         "branch": branch,
@@ -407,9 +641,11 @@ def prepare_conditions(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
         "total_runs": len(conditions),
         "input_root": str(input_root),
         "input_meta": input_meta,
+        "feature_flags": feature_flags_for_treatment(args.treatment),
+        "rl_assets": rl_assets,
         "conditions": conditions,
     }
-    return manifest, conditions
+    return manifest, conditions, compatibility_failures
 
 
 def execute_selected(args: argparse.Namespace, manifest: dict[str, Any], conditions: list[dict[str, Any]]) -> None:
@@ -436,16 +672,20 @@ def build_parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true", default=False)
     mode.add_argument("--execute", action="store_true", default=False)
+    parser.add_argument("--treatment", choices=TREATMENTS, default="all_off")
     parser.add_argument("--max-workers", type=int, default=16)
     parser.add_argument("--replications", type=int, default=20)
     parser.add_argument("--simulated-seconds", type=float, default=87000.0)
-    parser.add_argument("--output-root", default="data/runtime/capacity_study_order_rate")
+    parser.add_argument("--output-root", default=None)
     parser.add_argument("--resume", action="store_true", default=False)
     parser.add_argument("--limit-runs", type=int, default=None)
     parser.add_argument("--robots", action="append", type=int, choices=ROBOT_COUNTS)
     parser.add_argument("--order-rate", action="append", type=int, choices=ORDER_RATES)
     parser.add_argument("--replication", action="append", type=int)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--pps-model-path", default=str(DEFAULT_PPS_MODEL_PATH))
+    parser.add_argument("--rts-checkpoint-dir", default=str(DEFAULT_RTS_CHECKPOINT_DIR))
+    parser.add_argument("--charging-config-path", default=str(DEFAULT_CHARGING_CONFIG_PATH))
     progress_group = parser.add_mutually_exclusive_group()
     progress_group.add_argument("--progress", action="store_true", default=True)
     progress_group.add_argument("--no-progress", dest="progress", action="store_false")
@@ -456,17 +696,26 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not args.prepare_only and not args.execute:
         args.prepare_only = True
+    if args.output_root is None:
+        args.output_root = (
+            REPO_ROOT / "data" / "runtime" / "capacity_study_order_rate_all_on_rl"
+            if args.treatment == "all_on_rl"
+            else REPO_ROOT / "data" / "runtime" / "capacity_study_order_rate"
+        )
     if int(args.replications) != 20:
         raise SystemExit("this study definition requires --replications 20")
     if int(args.max_workers) < 1:
         raise SystemExit("--max-workers must be >= 1")
-    manifest, conditions = prepare_conditions(args)
+    manifest, conditions, compatibility_failures = prepare_conditions(args)
+    if compatibility_failures:
+        write_outputs(Path(manifest["output_root"]), manifest, conditions, compatibility_failures)
+        raise SystemExit(f"compatibility check failed; see {Path(manifest['output_root']) / 'compatibility_failures.json'}")
     if args.execute:
         execute_selected(args, manifest, conditions)
-    write_outputs(Path(manifest["output_root"]), manifest, conditions)
+    write_outputs(Path(manifest["output_root"]), manifest, conditions, compatibility_failures)
     print(
         f"[capacity] wrote 300-run prepare manifest under {manifest['output_root']} "
-        f"(ticks={manifest['ticks']})"
+        f"(ticks={manifest['ticks']}, treatment={manifest['treatment']})"
     )
     return 0
 

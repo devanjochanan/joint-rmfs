@@ -8,7 +8,7 @@ Covers:
   * a raw distance above 1 is preserved (not clipped);
   * a no-next-job row uses proposed_next_job_known=0, distance=0, cycle=0;
   * the cycle-estimate invariant (valid + known next job -> finite cycle);
-  * a v5 width-21 checkpoint is rejected clearly;
+  * a legacy width-21 checkpoint is rejected clearly;
   * a fresh v6 schema reloads successfully.
 """
 
@@ -218,7 +218,7 @@ def test_cycle_invariant_helper():
     print("PASS test_cycle_invariant_helper")
 
 
-def test_v5_width21_checkpoint_rejected_and_v6_reloads():
+def test_legacy_width21_checkpoint_rejected_and_v6_reloads():
     with tempfile.TemporaryDirectory() as tmp:
         checkpoint = Path(tmp)
         model = RTSMaskedActorCritic(action_feature_dim=21, stock_feature_dim=4)
@@ -260,7 +260,7 @@ def test_v5_width21_checkpoint_rejected_and_v6_reloads():
         loaded = load_policy_from_checkpoint(checkpoint, device="cpu")
         assert loaded.feature_schema["action_feature_dim"] == 17
         assert loaded.feature_schema["action_feature_schema_version"] == "rts_action_features.v6"
-    print("PASS test_v5_width21_checkpoint_rejected_and_v6_reloads")
+    print("PASS test_legacy_width21_checkpoint_rejected_and_v6_reloads")
 
 
 def main():
@@ -268,7 +268,7 @@ def main():
     test_raw_distance_unclipped()
     test_no_next_job_zeros()
     test_cycle_invariant_helper()
-    test_v5_width21_checkpoint_rejected_and_v6_reloads()
+    test_legacy_width21_checkpoint_rejected_and_v6_reloads()
     print("\nALL RTS FEATURE SCHEMA V6 REGRESSION TESTS PASSED")
 
 

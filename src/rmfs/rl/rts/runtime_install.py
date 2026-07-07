@@ -39,6 +39,19 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
         inventory.rts_rollout_runtime = RTSRolloutRuntime(config=config, runtime_root=runtime_root)
         return inventory.rts_rollout_runtime
 
+    if config.policy_mode == "vrsla_teacher":
+        if runtime_root is None:
+            raise RuntimeError("vrsla_teacher RTS rollout requires a worker runtime_root")
+        from .vrsla_teacher import RTSVRSLATeacherPolicy
+
+        inventory.rts_policy = RTSVRSLATeacherPolicy(
+            zone_ids=resolved_zone_ids,
+            random_seed=config.random_seed,
+        )
+        inventory.rts_controls_post_pick_replenishment = True
+        inventory.rts_rollout_runtime = RTSRolloutRuntime(config=config, runtime_root=runtime_root)
+        return inventory.rts_rollout_runtime
+
     if config.policy_mode == "rts_rl_explicit":
         if runtime_root is None:
             raise RuntimeError("rts_rl_explicit requires a worker runtime_root")

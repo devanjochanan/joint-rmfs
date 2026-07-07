@@ -348,6 +348,64 @@ class CommittedNextRegistry:
         self._last_selected_refresh_diagnostics_by_robot[robot_id(robot)] = diagnostics
         return proposal
 
+    def rebuild_proposal_for_storage(
+        self,
+        inventory: Any,
+        robot: Any,
+        zone_id: str,
+        storage: Any,
+        original_proposal: CommittedNextProposal,
+    ) -> CommittedNextProposal:
+        """Rebuild proposal for a new storage, retaining the same next job."""
+        if not original_proposal.has_next_job:
+            return CommittedNextProposal(
+                proposal_id=f"cnp-{int(getattr(inventory, '_tick', 0))}-{robot_id(robot)}-{zone_id}",
+                owner_robot_id=robot_id(robot),
+                zone_id=str(zone_id),
+                candidate_storage=storage,
+                candidate_storage_id=storage_id(storage),
+                destination_x=float(getattr(storage, "pos_x", 0.0)),
+                destination_y=float(getattr(storage, "pos_y", 0.0)),
+                job=None, job_id=None, pod_id=None,
+                picking_station_id=None, original_queue_index=None,
+                created_time_seconds=float(getattr(inventory, "_tick", 0.0)),
+                candidate_count=0,
+            )
+        next_pod_coord = getattr(original_proposal.job, "pod_coordinate", None)
+        if next_pod_coord is None:
+            next_pod_coord = getattr(original_proposal.job, "pod", None)
+        empty_leg = graph_distance_or_fallback(inventory, storage, next_pod_coord, topology=EMPTY_ROBOT)
+        storage_to_pod = float(empty_leg.distance) if empty_leg.distance is not None else _distance_between(
+            inventory=inventory, src=storage, dst=next_pod_coord, topology=EMPTY_ROBOT,
+        )
+        pod_to_picker = float(original_proposal.next_pod_to_picker_distance or 0.0)
+        cost = storage_to_pod + pod_to_picker
+        return CommittedNextProposal(
+            proposal_id=f"cnp-{int(getattr(inventory, '_tick', 0))}-{robot_id(robot)}-{zone_id}",
+            owner_robot_id=robot_id(robot),
+            zone_id=str(zone_id),
+            candidate_storage=storage,
+            candidate_storage_id=storage_id(storage),
+            destination_x=float(getattr(storage, "pos_x", 0.0)),
+            destination_y=float(getattr(storage, "pos_y", 0.0)),
+            job=original_proposal.job,
+            job_id=original_proposal.job_id,
+            pod_id=original_proposal.pod_id,
+            picking_station_id=original_proposal.picking_station_id,
+            original_queue_index=original_proposal.original_queue_index,
+            created_time_seconds=float(getattr(inventory, "_tick", 0.0)),
+            candidate_count=original_proposal.candidate_count,
+            candidate_to_proposed_next_pod_distance=storage_to_pod,
+            next_pod_to_picker_distance=pod_to_picker,
+            proposal_cost=cost,
+            committed_next_zone_id=original_proposal.committed_next_zone_id,
+            candidate_to_proposed_next_pod_distance_source=empty_leg.source,
+            candidate_to_proposed_next_pod_distance_status=empty_leg.status,
+            next_pod_to_picker_distance_source=original_proposal.next_pod_to_picker_distance_source,
+            next_pod_to_picker_distance_status=original_proposal.next_pod_to_picker_distance_status,
+            fallback_used=bool(empty_leg.fallback_used or original_proposal.fallback_used),
+        )
+
     def clear_action_proposals_for_robot(self, robot: Any) -> None:
         self.robot_id_to_action_proposals.pop(robot_id(robot), None)
 

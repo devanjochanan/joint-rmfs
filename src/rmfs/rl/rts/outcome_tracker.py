@@ -161,6 +161,11 @@ class RTSRolloutRuntime:
             enabled=config.rollout_write_disk,
             max_events=config.max_events,
         )
+        self.teacher_writer = RTSRolloutWriter(
+            self.runtime_root / "rts_vrsla_teacher.jsonl",
+            enabled=config.rollout_write_disk and config.policy_mode == "vrsla_teacher",
+            max_events=config.max_events,
+        )
         self.summary_path = self.runtime_root / config.summary_filename
         self.tracker = RTSOutcomeTracker()
         self.summary = RolloutSummaryAccumulator(policy_mode=self.config.policy_mode)
@@ -292,6 +297,16 @@ class RTSRolloutRuntime:
             }
         )
         row.update(_cycle_estimate_payload(selected_cycle_estimate))
+        self._write_teacher_row(
+            metadata.get("teacher_supervised_row"),
+            decision_event_id=decision_event_id,
+            tick=tick,
+            robot_id=robot_id,
+            job_id=job_id,
+            pod_id=pod_id,
+            netlogo_step=netlogo_step,
+            warehouse_time=warehouse_time,
+        )
         self.writer.write_decision(row)
         self.summary.add_event(row)
         self.tracker.record_decision(
@@ -443,6 +458,17 @@ class RTSRolloutRuntime:
         self.writer.write_outcome(row)
         self.summary.add_event(row)
         self._write_summary()
+        if (
+            pending.committed_next_reservation_id is None
+            and pending.cycle_estimate_status == "unavailable_no_next_job"
+        ):
+            self._censor_paper_cycle(
+                robot=robot,
+                station=None,
+                pending=pending,
+                status=PAPER_CYCLE_STATUS_CENSORED_NO_NEXT_TASK,
+                reason="no_committed_next_task",
+            )
 
     def on_station_arrival(self, *, robot: Any, station: Any) -> None:
         if not self.config.rollout_enabled:
@@ -511,6 +537,7 @@ class RTSRolloutRuntime:
         self.censor_all_pending(status=censor_status, reason=reason)
         self._write_summary(force=True)
         self.writer.close()
+        self.teacher_writer.close()
 
     def _matches_committed_next_arrival(self, *, robot: Any, station: Any, pending: PendingRTSDecision) -> bool:
         job = getattr(robot, "job", None)
@@ -650,6 +677,35 @@ class RTSRolloutRuntime:
             return
         write_rollout_summary(self.summary_path, self.summary.to_summary())
         self._summary_dirty_events = 0
+
+    def _write_teacher_row(
+        self,
+        row: Any,
+        *,
+        decision_event_id: str,
+        tick: Any,
+        robot_id: str,
+        job_id: str,
+        pod_id: str,
+        netlogo_step: Any,
+        warehouse_time: Any,
+    ) -> None:
+        if self.config.policy_mode != "vrsla_teacher" or not isinstance(row, Mapping):
+            return
+        payload = dict(row)
+        payload.update(
+            {
+                "decision_event_id": decision_event_id,
+                "decision_id": decision_event_id,
+                "tick": tick,
+                "robot_id": robot_id,
+                "job_id": job_id,
+                "pod_id": pod_id,
+                "netlogo_step": netlogo_step,
+                "warehouse_time": warehouse_time,
+            }
+        )
+        self.teacher_writer.write_decision(payload)
 
 
 def _selected_action(decision: Any, zones: tuple[str, ...]) -> dict[str, Any]:

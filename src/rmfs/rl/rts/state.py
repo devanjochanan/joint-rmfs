@@ -47,6 +47,7 @@ def build_default_feature_fidelity() -> dict[str, str]:
         "stock_risk": FIDELITY_APPROX,
         "action_validity": FIDELITY_EXACT,
         "historical_pod_request_rank": FIDELITY_EXACT,
+        "vrsla_slot_hotness_rank": FIDELITY_EXACT,
         "layout_normalization": FIDELITY_EXACT,
     }
 
@@ -140,6 +141,17 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
             proposal_objects = warehouse.committed_next_registry.get_action_proposals_for_robot(robot)
         except Exception:
             proposal_objects = {}
+    store_physical_overrides = {}
+    if proposal_objects and warehouse is not None and robot is not None:
+        t_refine_start = time.perf_counter()
+        store_physical_overrides, proposal_objects = _refine_store_storage_for_shortest_leg(
+            context, zones, physical_contexts, proposal_objects, static_index, warehouse, robot,
+        )
+        if proposal_objects:
+            action_proposals = {key: p.to_state_json() for key, p in proposal_objects.items()}
+        timing["shortest_leg_refinement_ms"] = _elapsed_ms(t_refine_start)
+    else:
+        timing["shortest_leg_refinement_ms"] = 0.0
     t_final_action_start = time.perf_counter()
     action_contexts = build_action_contexts(
         context,
@@ -149,6 +161,7 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
         next_job_proposals=proposal_objects,
         static_index=static_index,
         physical_contexts=physical_contexts,
+        store_physical_overrides=store_physical_overrides,
     )
     timing["final_action_contexts_ms"] = _elapsed_ms(t_final_action_start)
     rows = [float(row.get("zone_row_index", 0.0)) for row in zone_rows]
@@ -199,6 +212,11 @@ def build_state(context: Any, zone_ids: Sequence[str]) -> RTSStateBundle:
             ),
             "total_count": len(action_contexts),
         },
+        "vrsla_slot_scores": {
+            "available": static_index is not None,
+            "slot_score_semantics": "directed_loaded_cycle_distance",
+            "slot_score_identity": getattr(static_index, "vrsla_slot_score_identity", None),
+        },
         "macro_regions": {
             "available": True,
             **macro_region_metadata(),
@@ -248,13 +266,13 @@ def _is_robot_object(obj: object) -> bool:
 
 def _static_index_required(warehouse: Any) -> bool:
     policy_mode = _runtime_policy_mode(warehouse)
-    if policy_mode in {"random_valid", "rts_rl_explicit"}:
+    if policy_mode in {"random_valid", "rts_rl_explicit", "vrsla_teacher"}:
         return True
     return False
 
 
 def _proposal_generation_failure_is_fatal(warehouse: Any) -> bool:
-    return _runtime_policy_mode(warehouse) in {"rts_rl_explicit", "current_probe"}
+    return _runtime_policy_mode(warehouse) in {"rts_rl_explicit", "current_probe", "vrsla_teacher"}
 
 
 def _runtime_policy_mode(warehouse: Any) -> str:
@@ -275,3 +293,76 @@ def _proposal_diagnostics(warehouse: Any, robot: Any) -> dict[str, Any]:
 
 def _elapsed_ms(start: float) -> float:
     return max(0.0, (time.perf_counter() - start) * 1000.0)
+
+
+def _refine_store_storage_for_shortest_leg(
+    context: Any,
+    zones: tuple[str, ...],
+    physical_contexts: Mapping[str, Any],
+    proposal_objects: dict[str, Any],
+    static_index: Any,
+    warehouse: Any,
+    robot: Any,
+) -> tuple[Mapping[str, Any], dict[str, Any]]:
+    """Build store-only overrides minimizing loaded(picker->storage) + empty(storage->next_pod)."""
+    from .action_context import (
+        RTSPhysicalZoneContext,
+        action_key,
+        select_shortest_leg_storage,
+        select_replenishment_station,
+        storage_id as _sid,
+        state_values_for_storage,
+    )
+
+    registry = getattr(warehouse, "committed_next_registry", None)
+    if registry is None:
+        return {}, proposal_objects
+
+    store_overrides = {}
+    refined_proposals = dict(proposal_objects)
+    changed = False
+
+    for zone_id in zones:
+        zone_key = str(zone_id)
+        proposal = proposal_objects.get(zone_key)
+        if proposal is None or not proposal.has_next_job:
+            continue
+        next_pod_coord = getattr(proposal.job, "pod_coordinate", None)
+        if next_pod_coord is None:
+            continue
+
+        storage, feas = select_shortest_leg_storage(
+            context, zone_key, next_pod_coord, static_index=static_index,
+        )
+        if storage is None or not feas.available or not feas.reachable:
+            continue
+
+        physical = physical_contexts.get(zone_key)
+        if physical is not None and _sid(storage) == _sid(getattr(physical, "storage", None)):
+            continue
+
+        station, station_feas = select_replenishment_station(context, storage, static_index=static_index)
+        state_values = state_values_for_storage(
+            context,
+            storage,
+            base_state_values=dict(physical.state_values) if physical is not None else {},
+            static_index=static_index,
+        )
+        store_overrides[zone_key] = RTSPhysicalZoneContext(
+            zone_id=zone_key,
+            storage=storage,
+            storage_feasibility=feas,
+            replenishment_station=station,
+            replenishment_station_feasibility=station_feas,
+            state_values=state_values,
+        )
+
+        new_proposal = registry.rebuild_proposal_for_storage(
+            warehouse, robot, zone_key, storage, proposal,
+        )
+        refined_proposals[action_key("store", zone_key)] = new_proposal
+        changed = True
+
+    if not changed:
+        return {}, proposal_objects
+    return store_overrides, refined_proposals

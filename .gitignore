@@ -77,6 +77,10 @@ data/models/pps/.matplotlib/
 !data/models/pps/README.md
 !data/models/pps/.gitkeep
 
+# RTS model/training artifacts
+data/models/rts/
+
+
 # Runtime-generated order stream artifacts (regenerated each setup)
 generated_order.csv
 generated_database_order.csv

@@ -66,6 +66,53 @@ def _pps_rl_model_candidates() -> list[str]:
     return [str(path) for path in pps_model_candidates(configured_pps_model_path())]
 
 
+def _pps_rl_load_custom_objects() -> dict[str, object]:
+    """Replace serialized training-only schedules during archive load."""
+    from gymnasium import spaces
+
+    observation_space = spaces.Dict(
+        {
+            "pod_features": spaces.Box(
+                low=0.0,
+                high=1.0,
+                shape=(PPS_RL_MAX_PODS, PPS_RL_POD_FEATURE_DIM),
+                dtype=np.float32,
+            ),
+            "station_features": spaces.Box(
+                low=0.0,
+                high=1.0,
+                shape=(PPS_RL_NUM_STATIONS, PPS_RL_TOP_K_SKUS),
+                dtype=np.float32,
+            ),
+            "num_candidates": spaces.Box(
+                low=0,
+                high=PPS_RL_MAX_PODS,
+                shape=(1,),
+                dtype=np.int32,
+            ),
+            "zone_robot_counts": spaces.Box(
+                low=0.0,
+                high=PPS_RL_MAX_ZONE_ROBOT_COUNT,
+                shape=(PPS_RL_NUM_TRAFFIC_ZONES,),
+                dtype=np.float32,
+            ),
+        }
+    )
+    action_space = spaces.MultiDiscrete([PPS_RL_NUM_STATIONS + 1] * PPS_RL_MAX_PODS)
+    return {
+        "learning_rate": 0.0,
+        "lr_schedule": lambda _: 0.0,
+        "clip_range": lambda _: 0.2,
+        "clip_range_vf": None,
+        "observation_space": observation_space,
+        "action_space": action_space,
+        "_last_obs": None,
+        "_last_episode_starts": None,
+        "ep_info_buffer": None,
+        "ep_success_buffer": None,
+    }
+
+
 def _ensure_numpy_pickle_compat() -> None:
     """Allow NumPy 2.x SB3 archives to load in older NumPy 1.x environments."""
     try:
@@ -143,7 +190,7 @@ def load_pps_rl_model():
     try:
         from stable_baselines3 import PPO
         _ensure_numpy_pickle_compat()
-        model = PPO.load(model_path, device="cpu")
+        model = PPO.load(model_path, device="cpu", custom_objects=_pps_rl_load_custom_objects())
         if not _pps_rl_model_matches_current_observation(model):
             print(
                 "[PPS_RL] Loaded model uses the old observation shape. "
@@ -188,7 +235,7 @@ def load_pps_rl_model_strict(
     from stable_baselines3 import PPO
 
     _ensure_numpy_pickle_compat()
-    model = PPO.load(str(path), device="cpu")
+    model = PPO.load(str(path), device="cpu", custom_objects=_pps_rl_load_custom_objects())
 
     if not _pps_rl_model_matches_current_observation(model):
         raise ValueError(

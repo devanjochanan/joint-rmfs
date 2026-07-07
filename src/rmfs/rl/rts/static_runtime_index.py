@@ -17,7 +17,8 @@ from .travel_time import EMPTY_ROBOT, LOADED_ROBOT, graph_wrapper_for_topology
 from .zone_registry import RTSZoneRegistry, build_zone_registry, validate_no_col_zone_ids
 
 
-STATIC_RUNTIME_INDEX_VERSION = "rts_static_runtime_index.v1"
+STATIC_RUNTIME_INDEX_VERSION = "rts_static_runtime_index.v2"
+VRSLA_SLOT_SCORE_VERSION = "rts_vrsla_slot_cycle_distance.v1"
 _INDEX_BY_WAREHOUSE: "weakref.WeakKeyDictionary[Any, RTSStaticRuntimeIndex]" = weakref.WeakKeyDictionary()
 
 
@@ -36,6 +37,7 @@ class RTSStaticRuntimeIndexDiagnostics:
     graph_matrix_build_count: int = 0
     empty_matrix_build_count: int = 0
     loaded_matrix_build_count: int = 0
+    vrsla_slot_score_build_count: int = 0
 
     def to_json_dict(self) -> dict[str, int]:
         return {
@@ -52,6 +54,7 @@ class RTSStaticRuntimeIndexDiagnostics:
             "graph_matrix_build_count": int(self.graph_matrix_build_count),
             "empty_matrix_build_count": int(self.empty_matrix_build_count),
             "loaded_matrix_build_count": int(self.loaded_matrix_build_count),
+            "vrsla_slot_score_build_count": int(self.vrsla_slot_score_build_count),
         }
 
 
@@ -112,11 +115,17 @@ class RTSStaticRuntimeIndex:
     storage_id_to_zone_id: Mapping[str, str]
     storage_number_to_zone_id: Mapping[int, str]
     storage_coordinate_to_zone_id: Mapping[tuple[int, int], str]
+    storage_by_id: Mapping[str, Any]
     storages_by_zone: Mapping[str, tuple[Any, ...]]
     empty_graph: RTSGraphDistanceIndex
     loaded_graph: RTSGraphDistanceIndex
     layout_normalization_metadata: Mapping[str, Any]
     storage_macro_region_by_id: Mapping[str, str]
+    vrsla_slot_score_version: str
+    vrsla_slot_cycle_distance: Mapping[str, Mapping[str, float]]
+    vrsla_slot_hotness_rank: Mapping[str, Mapping[str, float]]
+    vrsla_slots_by_picker: Mapping[str, tuple[str, ...]]
+    vrsla_slot_score_identity: str
     build_seconds: float
     total_matrix_bytes: int
 
@@ -149,6 +158,20 @@ class RTSStaticRuntimeIndex:
             return None
         return self.graph_index(topology).distance_between_nodes(src_node, dst_node)
 
+    def vrsla_cycle_distance(self, picker: Any, storage: Any) -> float | None:
+        picker_id = stable_station_id(picker)
+        storage_id = stable_storage_id(storage)
+        value = self.vrsla_slot_cycle_distance.get(picker_id, {}).get(storage_id)
+        return float(value) if value is not None and math.isfinite(float(value)) else None
+
+    def vrsla_hotness_rank(self, picker: Any, storage: Any) -> float:
+        picker_id = stable_station_id(picker)
+        storage_id = stable_storage_id(storage)
+        return float(self.vrsla_slot_hotness_rank.get(picker_id, {}).get(storage_id, 0.0))
+
+    def vrsla_sorted_storage_ids(self, picker: Any) -> tuple[str, ...]:
+        return tuple(self.vrsla_slots_by_picker.get(stable_station_id(picker), ()))
+
     def to_summary_dict(self) -> dict[str, Any]:
         return {
             "version": self.version,
@@ -165,6 +188,9 @@ class RTSStaticRuntimeIndex:
             "loaded_graph_nodes": self.loaded_graph.node_count,
             "loaded_graph_edges": self.loaded_graph.edge_count,
             "loaded_matrix_bytes": self.loaded_graph.matrix_bytes,
+            "vrsla_slot_score_version": self.vrsla_slot_score_version,
+            "vrsla_slot_score_identity": self.vrsla_slot_score_identity,
+            "vrsla_picker_count": len(self.vrsla_slots_by_picker),
             "total_matrix_bytes": self.total_matrix_bytes,
             "serialization": "weakkey_runtime_cache_not_attached_to_warehouse_pickle",
         }
@@ -292,6 +318,7 @@ def build_static_runtime_index(warehouse: Any) -> RTSStaticRuntimeIndex:
         for storage in storages
         if registry.zone_id_for_storage(storage)
     }
+    storage_by_id = {stable_storage_id(storage): storage for storage in storages}
     normalization = _layout_normalization_metadata(warehouse)
     storage_macro_by_id = {
         stable_storage_id(storage): _macro_region_for_storage(storage, normalization)
@@ -301,6 +328,12 @@ def build_static_runtime_index(warehouse: Any) -> RTSStaticRuntimeIndex:
     storage_hash = _storage_coordinate_hash(storages)
     empty_index = _build_graph_distance_index(warehouse, EMPTY_ROBOT)
     loaded_index = _build_graph_distance_index(warehouse, LOADED_ROBOT)
+    vrsla_scores = _build_vrsla_slot_scores(
+        warehouse=warehouse,
+        storages=storages,
+        storage_coordinate_hash=storage_hash,
+        loaded_index=loaded_index,
+    )
     return RTSStaticRuntimeIndex(
         version=STATIC_RUNTIME_INDEX_VERSION,
         layout_identity_hash=layout_hash,
@@ -312,11 +345,17 @@ def build_static_runtime_index(warehouse: Any) -> RTSStaticRuntimeIndex:
         storage_id_to_zone_id=MappingProxyType(storage_id_to_zone),
         storage_number_to_zone_id=MappingProxyType(dict(registry.storage_number_to_zone_id)),
         storage_coordinate_to_zone_id=MappingProxyType(dict(registry.coordinate_to_zone_id)),
+        storage_by_id=MappingProxyType(storage_by_id),
         storages_by_zone=MappingProxyType(storages_by_zone),
         empty_graph=empty_index,
         loaded_graph=loaded_index,
         layout_normalization_metadata=MappingProxyType(normalization),
         storage_macro_region_by_id=MappingProxyType(storage_macro_by_id),
+        vrsla_slot_score_version=VRSLA_SLOT_SCORE_VERSION,
+        vrsla_slot_cycle_distance=vrsla_scores["cycle_distance"],
+        vrsla_slot_hotness_rank=vrsla_scores["hotness_rank"],
+        vrsla_slots_by_picker=vrsla_scores["slots_by_picker"],
+        vrsla_slot_score_identity=vrsla_scores["identity"],
         build_seconds=max(0.0, time.perf_counter() - start),
         total_matrix_bytes=int(empty_index.matrix_bytes + loaded_index.matrix_bytes),
     )
@@ -372,6 +411,93 @@ def stable_storage_id(storage: Any) -> str:
         return str(number)
     pair = coordinate_pair(storage)
     return "" if pair is None else f"{pair[0]}:{pair[1]}"
+
+
+def stable_station_id(station: Any) -> str:
+    if getattr(station, "station_id", None) is not None:
+        return str(getattr(station, "station_id"))
+    number = getattr(station, "id", getattr(station, "_id", None))
+    if number is not None:
+        return str(number)
+    pair = coordinate_pair(station)
+    return "" if pair is None else f"{pair[0]}:{pair[1]}"
+
+
+def _build_vrsla_slot_scores(
+    *,
+    warehouse: Any,
+    storages: tuple[Any, ...],
+    storage_coordinate_hash: str,
+    loaded_index: RTSGraphDistanceIndex,
+) -> dict[str, Any]:
+    _DIAGNOSTICS.vrsla_slot_score_build_count += 1
+    stations = tuple(getattr(getattr(warehouse, "station_manager", None), "stations", []) or ())
+    pickers = tuple(
+        station
+        for station in stations
+        if str(getattr(station, "station_type", "")).strip().lower() in {"picker", "picking"}
+    )
+    cycle_by_picker: dict[str, Mapping[str, float]] = {}
+    rank_by_picker: dict[str, Mapping[str, float]] = {}
+    sorted_by_picker: dict[str, tuple[str, ...]] = {}
+    identity_payload = {
+        "version": VRSLA_SLOT_SCORE_VERSION,
+        "loaded_graph_identity_hash": loaded_index.graph_identity_hash,
+        "storage_coordinate_hash": storage_coordinate_hash,
+        "pickers": [
+            [stable_station_id(picker), *(coordinate_pair(picker) or (None, None))]
+            for picker in sorted(pickers, key=stable_station_id)
+        ],
+    }
+    for picker in sorted(pickers, key=stable_station_id):
+        picker_id = stable_station_id(picker)
+        picker_node = node_id_for_coordinate(picker)
+        rows: list[tuple[float, tuple[int, str], str]] = []
+        distances: dict[str, float] = {}
+        for storage in storages:
+            storage_id = stable_storage_id(storage)
+            storage_node = node_id_for_coordinate(storage)
+            out_leg = (
+                loaded_index.distance_between_nodes(storage_node, picker_node)
+                if storage_node is not None and picker_node is not None
+                else None
+            )
+            return_leg = (
+                loaded_index.distance_between_nodes(picker_node, storage_node)
+                if storage_node is not None and picker_node is not None
+                else None
+            )
+            distance = (
+                float(out_leg) + float(return_leg)
+                if out_leg is not None and return_leg is not None
+                else math.inf
+            )
+            distances[storage_id] = distance
+            rows.append((distance, _stable_id_key(storage_id), storage_id))
+        ordered = [storage_id for _distance, _key, storage_id in sorted(rows, key=lambda item: (item[0], item[1]))]
+        if not ordered:
+            ranks = {}
+        elif len(ordered) == 1:
+            ranks = {ordered[0]: 1.0}
+        else:
+            denom = float(len(ordered) - 1)
+            ranks = {storage_id: 1.0 - (index / denom) for index, storage_id in enumerate(ordered)}
+        cycle_by_picker[picker_id] = MappingProxyType(distances)
+        rank_by_picker[picker_id] = MappingProxyType(ranks)
+        sorted_by_picker[picker_id] = tuple(ordered)
+    return {
+        "identity": _digest(identity_payload),
+        "cycle_distance": MappingProxyType(cycle_by_picker),
+        "hotness_rank": MappingProxyType(rank_by_picker),
+        "slots_by_picker": MappingProxyType(sorted_by_picker),
+    }
+
+
+def _stable_id_key(value: str) -> tuple[int, str]:
+    try:
+        return int(value), value
+    except Exception:
+        return 10**12, value
 
 
 def _build_graph_distance_index(warehouse: Any, topology: str) -> RTSGraphDistanceIndex:

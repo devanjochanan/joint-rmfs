@@ -30,6 +30,12 @@ class RTSStaticStateContext:
     def pod_count(self, pod: Any) -> int:
         return int(self.pod_request_count.get(str(getattr(pod, "pod_id", "")), 0))
 
+    def vrsla_pod_velocity_rank(self, pod: Any) -> float:
+        return self.pod_rank(pod)
+
+    def vrsla_pod_velocity_count(self, pod: Any) -> int:
+        return self.pod_count(pod)
+
     def norm_x(self, value: Any) -> float:
         return _norm(value, self.layout_metadata["x_min"], self.layout_metadata["x_max"])
 
@@ -59,15 +65,26 @@ def build_static_state_context(warehouse: Any) -> RTSStaticStateContext:
     pod_request_rank = _pod_request_ranks(pods, pod_request_count)
     layout_metadata = _layout_metadata(warehouse)
     distance_metadata = _distance_metadata(layout_metadata)
+    pod_sku_hash = _pod_sku_allocation_hash(pods)
+    score_cache_identity = _stable_hash(
+        {
+            "historical_source_hash": order_source["hash"],
+            "pod_sku_allocation_identity": pod_sku_hash,
+            "pod_velocity_semantics": "distinct_order_union",
+        }
+    )
     historical_metadata = {
         "historical_pod_rank_version": HISTORICAL_POD_RANK_VERSION,
+        "vrsla_pod_velocity_rank_version": HISTORICAL_POD_RANK_VERSION,
         "historical_source_identity": order_source["identity"],
         "historical_source_kind": order_source["kind"],
         "historical_source_hash": order_source["hash"],
         "valid_unique_source_order_count": order_source["valid_unique_source_order_count"],
-        "rank_algorithm": "count distinct source orders intersecting pod positive or assigned SKU set",
+        "pod_velocity_semantics": "distinct_order_union",
+        "rank_algorithm": "count distinct source orders whose SKU set intersects the pod SKU set",
         "tie_breaking_rule": "descending request_count then ascending stable pod_id",
-        "pod_sku_allocation_identity": _pod_sku_allocation_hash(pods),
+        "pod_sku_allocation_identity": pod_sku_hash,
+        "vrsla_score_cache_identity": score_cache_identity,
     }
     return RTSStaticStateContext(
         pod_request_rank=pod_request_rank,

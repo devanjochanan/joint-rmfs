@@ -46,6 +46,7 @@ def main(argv=None):
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--minibatch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--entropy-coef", type=float, default=None, help="Entropy bonus coefficient (default 0.01).")
     parser.add_argument("--order-rate-per-hour", type=int, default=500, help="Orders per simulated hour for training demand generation.")
     parser.add_argument("--feature-ablation", default="full")
     parser.add_argument("--ledger-path", default=None)
@@ -110,6 +111,7 @@ def main(argv=None):
         ppo_epochs=args.ppo_epochs,
         minibatch_size=args.minibatch_size,
         learning_rate=args.learning_rate,
+        entropy_coef=args.entropy_coef,
         order_rate_per_hour=args.order_rate_per_hour,
         zone_ids=zone_ids,
         feature_ablation=args.feature_ablation,

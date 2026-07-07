@@ -16,6 +16,7 @@ from engine.netlogo_coordinate import NetLogoCoordinate
 from .action_space import REPLENISH_STORE, STORE, decode_action, normalize_zone_ids
 from .graph_distance import graph_distance_or_fallback
 from .macro_region import macro_region_pressures
+from .travel_time import EMPTY_ROBOT, LOADED_ROBOT
 from .replenishment_snapshot import RTSReplenishmentSnapshot, build_replenishment_snapshot
 from .static_runtime_index import get_or_build_static_runtime_index, get_static_runtime_index
 from .zone_registry import build_zone_registry
@@ -149,6 +150,7 @@ def build_action_contexts(
     next_job_proposals: Mapping[str, Any] | None = None,
     static_index: Any | None = None,
     physical_contexts: Mapping[str, RTSPhysicalZoneContext] | None = None,
+    store_physical_overrides: Mapping[str, RTSPhysicalZoneContext] | None = None,
     include_cycle_estimates: bool = True,
 ) -> tuple[RTSActionContext, ...]:
     zones = normalize_zone_ids(zone_ids)
@@ -166,12 +168,15 @@ def build_action_contexts(
         rows_by_zone=rows_by_zone,
         static_index=static_index,
     ))
+    store_overrides = {str(key): value for key, value in dict(store_physical_overrides or {}).items()}
     replenishment_hard_cap_reached = _replenishment_hard_cap_reached(context)
     strict_mode = _static_index_required(getattr(context, "warehouse", None))
     contexts: list[RTSActionContext] = []
     for action_index in range(len(zones) * 2):
         action = decode_action(action_index, zones)
-        physical = per_zone[action.zone_id]
+        physical = store_overrides.get(action.zone_id) if action.branch == STORE else None
+        if physical is None:
+            physical = per_zone[action.zone_id]
         storage = physical.storage
         storage_feasibility = physical.storage_feasibility
         station = physical.replenishment_station if action.branch == REPLENISH_STORE else None
@@ -200,7 +205,7 @@ def build_action_contexts(
             if replenishment_hard_cap_reached:
                 reasons.append("replenishment_hard_cap_reached")
         reasons = tuple(sorted(set(reasons)))
-        proposal = proposal_by_key.get(action.zone_id) or proposal_by_key.get(action_key(action.branch, action.zone_id))
+        proposal = proposal_by_key.get(action_key(action.branch, action.zone_id)) or proposal_by_key.get(action.zone_id)
         storage_coord = _coord(storage) if storage is not None else None
         station_coord = _coord(station) if station is not None else None
         state_values = dict(physical.state_values)
@@ -261,9 +266,12 @@ def build_physical_zone_contexts(
         station, station_feasibility = select_replenishment_station(context, storage, static_index=static_index)
         state_values = dict(rows.get(zone_id, {}))
         if storage is not None:
-            state_values["candidate_storage_x"] = float(getattr(storage, "pos_x", 0.0))
-            state_values["candidate_storage_y"] = float(getattr(storage, "pos_y", 0.0))
-            state_values.update(macro_region_pressures(context, storage))
+            state_values = state_values_for_storage(
+                context,
+                storage,
+                base_state_values=state_values,
+                static_index=static_index,
+            )
         per_zone[zone_id] = RTSPhysicalZoneContext(
             zone_id=zone_id,
             storage=storage,
@@ -286,6 +294,79 @@ def selected_context_by_index(action_contexts: Sequence[RTSActionContext], actio
     raise ValueError(f"RTS action context not found for action index {action_index}")
 
 
+def action_context_with_storage(
+    context: Any,
+    selected: RTSActionContext,
+    storage: Any,
+    *,
+    static_index: Any | None = None,
+    proposal: Any | None = None,
+) -> RTSActionContext:
+    """Return a selected context rebuilt around an exact, already chosen storage."""
+    warehouse = getattr(context, "warehouse", None)
+    if static_index is None and warehouse is not None:
+        static_index = get_static_runtime_index(warehouse) or _optional_static_index(context)
+    stg_feas = storage_feasibility(context, storage, selected.zone_id, static_index=static_index)
+    if storage is None or not stg_feas.available or not stg_feas.reachable:
+        raise RuntimeError(
+            f"selected RTS storage is not feasible for {selected.branch}:{selected.zone_id}: "
+            f"{','.join(stg_feas.reason_codes)}"
+        )
+    station = None
+    station_feasibility = None
+    if selected.branch == REPLENISH_STORE:
+        station, station_feasibility = select_replenishment_station(context, storage, static_index=static_index)
+        if station is None or station_feasibility is None or not station_feasibility.admission_possible:
+            reasons = station_feasibility.reason_codes if station_feasibility is not None else ("no_replenishment_station",)
+            raise RuntimeError(
+                f"selected RTS replenishment station is not feasible for {selected.branch}:{selected.zone_id}: "
+                f"{','.join(reasons)}"
+            )
+    state_values = state_values_for_storage(
+        context,
+        storage,
+        base_state_values=selected.state_feature_values,
+        static_index=static_index,
+    )
+    refreshed = replace(
+        selected,
+        candidate_storage=storage,
+        candidate_storage_id=storage_id(storage) or None,
+        candidate_storage_coordinate=_coord(storage),
+        replenishment_station=station,
+        replenishment_station_id=station_id(station) or None,
+        replenishment_station_coordinate=_coord(station) if station is not None else None,
+        storage_feasibility=stg_feas,
+        station_feasibility=station_feasibility,
+        store_valid=True,
+        replenish_store_valid=bool(
+            selected.replenishment_eligibility
+            and selected.replenishment_eligible_skus
+            and station_feasibility is not None
+            and station_feasibility.admission_possible
+            and station_feasibility.structurally_reachable
+            and not _replenishment_hard_cap_reached(context)
+        ),
+        action_valid=True,
+        invalid_reason_codes=(),
+        next_job_proposal=proposal if proposal is not None else selected.next_job_proposal,
+        state_feature_values=state_values,
+    )
+    if selected.branch == REPLENISH_STORE and not refreshed.replenish_store_valid:
+        refreshed = replace(
+            refreshed,
+            action_valid=False,
+            invalid_reason_codes=("replenishment_action_no_longer_valid",),
+        )
+    refreshed = _with_cycle_estimate(context, refreshed)
+    if refreshed.action_valid and not cycle_estimate_invariant_holds(refreshed):
+        raise RuntimeError(
+            f"selected RTS action violates cycle-estimate invariant for "
+            f"{refreshed.branch}:{refreshed.zone_id}"
+        )
+    return refreshed
+
+
 def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTSActionContext:
     warehouse = getattr(context, "warehouse", None)
     static_index = get_static_runtime_index(warehouse)
@@ -293,11 +374,30 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
         if _static_index_required(warehouse):
             raise RuntimeError("RTS static runtime index is required for selected-action revalidation")
         static_index = _optional_static_index(context)
-    storage, storage_feasibility = select_candidate_storage(context, selected.zone_id, static_index=static_index)
-    if storage is None or not storage_feasibility.available or not storage_feasibility.reachable:
+    selected_proposal = getattr(selected, "next_job_proposal", None)
+    if selected.branch == STORE:
+        retained = selected.candidate_storage
+        retained_feas = storage_feasibility(context, retained, selected.zone_id, static_index=static_index) if retained is not None else None
+        if retained_feas is not None and retained_feas.available and retained_feas.reachable:
+            storage, stg_feas = retained, retained_feas
+        elif getattr(selected_proposal, "has_next_job", False):
+            next_pod_coordinate = getattr(getattr(selected_proposal, "job", None), "pod_coordinate", None)
+            if next_pod_coordinate is None:
+                next_pod_coordinate = getattr(getattr(selected_proposal, "job", None), "pod", None)
+            storage, stg_feas = select_shortest_leg_storage(
+                context,
+                selected.zone_id,
+                next_pod_coordinate,
+                static_index=static_index,
+            )
+        else:
+            storage, stg_feas = select_candidate_storage(context, selected.zone_id, static_index=static_index)
+    else:
+        storage, stg_feas = select_candidate_storage(context, selected.zone_id, static_index=static_index)
+    if storage is None or not stg_feas.available or not stg_feas.reachable:
         raise RuntimeError(
             f"selected RTS storage became unavailable for {selected.branch}:{selected.zone_id}: "
-            f"{','.join(storage_feasibility.reason_codes)}"
+            f"{','.join(stg_feas.reason_codes)}"
         )
     station = selected.replenishment_station
     station_feasibility = selected.station_feasibility
@@ -314,6 +414,12 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
                 f"selected RTS replenishment station became unavailable for {selected.branch}:{selected.zone_id}: "
                 f"{','.join(reasons)}"
             )
+    state_values = state_values_for_storage(
+        context,
+        storage,
+        base_state_values=selected.state_feature_values,
+        static_index=static_index,
+    )
     refreshed = replace(
         selected,
         candidate_storage=storage,
@@ -322,8 +428,9 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
         replenishment_station=station,
         replenishment_station_id=station_id(station) or None,
         replenishment_station_coordinate=_coord(station) if station is not None else None,
-        storage_feasibility=storage_feasibility,
+        storage_feasibility=stg_feas,
         station_feasibility=station_feasibility,
+        state_feature_values=state_values,
         invalid_reason_codes=(),
         action_valid=True,
     )
@@ -331,7 +438,7 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
     registry = getattr(getattr(context, "warehouse", None), "committed_next_registry", None)
     robot = getattr(context, "robot", None)
     if registry is not None and robot is not None:
-        current = registry.get_action_proposal(robot, selected.branch, selected.zone_id)
+        current = selected_proposal if selected.branch == STORE else registry.get_action_proposal(robot, selected.branch, selected.zone_id)
         proposal_valid = False
         if current is not None and storage_id(getattr(current, "candidate_storage", None)) == storage_id(storage):
             try:
@@ -345,13 +452,22 @@ def revalidate_selected_context(context: Any, selected: RTSActionContext) -> RTS
             except Exception:
                 proposal_valid = False
         if not proposal_valid:
-            current = registry.refresh_action_proposal_for_zone(
-                warehouse,
-                robot,
-                context,
-                selected.zone_id,
-                storage,
-            )
+            if selected.branch == STORE and getattr(selected_proposal, "has_next_job", False):
+                current = registry.rebuild_proposal_for_storage(
+                    warehouse,
+                    robot,
+                    selected.zone_id,
+                    storage,
+                    selected_proposal,
+                )
+            else:
+                current = registry.refresh_action_proposal_for_zone(
+                    warehouse,
+                    robot,
+                    context,
+                    selected.zone_id,
+                    storage,
+                )
         else:
             try:
                 registry.record_selected_revalidation_diagnostics(
@@ -403,6 +519,81 @@ def select_candidate_storage(context: Any, zone_id: str, *, static_index: Any | 
         return storage, feasibility
     reasons = [] if checked_zone else ["no_storage_in_zone"]
     return None, RTSStorageFeasibility(False, checked_zone, False, False, False, tuple(reasons or ["no_available_storage"]))
+
+
+def select_shortest_leg_storage(
+    context: Any,
+    zone_id: str,
+    next_pod_coordinate: Any,
+    *,
+    static_index: Any | None = None,
+) -> tuple[Any | None, RTSStorageFeasibility]:
+    """Select feasible storage minimizing loaded(source->storage) + empty(storage->next_pod)."""
+    warehouse = getattr(context, "warehouse", None)
+    storage_manager = getattr(warehouse, "storage_manager", None)
+    if static_index is None and warehouse is not None:
+        static_index = _optional_static_index(context)
+    storages = (
+        list(getattr(static_index, "storages_by_zone", {}).get(str(zone_id), ()))
+        if static_index is not None
+        else list(getattr(storage_manager, "storages", []) or [])
+    )
+    registry = None if static_index is not None else build_zone_registry(context, (str(zone_id),))
+    candidates: list[tuple[float, tuple[float, float], str, Any, RTSStorageFeasibility]] = []
+    checked_zone = False
+    source = _source_coordinate(context)
+    for stg in storages:
+        belongs = (
+            _zone_id_for_storage_static(static_index, stg) == str(zone_id)
+            if static_index is not None
+            else registry.zone_id_for_storage(stg) == str(zone_id)
+        )
+        if belongs:
+            checked_zone = True
+        feas = storage_feasibility(context, stg, zone_id, static_index=static_index)
+        if feas.available and feas.reachable:
+            loaded_leg = _distance_with_topology(warehouse, source, stg, LOADED_ROBOT)
+            empty_leg = _distance_with_topology(warehouse, stg, next_pod_coordinate, EMPTY_ROBOT)
+            cost = loaded_leg + empty_leg
+            candidates.append((cost, _coord(stg), storage_id(stg), stg, feas))
+    if candidates:
+        _, _, _, best_storage, best_feas = sorted(candidates, key=lambda item: (item[0], item[1], item[2]))[0]
+        return best_storage, best_feas
+    reasons = [] if checked_zone else ["no_storage_in_zone"]
+    return None, RTSStorageFeasibility(False, checked_zone, False, False, False, tuple(reasons or ["no_available_storage"]))
+
+
+def state_values_for_storage(
+    context: Any,
+    storage: Any | None,
+    *,
+    base_state_values: Mapping[str, Any] | None = None,
+    static_index: Any | None = None,
+) -> dict[str, Any]:
+    values = dict(base_state_values or {})
+    if storage is None:
+        values.setdefault("vrsla_slot_hotness_rank", 0.0)
+        values.setdefault("vrsla_slot_cycle_distance", None)
+        return values
+    if static_index is None:
+        static_index = _optional_static_index(context)
+    values["candidate_storage_x"] = float(getattr(storage, "pos_x", 0.0))
+    values["candidate_storage_y"] = float(getattr(storage, "pos_y", 0.0))
+    values.update(macro_region_pressures(context, storage))
+    if static_index is not None:
+        picker = _source_coordinate(context)
+        try:
+            values["vrsla_slot_hotness_rank"] = float(static_index.vrsla_hotness_rank(picker, storage))
+        except Exception:
+            values["vrsla_slot_hotness_rank"] = 0.0
+        try:
+            values["vrsla_slot_cycle_distance"] = static_index.vrsla_cycle_distance(picker, storage)
+        except Exception:
+            values["vrsla_slot_cycle_distance"] = None
+    else:
+        values.setdefault("vrsla_slot_hotness_rank", 0.0)
+        values.setdefault("vrsla_slot_cycle_distance", None)
+    return values
 
 
 def storage_feasibility(context: Any, storage: Any | None, zone_id: str, *, static_index: Any | None = None) -> RTSStorageFeasibility:
@@ -588,7 +779,7 @@ def _static_index_required(warehouse: Any) -> bool:
     runtime = getattr(warehouse, "rts_rollout_runtime", None)
     config = getattr(runtime, "config", None)
     policy_mode = str(getattr(config, "policy_mode", "") or "")
-    if policy_mode in {"random_valid", "rts_rl_explicit"}:
+    if policy_mode in {"random_valid", "rts_rl_explicit", "vrsla_teacher"}:
         return True
     return False
 
@@ -620,6 +811,15 @@ def _distance_from_source(context: Any, storage: Any) -> float:
     src = _coord(_source_coordinate(context)) or (0.0, 0.0)
     dst = _coord(storage) or (0.0, 0.0)
     return abs(src[0] - dst[0]) + abs(src[1] - dst[1])
+
+
+def _distance_with_topology(warehouse: Any, src: Any, dst: Any, topology: str) -> float:
+    result = graph_distance_or_fallback(warehouse, src, dst, topology=topology)
+    if result.distance is not None:
+        return float(result.distance)
+    src_coord = _coord(src) or (0.0, 0.0)
+    dst_coord = _coord(dst) or (0.0, 0.0)
+    return abs(src_coord[0] - dst_coord[0]) + abs(src_coord[1] - dst_coord[1])
 
 
 def _station_destination_pressure(context: Any, station: Any | None) -> float:

@@ -272,7 +272,7 @@ def finalize_rts_static_runtime_after_setup(warehouse, requested_zone_ids) -> di
     config = getattr(runtime, "config", None)
     policy = getattr(warehouse, "rts_policy", None)
     policy_mode = getattr(config, "policy_mode", None)
-    if policy_mode not in {"current", "current_probe", "random_valid", "rts_rl_explicit"} or not bool(getattr(config, "rollout_enabled", False)):
+    if policy_mode not in {"current", "current_probe", "random_valid", "rts_rl_explicit", "vrsla_teacher"} or not bool(getattr(config, "rollout_enabled", False)):
         return None
     from dataclasses import replace
     from src.rmfs.rl.rts.static_runtime_index import (
@@ -394,6 +394,10 @@ def run_worker(spec: RunSpec):
                 feature_ablation_hash=spec.rts_feature_ablation_hash,
                 state_capture_mode=spec.rts_state_capture_mode,
                 committed_next_reservations_enabled=spec.committed_next_reservations_enabled,
+                run_id=spec.run_id,
+                batch_id=spec.batch_id,
+                worker_id=spec.worker_id,
+                artifact_label=spec.artifact_label,
             ),
             runtime_root=spec.runtime_root,
         )
@@ -887,7 +891,7 @@ def run_controller(
     else:
         deferred_root_read_only_inputs = DEFERRED_ROOT_READ_ONLY_INPUTS
         snapshot_copied_inputs = []
-    committed_next_reservations_enabled = bool(rts_policy_mode == "rts_rl_explicit")
+    committed_next_reservations_enabled = bool(rts_policy_mode in {"rts_rl_explicit", "vrsla_teacher"})
 
     manifest = {
         "status": "started",
@@ -1223,7 +1227,7 @@ def main(argv=None):
     controller_parser.add_argument("--trace-cadence", type=int, default=1000)
     controller_parser.add_argument("--trace-first-n", type=int, default=0)
     controller_parser.add_argument("--snapshot-inputs", action="store_true", default=False)
-    controller_parser.add_argument("--rts-policy-mode", choices=("current", "current_probe", "random_valid", "rts_rl_explicit"), default="current")
+    controller_parser.add_argument("--rts-policy-mode", choices=("current", "current_probe", "random_valid", "rts_rl_explicit", "vrsla_teacher"), default="current")
     controller_parser.add_argument("--rts-rollout", action="store_true", default=False)
     controller_parser.add_argument("--rts-zone-ids", default=None)
     controller_parser.add_argument("--rts-reward-reference", default=None)

@@ -915,11 +915,13 @@ def _learning_rate_from_checkpoint(checkpoint_dir: Path | None) -> float | None:
 def _ppo_training_config(config: RTSOnPolicyTrainingConfig, metadata: dict[str, Any], *, effective_lr: float | None = None) -> RTSTrainingConfig:
     base = metadata.get("training_config") or {}
     lr = effective_lr if effective_lr is not None else float(base.get("learning_rate", 1e-4))
+    entropy = config.entropy_coef if config.entropy_coef is not None else float(base.get("entropy_coef", 0.01))
     return RTSTrainingConfig(
         artifact_label=config.artifact_label,
         output_root=config.output_root,
         seed=config.seed,
         learning_rate=lr,
+        entropy_coef=entropy,
         gamma=float(base.get("gamma", 0.99)),
         gae_lambda=float(base.get("gae_lambda", 0.95)),
         ppo_epochs=config.ppo_epochs,

@@ -30,6 +30,7 @@ class RTSOnPolicyTrainingConfig:
     ppo_epochs: int = 4
     minibatch_size: int = 64
     learning_rate: float | None = None
+    entropy_coef: float | None = None
     zone_ids: tuple[str, ...] = ()
     feature_ablation: str = "full"
     ledger_path: Path | None = None
