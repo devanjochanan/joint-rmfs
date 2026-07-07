@@ -88,6 +88,7 @@ def run_rts_evaluation(
     rts_torch_interop_threads: int | None = None,
     state_capture_mode: str = "auto",
     max_workers: int = 1,
+    debug_rollouts: bool = False,
 ) -> dict[str, Any]:
     repo_root = Path(repo_root)
     if max_workers < 1:
@@ -149,6 +150,7 @@ def run_rts_evaluation(
             timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             rts_policy_mode=policy_mode,
             rts_rollout_enabled=True,
+            rts_rollout_write_disk=debug_rollouts,
             rts_zone_ids=list(zone_ids) if zone_ids else ["auto"],
             rts_seed_base=int(seed_pack["seed_base"]),
             rts_random_seed=int(seed["seed"]),
@@ -215,7 +217,7 @@ def run_rts_evaluation(
         specs_to_run.append(spec)
 
     failures = 0
-    for result in run_specs(specs_to_run, max_workers=int(max_workers), progress=False):
+    for result in run_specs(specs_to_run, max_workers=int(max_workers), progress=True):
         spec = result["spec"]
         if int(result.get("return_code") or 0) != 0:
             failures += 1
@@ -229,6 +231,18 @@ def run_rts_evaluation(
                 rollout_summaries.append(json.load(fh))
 
     metrics = _aggregate_eval_metrics(worker_summaries, rollout_summaries, run_root=run_root)
+
+    if run_root is not None and not debug_rollouts:
+        cleaned_bytes = 0
+        for bulky in run_root.glob("workers/*/rts_rollout.jsonl"):
+            cleaned_bytes += bulky.stat().st_size
+            bulky.unlink()
+        for bulky in run_root.glob("workers/*/worker_stdout.log"):
+            cleaned_bytes += bulky.stat().st_size
+            bulky.unlink()
+        if cleaned_bytes > 0:
+            print(f"[eval] cleaned {cleaned_bytes / 1_000_000:.0f} MB of rollout/log artifacts from {run_root.name}")
+
     valid = (
         len(worker_summaries) == int(seed_pack["replications"])
         and failures == 0

@@ -13,7 +13,6 @@ class RTSRolloutWriter:
         self.path = Path(path)
         self.enabled = bool(enabled)
         self.max_events = max_events
-        self.events: list[dict[str, Any]] = []
         self._written = 0
         self._unflushed = 0
         self.flush_cadence = self._resolve_flush_cadence()
@@ -36,7 +35,6 @@ class RTSRolloutWriter:
     def __getstate__(self):
         state = dict(self.__dict__)
         state["_fh"] = None
-        state["events"] = []
         state["_unflushed"] = 0
         return state
 
@@ -56,7 +54,6 @@ class RTSRolloutWriter:
             self._fh = self.path.open("a")
         event = dict(row)
         self._fh.write(json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n")
-        self.events.append(event)
         self._written += 1
         self._unflushed += 1
         if self._unflushed >= self.flush_cadence or self._is_terminal_outcome(event):

@@ -158,7 +158,7 @@ class RTSRolloutRuntime:
         self.runtime_root = Path(runtime_root)
         self.writer = RTSRolloutWriter(
             self.runtime_root / config.rollout_filename,
-            enabled=config.rollout_enabled,
+            enabled=config.rollout_write_disk,
             max_events=config.max_events,
         )
         self.summary_path = self.runtime_root / config.summary_filename

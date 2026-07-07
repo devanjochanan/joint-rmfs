@@ -22,6 +22,7 @@ SUPPORTED_RTS_STATE_CAPTURE_MODES = ("auto", "full", "minimal")
 class RTSRuntimeConfig:
     policy_mode: str = "current"
     rollout_enabled: bool = False
+    rollout_write_disk: bool = True
     zone_ids: tuple[str, ...] = ()
     reward_reference_path: str | None = None
     random_seed: int | None = None

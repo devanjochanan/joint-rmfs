@@ -56,7 +56,7 @@ def main(argv=None):
     progress = parser.add_mutually_exclusive_group()
     progress.add_argument("--progress", action="store_true", dest="progress")
     progress.add_argument("--no-progress", action="store_false", dest="progress")
-    parser.set_defaults(progress=None)
+    parser.set_defaults(progress=True)
     tb = parser.add_mutually_exclusive_group()
     tb.add_argument("--tensorboard", action="store_true", dest="tensorboard_enabled")
     tb.add_argument("--no-tensorboard", action="store_false", dest="tensorboard_enabled")

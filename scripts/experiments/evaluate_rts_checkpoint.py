@@ -34,6 +34,8 @@ def main(argv=None):
     charging.add_argument("--charging-inherit-default", action="store_const", const="inherit", dest="charging_mode")
     parser.add_argument("--rts-torch-threads", type=int, default=None)
     parser.add_argument("--rts-torch-interop-threads", type=int, default=None)
+    parser.add_argument("--debug-rollouts", action="store_true", default=False,
+                        help="Persist per-decision rollout JSONL and worker stdout (adds ~300 MB/worker). Default: off.")
     parser.set_defaults(charging_mode="inherit")
     args = parser.parse_args(argv)
     summary = run_rts_evaluation(
@@ -53,6 +55,7 @@ def main(argv=None):
         ledger_path=Path(args.ledger_path).resolve() if args.ledger_path else None,
         rts_torch_threads=args.rts_torch_threads,
         rts_torch_interop_threads=args.rts_torch_interop_threads,
+        debug_rollouts=args.debug_rollouts,
     )
     print(summary["eval_run_id"])
 

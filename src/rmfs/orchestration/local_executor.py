@@ -381,6 +381,7 @@ def run_worker(spec: RunSpec):
             RTSRuntimeConfig(
                 policy_mode=spec.rts_policy_mode,
                 rollout_enabled=spec.rts_rollout_enabled,
+                rollout_write_disk=spec.rts_rollout_write_disk,
                 zone_ids=tuple(spec.rts_zone_ids or ()),
                 reward_reference_path=spec.rts_reward_reference_path,
                 random_seed=spec.rts_random_seed,

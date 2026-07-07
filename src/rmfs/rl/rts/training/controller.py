@@ -466,18 +466,19 @@ def run_on_policy_training_controller(
                         pass
             
             # Check for failures
-            failed_exit_code = None
-            failed_worker_idx = None
+            failed_workers = []
             for idx, exit_code in completed_workers.items():
                 if exit_code != 0:
-                    failed_exit_code = exit_code
-                    failed_worker_idx = idx
-            
-            if failed_exit_code is not None:
+                    failed_workers.append((idx, exit_code))
+
+            worker_failed_count = len(failed_workers)
+            worker_success_count = config.workers - worker_failed_count
+
+            for failed_worker_idx, failed_exit_code in failed_workers:
                 failed_worker_id = failed_worker_idx + 1
                 failed_spec = worker_specs[failed_worker_idx]
                 failed_runtime_root = Path(failed_spec["runtime_root"])
-                
+
                 worker_summary_path = failed_runtime_root / "worker_summary.json"
                 error_type = None
                 error_message = None
@@ -489,7 +490,7 @@ def run_on_policy_training_controller(
                         error_message = summary_data.get("error_message")
                     except Exception:
                         pass
-                
+
                 lines = []
                 lines.append(f"Worker {failed_worker_id} failed with exit code {failed_exit_code}.")
                 lines.append(f"  Worker Runtime Root: {failed_runtime_root}")
@@ -499,13 +500,13 @@ def run_on_policy_training_controller(
                     lines.append(f"  Worker Error Type: {error_type}")
                 if error_message:
                     lines.append(f"  Worker Error Message: {error_message}")
-                
+
                 if config.debug_worker_logs:
                     stdout_path = failed_runtime_root / "worker_stdout.log"
                     stderr_path = failed_runtime_root / "worker_stderr.log"
                     lines.append(f"  Worker Stdout Log: {stdout_path}")
                     lines.append(f"  Worker Stderr Log: {stderr_path}")
-                    
+
                     if stderr_path.exists():
                         try:
                             with stderr_path.open("r", errors="replace") as fh:
@@ -519,10 +520,18 @@ def run_on_policy_training_controller(
                             pass
                 else:
                     lines.append("  Worker output logs were not persisted; rerun with --debug-worker-logs for stdout/stderr capture.")
-                
+
                 full_error_msg = "\n".join(lines)
                 print(full_error_msg, file=sys.stderr)
-                raise RuntimeError(f"Worker {failed_worker_id} failed with exit code {failed_exit_code}")
+
+            if worker_success_count == 0:
+                raise RuntimeError(f"All {config.workers} workers failed — cannot continue training.")
+            elif failed_workers:
+                print(
+                    f"[batch {batch_id:06d}] {worker_failed_count}/{config.workers} workers failed; "
+                    f"continuing with {worker_success_count} successful workers.",
+                    file=sys.stderr,
+                )
             
             # Load worker summaries and rollout summaries to extract metrics
             worker_summaries = []

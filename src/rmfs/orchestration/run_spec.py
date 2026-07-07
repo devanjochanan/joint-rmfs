@@ -22,6 +22,7 @@ class RunSpec:
     trace_first_n: int = 0
     rts_policy_mode: str = "current"
     rts_rollout_enabled: bool = False
+    rts_rollout_write_disk: bool = True
     rts_zone_ids: list[str] | None = None
     rts_reward_reference_path: str | None = None
     rts_seed_base: int | None = None
