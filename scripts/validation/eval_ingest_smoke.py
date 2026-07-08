@@ -37,7 +37,7 @@ def main():
 
     summary_data = {
         "eval_run_id": eval_run_id,
-        "policy_checkpoint_id": "batch_000005",
+        "policy_checkpoint_id": "batch_000014",
         "seed_pack_id": "pack_123",
         "netlogo_steps_per_run": 100,
         "replications": 5,
@@ -62,7 +62,7 @@ def main():
         db_row = rows[0]
         assert db_row["eval_run_id"] == eval_run_id
         assert db_row["status"] == status
-        assert db_row["policy_checkpoint_id"] == "batch_000005"
+        assert db_row["policy_checkpoint_id"] == "batch_000014"
         assert db_row["seed_pack_id"] == "pack_123"
         assert db_row["netlogo_steps_per_run"] == 100
         assert db_row["replications"] == 5
