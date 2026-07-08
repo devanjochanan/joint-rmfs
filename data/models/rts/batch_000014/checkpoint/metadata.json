@@ -1,6 +1,6 @@
 {
-  "batch_id": 5,
-  "policy_checkpoint_id": "batch_000005",
+  "batch_id": 14,
+  "policy_checkpoint_id": "batch_000014",
   "training_config": {
     "artifact_label": "dewa_rts_v6_vrsla_ppo_10000s_8w_30b_seed42",
     "output_root": "/home/dewan/Project Ta/Fresh Start Structure V1/Rika's Version/data/runtime/rts_training",
@@ -33,28 +33,28 @@
     "rts_torch_interop_threads": null
   },
   "dataset_summary": {
-    "decision_count": 5838,
-    "outcome_count": 11614,
-    "completed_paper_cycle_count": 4695,
-    "pending_paper_cycle_count": 5776,
-    "pending_count": 5776,
-    "censored_paper_cycle_count": 1143,
-    "censored_count": 1143,
+    "decision_count": 7483,
+    "outcome_count": 14939,
+    "completed_paper_cycle_count": 6200,
+    "pending_paper_cycle_count": 7456,
+    "pending_count": 7456,
+    "censored_paper_cycle_count": 1283,
+    "censored_count": 1283,
     "censored_count_by_reason": {
-      "censored_no_next_task": 1058,
-      "censored_maximum_horizon": 85
+      "censored_no_next_task": 1236,
+      "censored_maximum_horizon": 47
     },
     "rejected_count_by_reason": {},
-    "trainable_step_count": 4695,
-    "completion_rate": 0.8042137718396711,
-    "censor_rate": 0.19578622816032887,
-    "trainable_rate": 0.8042137718396711,
+    "trainable_step_count": 6200,
+    "completion_rate": 0.8285447013229988,
+    "censor_rate": 0.1714552986770012,
+    "trainable_rate": 0.8285447013229988,
     "feature_ablation": "full",
-    "avg_reward": -0.9970577734650786,
-    "reward_mean": -0.9970577734650786,
-    "reward_std": 0.25756038544505394,
-    "reward_min": -3.503342884426404,
-    "reward_max": -0.4317096466100151,
+    "avg_reward": -0.9496349015619927,
+    "reward_mean": -0.9496349015619927,
+    "reward_std": 0.2578056295291101,
+    "reward_min": -6.716332378213325,
+    "reward_max": -0.3915950334282513,
     "reward_mode": "cold_start_paper_cycle_duration",
     "reward_horizon": "paper_cycle_duration",
     "reward_reference_required": false,
@@ -66,7 +66,7 @@
     "rejected_duplicate_decision_count": 0,
     "rejected_duplicate_outcome_count": 0,
     "rejected_missing_outcome_count": 0,
-    "rejected_missing_completed_paper_cycle_count": 1143,
+    "rejected_missing_completed_paper_cycle_count": 1283,
     "rejected_reward_uncomputed_count": 0,
     "rejected_non_on_policy_count": 0,
     "rejected_checkpoint_mismatch_count": 0,
@@ -86,13 +86,13 @@
     "rejected_duplicate_trainable_outcome_count": 0
   },
   "ppo_update_result": {
-    "optimizer_steps": 296,
-    "total_loss_mean": -0.023303055015669483,
-    "policy_loss_mean": 0.01675426139342095,
-    "value_loss_mean": 0.0905111877788865,
-    "entropy_mean": 1.7062581801736676,
-    "approx_kl_mean": 0.004183278875299604,
-    "clip_fraction_mean": 0.21706769615411758
+    "optimizer_steps": 388,
+    "total_loss_mean": -0.19350834067949316,
+    "policy_loss_mean": -0.1391398669940602,
+    "value_loss_mean": 0.08038170493601524,
+    "entropy_mean": 1.8911864923447679,
+    "approx_kl_mean": 0.0016214245805497636,
+    "clip_fraction_mean": 0.10537095001140206
   },
   "feature_schema": {
     "action_feature_names": [
@@ -164,12 +164,12 @@
     "schema_version": "rts_optimizer_fingerprint.v1",
     "state_parameter_count": 16,
     "moment_tensor_count": 32,
-    "min_step": 1576.0,
-    "max_step": 1576.0,
+    "min_step": 4804.0,
+    "max_step": 4804.0,
     "learning_rates": [
       0.0001
     ],
-    "sha256": "0d2996e43b5bdb0aa07f514ab2da2e492851ff6d44681745f62344663a0c0ba2"
+    "sha256": "0cb0ce7929a07be5f19321d0bc27dcda0a2188e0505feeeddf862526bea57b59"
   },
   "cycle_reference_path": null,
   "reward_normalizer": {
