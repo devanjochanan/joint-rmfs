@@ -58,7 +58,7 @@ OPERATIONAL_METRIC_FIELDS = (
     "turning_count",
 )
 DEFAULT_PPS_MODEL_PATH = REPO_ROOT / "data" / "models" / "pps" / "pps_rl_best.zip"
-DEFAULT_RTS_CHECKPOINT_DIR = REPO_ROOT / "data" / "models" / "rts" / "batch_000005" / "checkpoint"
+DEFAULT_RTS_CHECKPOINT_DIR = REPO_ROOT / "data" / "models" / "rts" / "batch_000014" / "checkpoint"
 DEFAULT_CHARGING_CONFIG_PATH = canonical_charging_config_path()
 
 
