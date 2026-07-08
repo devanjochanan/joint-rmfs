@@ -68,6 +68,15 @@ class RunSpec:
     committed_next_reservations_enabled: bool = False
     rts_torch_threads: int | None = None
     rts_torch_interop_threads: int | None = None
+    campaign_id: str | None = None
+    machine_id: str | None = None
+    stage_first_requested: int | None = None
+    kpi_schema_version: str | None = None
+    policy_configuration: str | None = None
+    replication: int | None = None
+    campaign_seed: int | None = None
+    rts_checkpoint_sha256: str | None = None
+    pps_model_sha256: str | None = None
 
     @property
     def netlogo_steps_requested(self) -> int:

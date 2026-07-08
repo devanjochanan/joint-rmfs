@@ -51,6 +51,58 @@ DEFERRED_ROOT_READ_ONLY_INPUTS = [
     "raw_order.csv",
 ]
 
+SENSITIVITY_KPI_SCHEMA_VERSION = "sensitivity_full_kpi.v1"
+SENSITIVITY_KPI_FIELDS = (
+    "run_id",
+    "seed",
+    "replication",
+    "policy_configuration",
+    "simulated_ticks",
+    "simulated_seconds",
+    "termination_reason",
+    "orders_generated",
+    "orders_completed",
+    "order_lines_completed",
+    "order_throughput",
+    "average_order_cycle_time",
+    "maximum_order_cycle_time",
+    "pile_on",
+    "pod_visit_picking",
+    "pod_visit_replenishment",
+    "pod_utilization",
+    "total_robot_distance",
+    "loaded_robot_distance",
+    "empty_robot_distance",
+    "robot_distance_per_order",
+    "robot_idle_time",
+    "robot_cycle_time",
+    "stop_and_go_count",
+    "turning_count",
+    "average_job_queue",
+    "peak_job_queue",
+    "congestion_detected",
+    "replenishment_count",
+    "replenishment_trips",
+    "replenishment_action_completed_count",
+    "replenishment_pick_ratio",
+    "total_energy_kj",
+    "average_energy",
+    "energy_efficiency",
+    "total_fixed_load_energy",
+    "energy_efficiency_fixed",
+    "max_station_assignment_share",
+    "station_imbalance_ratio",
+    "campaign_id",
+    "machine_id",
+    "stage_first_requested",
+    "kpi_schema_version",
+    "kpi_complete",
+    "repo_commit",
+    "rts_checkpoint_id",
+    "rts_checkpoint_sha256",
+    "pps_model_sha256",
+)
+
 
 def expected_worker_files(detail_db: bool = False) -> list[str]:
     files = list(BASE_EXPECTED_WORKER_FILES)
@@ -173,6 +225,154 @@ def return_signature(payload):
     else:
         length = None
     return {"type": type(payload).__name__, "length": length}
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    if result != result or result in (float("inf"), float("-inf")):
+        return default
+    return result
+
+
+def _safe_div(numerator, denominator) -> float:
+    denom = _safe_float(denominator)
+    if denom <= 0.0:
+        return 0.0
+    return _safe_float(numerator) / denom
+
+
+def _robot_objects(warehouse) -> list[object]:
+    if warehouse is None:
+        return []
+    return [
+        obj
+        for obj in getattr(warehouse, "_objects", []) or []
+        if getattr(obj, "object_type", None) == "robot"
+    ]
+
+
+def _completed_orders(warehouse) -> list[object]:
+    if warehouse is None or not hasattr(warehouse, "order_manager"):
+        return []
+    return [
+        order
+        for order in getattr(warehouse.order_manager, "orders", []) or []
+        if order.is_order_completed()
+    ]
+
+
+def derive_sensitivity_kpi_payload(
+    spec: RunSpec,
+    warehouse,
+    finalization: dict | None,
+    generated_order_contract: dict | None = None,
+) -> dict[str, object]:
+    finalization = dict(finalization or {})
+    generated_order_contract = dict(generated_order_contract or {})
+    robots = _robot_objects(warehouse)
+    orders = list(getattr(getattr(warehouse, "order_manager", None), "orders", []) or [])
+    completed_orders = _completed_orders(warehouse)
+    cycle_times = [
+        _safe_float(order.order_complete_time) - _safe_float(order.process_start_time)
+        for order in completed_orders
+        if _safe_float(order.order_complete_time, -1.0) >= 0.0
+        and _safe_float(order.process_start_time, -1.0) >= 0.0
+    ]
+    station_counts: dict[str, int] = {}
+    for order in completed_orders:
+        station_id = getattr(order, "station_id", None)
+        if station_id is not None:
+            station_counts[str(station_id)] = station_counts.get(str(station_id), 0) + 1
+    station_total = sum(station_counts.values())
+    max_station = max(station_counts.values()) if station_counts else 0
+    min_station = min(station_counts.values()) if station_counts else 0
+    total_robot_distance = sum(_safe_float(getattr(robot, "travel_distances", 0.0)) for robot in robots)
+    loaded_robot_distance = sum(_safe_float(getattr(robot, "loaded_travel_distance", 0.0)) for robot in robots)
+    empty_robot_distance = sum(_safe_float(getattr(robot, "empty_travel_distance", 0.0)) for robot in robots)
+    completed_cycle_count = sum(int(getattr(robot, "completed_cycle_count", 0) or 0) for robot in robots)
+    completed_cycle_duration = sum(_safe_float(getattr(robot, "completed_cycle_duration_sum", 0.0)) for robot in robots)
+    pod_count = len(getattr(getattr(warehouse, "pod_manager", None), "pods", []) or [])
+    pod_visit_picking = int(getattr(warehouse, "pps_pod_visits", getattr(warehouse, "pps_rl_pod_visits", 0)) or 0)
+    picked_quantity = int(getattr(warehouse, "pps_picked_quantity", getattr(warehouse, "pps_rl_picked_quantity", 0)) or 0)
+    total_energy_kj = _safe_float(getattr(warehouse, "total_energy", 0.0)) / 1000.0
+    total_fixed_load_energy = sum(_safe_float(getattr(robot, "fixed_load_energy_consumption", 0.0)) for robot in robots) / 1000.0
+    simulated_seconds = _safe_float(spec.simulated_horizon_seconds)
+    generated_orders = generated_order_contract.get("generated_unique_orders")
+    if generated_orders is None:
+        generated_orders = len(orders)
+    order_lines_completed = 0
+    for order in completed_orders:
+        for details in getattr(order, "skus", {}).values():
+            if _safe_float(details.get("quantity_delivered")) >= _safe_float(details.get("total_quantity")):
+                order_lines_completed += 1
+    job_queue_sample_count = int(getattr(warehouse, "job_queue_sample_count", 0) or 0)
+    job_queue_cumulative = _safe_float(getattr(warehouse, "job_queue_cumulative_sum", 0.0))
+    peak_job_queue = int(getattr(warehouse, "peak_job_queue", len(getattr(warehouse, "job_queue", []) or [])) or 0)
+    replenishment_trips = int(getattr(warehouse, "replenishment_trips", 0) or 0)
+    replenishment_completed = (
+        int(getattr(warehouse, "completed_post_pick_replenishment_actions", 0) or 0)
+        + int(getattr(warehouse, "completed_rts_replenishment_actions", 0) or 0)
+        + int(getattr(warehouse, "completed_proactive_replenishment_actions", 0) or 0)
+    )
+    if replenishment_completed <= 0:
+        replenishment_completed = replenishment_trips
+    reason = finalization.get("reason")
+    runtime_invariants = finalization.get("runtime_invariants", {}) or {}
+    payload = {
+        "run_id": spec.run_id,
+        "seed": spec.campaign_seed if spec.campaign_seed is not None else spec.rts_random_seed,
+        "replication": spec.replication,
+        "policy_configuration": spec.policy_configuration or ("all_on_rl" if spec.rts_policy_mode == "rts_rl_explicit" else "all_off"),
+        "simulated_ticks": int(spec.ticks),
+        "simulated_seconds": simulated_seconds,
+        "termination_reason": reason,
+        "orders_generated": int(generated_orders or 0),
+        "orders_completed": len(completed_orders),
+        "order_lines_completed": int(order_lines_completed),
+        "order_throughput": _safe_div(len(completed_orders), simulated_seconds / 3600.0),
+        "average_order_cycle_time": sum(cycle_times) / len(cycle_times) if cycle_times else 0.0,
+        "maximum_order_cycle_time": max(cycle_times) if cycle_times else 0.0,
+        "pile_on": _safe_div(picked_quantity, pod_visit_picking),
+        "pod_visit_picking": pod_visit_picking,
+        "pod_visit_replenishment": replenishment_trips,
+        "pod_utilization": _safe_div(pod_visit_picking + replenishment_trips, pod_count),
+        "total_robot_distance": total_robot_distance,
+        "loaded_robot_distance": loaded_robot_distance,
+        "empty_robot_distance": empty_robot_distance,
+        "robot_distance_per_order": _safe_div(total_robot_distance, len(completed_orders)),
+        "robot_idle_time": _safe_float(getattr(warehouse, "total_robot_idle", 0.0)),
+        "robot_cycle_time": _safe_div(completed_cycle_duration, completed_cycle_count),
+        "stop_and_go_count": int(getattr(warehouse, "stop_and_go", 0) or 0),
+        "turning_count": int(getattr(warehouse, "total_turning", 0) or 0),
+        "average_job_queue": _safe_div(job_queue_cumulative, job_queue_sample_count),
+        "peak_job_queue": peak_job_queue,
+        "congestion_detected": bool(reason == "congestion" or runtime_invariants.get("hard_violation_count", 0)),
+        "replenishment_count": int(getattr(warehouse, "replenishment_count", 0) or 0),
+        "replenishment_trips": replenishment_trips,
+        "replenishment_action_completed_count": replenishment_completed,
+        "post_pick_store_action_completed_count": int(getattr(warehouse, "completed_post_pick_store_actions", 0) or 0),
+        "replenishment_pick_ratio": _safe_div(replenishment_trips, pod_visit_picking),
+        "total_energy_kj": total_energy_kj,
+        "average_energy": _safe_div(total_energy_kj, len(robots)),
+        "energy_efficiency": _safe_div(len(completed_orders), total_energy_kj),
+        "total_fixed_load_energy": total_fixed_load_energy,
+        "energy_efficiency_fixed": _safe_div(len(completed_orders), total_fixed_load_energy),
+        "max_station_assignment_share": _safe_div(max_station, station_total),
+        "station_imbalance_ratio": _safe_div(max_station, min_station),
+        "campaign_id": spec.campaign_id,
+        "machine_id": spec.machine_id,
+        "stage_first_requested": spec.stage_first_requested,
+        "kpi_schema_version": spec.kpi_schema_version,
+        "repo_commit": spec.commit,
+        "rts_checkpoint_id": spec.rts_policy_checkpoint_id,
+        "rts_checkpoint_sha256": spec.rts_checkpoint_sha256,
+        "pps_model_sha256": spec.pps_model_sha256,
+    }
+    payload["kpi_complete"] = all(field in payload and payload[field] is not None for field in SENSITIVITY_KPI_FIELDS if field != "kpi_complete")
+    return payload
 
 
 def git_value(repo_root: Path, *args):
@@ -587,6 +787,23 @@ def run_worker(spec: RunSpec):
             summary["final_metrics"]["warehouse_average_order_cycle_time"] = avg_cycle_time
             summary["final_metrics"]["warehouse_average_order_cycle_time_available"] = True
 
+        if spec.kpi_schema_version == SENSITIVITY_KPI_SCHEMA_VERSION:
+            kpi_payload = derive_sensitivity_kpi_payload(
+                spec,
+                final_warehouse,
+                summary.get("finalization", {}),
+                summary.get("generated_order_contract", {}),
+            )
+            summary["kpi"] = kpi_payload
+            summary.update(kpi_payload)
+            if not kpi_payload.get("kpi_complete"):
+                missing = [
+                    field
+                    for field in SENSITIVITY_KPI_FIELDS
+                    if field != "kpi_complete" and kpi_payload.get(field) is None
+                ]
+                raise RuntimeError(f"sensitivity KPI schema incomplete: missing {missing}")
+
         summary["status"] = "success"
 
         if spec.debug_trace and debug_rows:
@@ -681,6 +898,16 @@ def run_worker(spec: RunSpec):
             "pps_rl_enabled": normalize_pps_mode(spec.pps_mode) == "ppo",
             "charging_enabled": spec.charging_enabled,
             "charging_config_path": spec.charging_config_path,
+            "campaign_id": spec.campaign_id,
+            "machine_id": spec.machine_id,
+            "stage_first_requested": spec.stage_first_requested,
+            "kpi_schema_version": spec.kpi_schema_version,
+            "policy_configuration": spec.policy_configuration,
+            "replication": spec.replication,
+            "seed": spec.campaign_seed if spec.campaign_seed is not None else spec.rts_random_seed,
+            "rts_checkpoint_id": spec.rts_policy_checkpoint_id,
+            "rts_checkpoint_sha256": spec.rts_checkpoint_sha256,
+            "pps_model_sha256": spec.pps_model_sha256,
         })
         write_json(spec.runtime_root / "worker_summary.json", summary)
         write_worker_status("success" if summary["status"] == "success" else "failure", force=True)

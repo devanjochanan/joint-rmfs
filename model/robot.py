@@ -99,6 +99,12 @@ class Robot(Object):
         self.current_intersection_stop_and_go = 0
         self.current_intersection_start_time = None
         self.current_intersection_finish_time = None
+        self.loaded_travel_distance = 0.0
+        self.empty_travel_distance = 0.0
+        self.completed_cycle_duration_sum = 0.0
+        self.completed_cycle_count = 0
+        self.current_cycle_start_tick = None
+        self.fixed_load_energy_consumption = 0.0
         self.warehouse = universe
         # ── Battery + charging state — PATCH A2 ──
         self.battery_level_j = self.BATTERY_CAPACITY_J * self.INITIAL_BATTERY_FRAC
@@ -305,6 +311,8 @@ class Robot(Object):
             completed_job = self.job
             upsert_pod_location(completed_job.pod.pod_id, completed_job.pod.pos_x, completed_job.pod.pos_y)
             self.warehouse.rts_rollout_runtime.on_return_completed(robot=self)
+            if getattr(completed_job, "rts_branch", None) == "store":
+                self.warehouse.completed_post_pick_store_actions += 1
             self._clear_rts_return_ownership()
             # Finalize the just-returned pod (mark available, clear pod.station,
             # drop stale station incoming membership) BEFORE any committed-next
@@ -316,6 +324,10 @@ class Robot(Object):
             # clear only the temporary proactive-origin reservation metadata.
             if getattr(completed_job, "proactive_origin_reserved", False):
                 completed_job.clear_proactive_origin_reservation()
+            if self.current_cycle_start_tick is not None:
+                self.completed_cycle_duration_sum += max(0.0, self.universe._tick - self.current_cycle_start_tick)
+                self.completed_cycle_count += 1
+                self.current_cycle_start_tick = None
             e_li = self.load_mass * self._gravity * self._lift_coef
             self.energy_consumption += e_li
             self.load_mass = 0
@@ -958,8 +970,9 @@ class Robot(Object):
             return True
         # Base operational drain (skipped while plugged in / charging).
         if not self.is_charging:
-            self.battery_level_j = max(0.0, self.battery_level_j
-                                       - self.BASE_DRAIN_RATE_PER_S * self.universe.tick_to_second)
+            fixed_load_energy = self.BASE_DRAIN_RATE_PER_S * self.universe.tick_to_second
+            self.fixed_load_energy_consumption += fixed_load_energy
+            self.battery_level_j = max(0.0, self.battery_level_j - fixed_load_energy)
         # Deferred charging check: if busy and low battery, queue the charging request.
         is_busy = (self.current_state in {"taking_pod", "delivering_pod", "station_processing", "returning_pod"}) or (self.job is not None and not getattr(self.job, "is_finished", False))
         if is_busy and self.battery_pct < self.BATTERY_LOW_PCT and not getattr(self.universe, "disable_active_charging", False):
@@ -984,6 +997,11 @@ class Robot(Object):
 
         if self.velocity != 0:
             distance_delta = self.velocity * self.universe.tick_to_second
+            self.travel_distances += distance_delta
+            if self.load_mass > 0 or self.current_state in {"delivering_pod", "station_processing", "returning_pod"}:
+                self.loaded_travel_distance += distance_delta
+            else:
+                self.empty_travel_distance += distance_delta
             if self.heading == 0:
                 self.pos_y += distance_delta
             elif self.heading == 180:
@@ -1435,11 +1453,13 @@ class Robot(Object):
 
     def assign_job_and_set_move_to_take_pod(self, job: RobotJob):
         self.job = job
+        self.current_cycle_start_tick = self.universe._tick
 
         self.set_move_to_take_pod()
 
     def assign_job_and_set_move_to_station(self, job: RobotJob):
         self.job = job
+        self.current_cycle_start_tick = self.universe._tick
         self.current_state = "taking_pod"
         self.route_stop_points = None
         # print("called from assign_jobn_and_set_move_to_station")

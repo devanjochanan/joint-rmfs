@@ -52,6 +52,7 @@ def main(argv=None) -> int:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--bc-epochs", type=int, default=50)
     parser.add_argument("--bc-patience", type=int, default=5)
+    parser.add_argument("--bc-minibatch-size", type=int, default=2048)
     parser.add_argument("--worker-spawn-delay", type=float, default=5.0)
     parser.add_argument("--execute", action="store_true", default=False)
     args = parser.parse_args(argv)
@@ -207,6 +208,7 @@ def main(argv=None) -> int:
         device=resolve_rts_torch_device(args.device),
         max_epochs=int(args.bc_epochs),
         patience=int(args.bc_patience),
+        minibatch_size=int(args.bc_minibatch_size),
     )
     checkpoint_dir = save_behavior_cloning_checkpoint(
         model=model,

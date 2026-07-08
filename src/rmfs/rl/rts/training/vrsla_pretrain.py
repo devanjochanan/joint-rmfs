@@ -147,8 +147,11 @@ def run_behavior_cloning(
     device: str | torch.device = "cpu",
     max_epochs: int = 50,
     patience: int = 5,
+    minibatch_size: int = 2048,
 ) -> tuple[RTSMaskedActorCritic, VRSLABehaviorCloningResult]:
     device = torch.device(device)
+    if int(minibatch_size) < 1:
+        raise ValueError("minibatch_size must be positive")
     model = RTSMaskedActorCritic(
         action_feature_dim=batch.X_actions.shape[-1],
         stock_feature_dim=batch.X_stock.shape[-1],
@@ -158,7 +161,10 @@ def run_behavior_cloning(
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(config.learning_rate))
     train_idx, val_idx = _split_by_run(batch.run_keys)
-    tensors = _batch_tensors(batch, device)
+    # Tensors stay on CPU; minibatches are moved to the training device per step
+    # so the full teacher dataset never has to fit in GPU memory.
+    tensors = _batch_tensors(batch)
+    shuffle_rng = np.random.default_rng(int(config.seed))
     best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
     best_val = float("inf")
     best_epoch = 0
@@ -167,18 +173,22 @@ def run_behavior_cloning(
     train_final = None
     for epoch in range(1, int(max_epochs) + 1):
         model.train()
-        loss = _masked_ce_loss(model, tensors, train_idx)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.max_grad_norm))
-        optimizer.step()
-        train_loss = float(loss.detach().cpu())
+        permuted = shuffle_rng.permutation(train_idx)
+        loss_total = 0.0
+        for start in range(0, len(permuted), int(minibatch_size)):
+            minibatch = permuted[start : start + int(minibatch_size)]
+            loss = _masked_ce_loss(model, tensors, minibatch, device)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.max_grad_norm))
+            optimizer.step()
+            loss_total += float(loss.detach().cpu()) * len(minibatch)
+        train_loss = loss_total / max(1, len(permuted))
         if train_initial is None:
             train_initial = train_loss
         train_final = train_loss
         model.eval()
-        with torch.no_grad():
-            val_loss = float(_masked_ce_loss(model, tensors, val_idx).detach().cpu())
+        val_loss = _eval_ce_loss(model, tensors, val_idx, device, int(minibatch_size))
         if val_loss + 1e-8 < best_val:
             best_val = val_loss
             best_epoch = epoch
@@ -189,7 +199,7 @@ def run_behavior_cloning(
             if bad_epochs >= int(patience):
                 break
     model.load_state_dict(best_state)
-    metrics = _agreement_metrics(model, batch, tensors)
+    metrics = _agreement_metrics(model, batch, tensors, device, int(minibatch_size))
     result = VRSLABehaviorCloningResult(
         epochs_completed=epoch,
         best_epoch=best_epoch,
@@ -261,30 +271,51 @@ def save_behavior_cloning_checkpoint(
     return checkpoint_dir
 
 
-def _batch_tensors(batch: VRSLATeacherBatch, device: torch.device) -> dict[str, torch.Tensor]:
+def _batch_tensors(batch: VRSLATeacherBatch) -> dict[str, torch.Tensor]:
     return {
-        "X_actions": torch.as_tensor(batch.X_actions, dtype=torch.float32, device=device),
-        "M_actions": torch.as_tensor(batch.M_actions, dtype=torch.int64, device=device),
-        "X_stock": torch.as_tensor(batch.X_stock, dtype=torch.float32, device=device),
-        "M_stock": torch.as_tensor(batch.M_stock, dtype=torch.int64, device=device),
-        "selected": torch.as_tensor(batch.teacher_action_indices, dtype=torch.int64, device=device),
+        "X_actions": torch.as_tensor(batch.X_actions, dtype=torch.float32),
+        "M_actions": torch.as_tensor(batch.M_actions, dtype=torch.int64),
+        "X_stock": torch.as_tensor(batch.X_stock, dtype=torch.float32),
+        "M_stock": torch.as_tensor(batch.M_stock, dtype=torch.int64),
+        "selected": torch.as_tensor(batch.teacher_action_indices, dtype=torch.int64),
     }
 
 
-def _masked_ce_loss(model: RTSMaskedActorCritic, tensors: Mapping[str, torch.Tensor], indexes: np.ndarray) -> torch.Tensor:
-    idx = torch.as_tensor(indexes, dtype=torch.long, device=tensors["X_actions"].device)
+def _masked_ce_loss(
+    model: RTSMaskedActorCritic,
+    tensors: Mapping[str, torch.Tensor],
+    indexes: np.ndarray,
+    device: torch.device,
+) -> torch.Tensor:
+    idx = torch.as_tensor(indexes, dtype=torch.long)
     logits, _values = model(
-        tensors["X_actions"][idx],
-        tensors["M_actions"][idx],
-        tensors["X_stock"][idx],
-        tensors["M_stock"][idx],
+        tensors["X_actions"][idx].to(device),
+        tensors["M_actions"][idx].to(device),
+        tensors["X_stock"][idx].to(device),
+        tensors["M_stock"][idx].to(device),
     )
-    selected = tensors["selected"][idx]
-    mask = tensors["M_actions"][idx]
+    selected = tensors["selected"][idx].to(device)
+    mask = tensors["M_actions"][idx].to(device)
     if torch.any(mask[torch.arange(mask.shape[0], device=mask.device), selected] <= 0):
         raise ValueError("teacher target is masked invalid")
     masked_logits = logits.masked_fill(mask <= 0, torch.finfo(logits.dtype).min)
     return F.cross_entropy(masked_logits, selected)
+
+
+def _eval_ce_loss(
+    model: RTSMaskedActorCritic,
+    tensors: Mapping[str, torch.Tensor],
+    indexes: np.ndarray,
+    device: torch.device,
+    chunk_size: int,
+) -> float:
+    loss_total = 0.0
+    with torch.no_grad():
+        for start in range(0, len(indexes), chunk_size):
+            chunk = indexes[start : start + chunk_size]
+            loss = _masked_ce_loss(model, tensors, chunk, device)
+            loss_total += float(loss.detach().cpu()) * len(chunk)
+    return loss_total / max(1, len(indexes))
 
 
 def _split_by_run(run_keys: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
@@ -300,12 +331,28 @@ def _split_by_run(run_keys: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(train, dtype=np.int64), np.asarray(val, dtype=np.int64)
 
 
-def _agreement_metrics(model: RTSMaskedActorCritic, batch: VRSLATeacherBatch, tensors: Mapping[str, torch.Tensor]) -> dict[str, float]:
+def _agreement_metrics(
+    model: RTSMaskedActorCritic,
+    batch: VRSLATeacherBatch,
+    tensors: Mapping[str, torch.Tensor],
+    device: torch.device,
+    chunk_size: int,
+) -> dict[str, float]:
     model.eval()
+    pred_chunks = []
     with torch.no_grad():
-        logits, _values = model(tensors["X_actions"], tensors["M_actions"], tensors["X_stock"], tensors["M_stock"])
-        masked_logits = logits.masked_fill(tensors["M_actions"] <= 0, torch.finfo(logits.dtype).min)
-        pred = masked_logits.argmax(dim=-1).detach().cpu().numpy().astype(np.int64)
+        for start in range(0, tensors["X_actions"].shape[0], chunk_size):
+            end = start + chunk_size
+            mask = tensors["M_actions"][start:end].to(device)
+            logits, _values = model(
+                tensors["X_actions"][start:end].to(device),
+                mask,
+                tensors["X_stock"][start:end].to(device),
+                tensors["M_stock"][start:end].to(device),
+            )
+            masked_logits = logits.masked_fill(mask <= 0, torch.finfo(logits.dtype).min)
+            pred_chunks.append(masked_logits.argmax(dim=-1).detach().cpu().numpy().astype(np.int64))
+    pred = np.concatenate(pred_chunks) if pred_chunks else np.zeros((0,), dtype=np.int64)
     selected = batch.teacher_action_indices
     invalid = [
         1.0 if batch.M_actions[index, pred[index]] <= 0 else 0.0

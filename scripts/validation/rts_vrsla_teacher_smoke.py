@@ -121,7 +121,7 @@ def test_pod_velocity_union_and_rank():
     assert counts["1"] == inclusion_exclusion
     ranks = _pod_request_ranks([pod_b, pod_a], counts)
     assert ranks["1"] == 1.0 and ranks["2"] == 0.0, ranks
-    assert HISTORICAL_POD_RANK_VERSION == "rts_vrsla_pod_velocity_rank.v1"
+    assert HISTORICAL_POD_RANK_VERSION == "rts_historical_pod_request_rank.v1"
 
 
 def test_static_caching_and_directed_slot_scores():
@@ -260,7 +260,7 @@ def teacher_row(selected, branch, zone):
 
 
 def test_behavior_cloning_and_checkpoint_reload():
-    assert ACTION_FEATURE_SCHEMA_VERSION == "rts_action_features.v7"
+    assert ACTION_FEATURE_SCHEMA_VERSION == "rts_action_features.v6"
     torch.manual_seed(7)
     rows = tuple(teacher_row(selected, branch, zone) for selected, branch, zone in [
         (0, "store", "A"),

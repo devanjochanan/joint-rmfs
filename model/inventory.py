@@ -142,6 +142,13 @@ class Inventory(Universe):
         self.joint_rl = False     # When True, both POA and PPS are controlled by JointEnv
         self.replenishment_count = 0
         self.replenishment_trips = 0
+        self.completed_post_pick_replenishment_actions = 0
+        self.completed_rts_replenishment_actions = 0
+        self.completed_proactive_replenishment_actions = 0
+        self.completed_post_pick_store_actions = 0
+        self.job_queue_cumulative_sum = 0
+        self.job_queue_sample_count = 0
+        self.peak_job_queue = 0
         self.global_critical_skus = set()
         self.pending_replenishment_dispatches = []
         self.rts_controls_post_pick_replenishment = False
@@ -1178,6 +1185,9 @@ class Inventory(Universe):
             self.update_robot_job_for_new_orders(queued_job)
 
         print(f"Current job queue length: {len(self.job_queue)}")
+        self.job_queue_cumulative_sum += len(self.job_queue)
+        self.job_queue_sample_count += 1
+        self.peak_job_queue = max(self.peak_job_queue, len(self.job_queue))
 
         idle_robots = [
             o for o in self.get_movable_objects()
@@ -1479,6 +1489,13 @@ class Inventory(Universe):
             job.rts_stage = "post_replenishment_to_storage"
         self.replenishment_trips += 1
         self.replenishment_count += replenished_count
+        source = getattr(job, "replenishment_source", None) or "post_pick"
+        if source == "rts":
+            self.completed_rts_replenishment_actions += 1
+        elif source == "proactive":
+            self.completed_proactive_replenishment_actions += 1
+        else:
+            self.completed_post_pick_replenishment_actions += 1
         for sku_id in restored_quantities:
             _, still_below_reorder = self.pod_manager.is_sku_need_replenished(sku_id)
             if still_below_reorder:
