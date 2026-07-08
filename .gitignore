@@ -68,6 +68,7 @@ data/output/summaries/*
 
 # PPS model/training artifacts
 data/models/pps/*.zip
+!data/models/pps/pps_rl_best.zip
 data/models/pps/*.pt
 data/models/pps/train_state.json
 data/models/pps/checkpoints/
