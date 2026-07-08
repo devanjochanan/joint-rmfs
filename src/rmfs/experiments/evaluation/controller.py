@@ -415,3 +415,595 @@ def _aggregate_eval_metrics(
         "wall_clock_duration": sum(wall_times) if wall_times else None,
     }
 
+
+def verify_paired_checkpoint(checkpoint_dir: Path) -> dict[str, Any]:
+    checkpoint_dir = Path(checkpoint_dir)
+    metadata_path = checkpoint_dir / "metadata.json"
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Checkpoint metadata.json missing: {metadata_path}")
+    with metadata_path.open("r", encoding="utf-8") as fh:
+        meta = json.load(fh)
+
+    # 1. Verify PPO optimizer steps
+    ppo_res = meta.get("ppo_update_result")
+    if not ppo_res:
+        raise ValueError(f"Checkpoint at {checkpoint_dir} does not contain 'ppo_update_result' (not trained with PPO)")
+    opt_steps = ppo_res.get("optimizer_steps", 0)
+    if opt_steps <= 0:
+        raise ValueError(f"Checkpoint PPO optimizer steps must be > 0, got {opt_steps}")
+
+    # 2. Verify lineage
+    lineage = meta.get("lineage", {})
+    init_method = lineage.get("initialization_method")
+    if init_method != "vrsla_behavior_cloning":
+        raise ValueError(f"Expected lineage initialization_method = 'vrsla_behavior_cloning', got '{init_method}'")
+    teacher = lineage.get("teacher_policy")
+    if teacher != "vrsla_event_driven":
+        raise ValueError(f"Expected lineage teacher_policy = 'vrsla_event_driven', got '{teacher}'")
+
+    # 3. Verify feature schema exists
+    schema_path = checkpoint_dir / "feature_schema.json"
+    if not schema_path.exists():
+        raise FileNotFoundError(f"feature_schema.json missing in checkpoint: {schema_path}")
+
+    # 4. Verify model weights exist
+    model_path = checkpoint_dir / "model.pt"
+    if not model_path.exists():
+        raise FileNotFoundError(f"model.pt missing in checkpoint: {model_path}")
+
+    return meta
+
+
+def assert_paired_plan(specs: list[RunSpec], seed_pack: dict[str, Any], replications: int, steps: int) -> None:
+    if len(specs) != replications * 2:
+        raise AssertionError(f"Expected {replications * 2} runs, got {len(specs)}")
+
+    current_specs = [s for s in specs if s.rts_policy_mode == "current"]
+    rl_specs = [s for s in specs if s.rts_policy_mode == "rts_rl_explicit"]
+
+    if len(current_specs) != replications:
+        raise AssertionError(f"Expected {replications} current specs, got {len(current_specs)}")
+    if len(rl_specs) != replications:
+        raise AssertionError(f"Expected {replications} RTS RL specs, got {len(rl_specs)}")
+
+    current_seeds = sorted([s.rts_random_seed for s in current_specs])
+    rl_seeds = sorted([s.rts_random_seed for s in rl_specs])
+    pack_seeds = sorted([s["seed"] for s in seed_pack["seeds"]])
+    if current_seeds != pack_seeds or rl_seeds != pack_seeds:
+        raise AssertionError("Seeds do not match seed pack seeds")
+
+    for idx in range(replications):
+        if specs[idx * 2].rts_policy_mode != "current":
+            raise AssertionError(f"Expected specs[{idx * 2}] to be current, got {specs[idx * 2].rts_policy_mode}")
+        if specs[idx * 2 + 1].rts_policy_mode != "rts_rl_explicit":
+            raise AssertionError(f"Expected specs[{idx * 2 + 1}] to be rts_rl_explicit, got {specs[idx * 2 + 1].rts_policy_mode}")
+        if specs[idx * 2].rts_random_seed != specs[idx * 2 + 1].rts_random_seed:
+            raise AssertionError(f"Random seeds do not match at interleaved index {idx}")
+
+    for spec in specs:
+        if spec.ticks != steps:
+            raise AssertionError(f"Expected {steps} steps, got {spec.ticks}")
+        if spec.robot_count != 20:
+            raise AssertionError(f"Expected 20 robots, got {spec.robot_count}")
+        if spec.order_rate_per_hour != 500:
+            raise AssertionError(f"Expected 500 orders/hour, got {spec.order_rate_per_hour}")
+        if not spec.charging_enabled:
+            raise AssertionError("Charging must be enabled")
+        if spec.pps_mode != "heuristic":
+            raise AssertionError(f"Expected heuristic PPS, got {spec.pps_mode}")
+        if spec.pps_model_path is not None:
+            raise AssertionError("PPS model path must be None (disabled)")
+        if spec.kpi_schema_version != "sensitivity_full_kpi.v1":
+            raise AssertionError(f"Expected kpi_schema_version = sensitivity_full_kpi.v1, got {spec.kpi_schema_version}")
+        if spec.replication is None:
+            raise AssertionError("replication must not be None")
+        if spec.campaign_id is None:
+            raise AssertionError("campaign_id must not be None")
+        if spec.machine_id is None:
+            raise AssertionError("machine_id must not be None")
+        if spec.stage_first_requested is None:
+            raise AssertionError("stage_first_requested must not be None")
+        if spec.pps_model_sha256 != "none":
+            raise AssertionError("pps_model_sha256 must be 'none'")
+
+    for idx in range(replications):
+        spec_current = specs[idx * 2]
+        spec_rl = specs[idx * 2 + 1]
+
+        current_dict = spec_current.to_json_dict()
+        rl_dict = spec_rl.to_json_dict()
+
+        expected_diff_keys = {
+            "run_id", "runtime_root", "rts_policy_mode", "rts_rollout_enabled",
+            "rts_policy_checkpoint_dir", "rts_policy_checkpoint_id", "rts_policy_action_mode",
+            "rts_torch_threads", "rts_torch_interop_threads", "timestamp",
+            "rts_checkpoint_sha256", "policy_configuration"
+        }
+        for key in expected_diff_keys:
+            current_dict.pop(key, None)
+            rl_dict.pop(key, None)
+
+        if current_dict != rl_dict:
+            mismatches = {k: (current_dict[k], rl_dict[k]) for k in current_dict if current_dict[k] != rl_dict[k]}
+            raise AssertionError(f"Unrelated RunSpec differences detected: {mismatches}")
+
+
+def write_paired_evaluation_outputs(
+    run_root: Path,
+    seed_pack: dict[str, Any],
+    eval_config: dict[str, Any],
+    specs: list[RunSpec],
+) -> None:
+    from src.rmfs.orchestration.local_executor import SENSITIVITY_KPI_FIELDS
+    import csv
+
+    # 1. Load all worker summaries that exist and are successful
+    worker_summaries = {}
+    for spec in specs:
+        summary_path = spec.runtime_root / "worker_summary.json"
+        if summary_path.exists():
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                if summary.get("status") == "success":
+                    worker_summaries[spec.run_id] = summary
+            except Exception:
+                pass
+
+    # 2. Write seed_pack.json
+    atomic_write_json(run_root / "seed_pack.json", seed_pack)
+
+    # 3. Write eval_config.json
+    atomic_write_json(run_root / "eval_config.json", eval_config)
+
+    # 4. Write worker_specs.json
+    atomic_write_json(run_root / "worker_specs.json", [spec.to_json_dict() for spec in specs])
+
+    # Let's define the run IDs grouped by replication:
+    replications_count = seed_pack["replications"]
+
+    # 5. Write paired_replication_status.csv
+    paired_rows = []
+    for rep in range(1, replications_count + 1):
+        seed_info = seed_pack["seeds"][rep - 1]
+        seed_val = seed_info["seed"]
+
+        current_run_id = f"current_{rep:03d}"
+        rl_run_id = f"rts_rl_{rep:03d}"
+
+        current_sum = worker_summaries.get(current_run_id, {})
+        rl_sum = worker_summaries.get(rl_run_id, {})
+
+        row = {
+            "replication": rep,
+            "seed": seed_val,
+            "current_status": current_sum.get("status", "pending"),
+            "rts_rl_status": rl_sum.get("status", "pending"),
+            "current_orders_completed": current_sum.get("orders_completed"),
+            "rts_rl_orders_completed": rl_sum.get("orders_completed"),
+            "current_avg_cycle_time": current_sum.get("average_order_cycle_time"),
+            "rts_rl_avg_cycle_time": rl_sum.get("average_order_cycle_time"),
+            "current_total_energy": current_sum.get("total_energy_kj"),
+            "rts_rl_total_energy": rl_sum.get("total_energy_kj"),
+        }
+        paired_rows.append(row)
+
+    paired_csv_path = run_root / "paired_replication_status.csv"
+    if paired_rows:
+        fields = list(paired_rows[0].keys())
+        tmp_csv = paired_csv_path.with_name(f".{paired_csv_path.name}.tmp")
+        with tmp_csv.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(paired_rows)
+        tmp_csv.replace(paired_csv_path)
+
+    # 6. Write full_kpi_summary.csv and .json
+    kpi_rows = []
+    for spec in specs:
+        summary = worker_summaries.get(spec.run_id)
+        if summary:
+            kpi_row = {}
+            for field in SENSITIVITY_KPI_FIELDS:
+                kpi_row[field] = summary.get(field)
+            kpi_rows.append(kpi_row)
+
+    atomic_write_json(run_root / "full_kpi_summary.json", kpi_rows)
+    full_kpi_csv_path = run_root / "full_kpi_summary.csv"
+    if kpi_rows:
+        fields = list(kpi_rows[0].keys())
+        tmp_csv = full_kpi_csv_path.with_name(f".{full_kpi_csv_path.name}.tmp")
+        with tmp_csv.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(kpi_rows)
+        tmp_csv.replace(full_kpi_csv_path)
+
+    # 7. Write condition_summary.csv and .json
+    import statistics
+    condition_stats = {}
+    for treatment in ("current", "rts_rl_explicit"):
+        t_runs = [f"{'rts_rl' if treatment == 'rts_rl_explicit' else 'current'}_{rep:03d}" for rep in range(1, replications_count + 1)]
+        t_sums = [worker_summaries[r_id] for r_id in t_runs if r_id in worker_summaries]
+
+        stats = {"treatment": treatment, "completed_runs": len(t_sums)}
+        for metric in ("orders_completed", "average_order_cycle_time", "total_energy_kj", "stop_and_go_count", "turning_count"):
+            vals = [finite_float(s.get(metric)) for s in t_sums]
+            vals = [v for v in vals if v is not None]
+            if vals:
+                stats[f"{metric}_mean"] = statistics.mean(vals)
+                stats[f"{metric}_std"] = statistics.stdev(vals) if len(vals) > 1 else 0.0
+                stats[f"{metric}_min"] = min(vals)
+                stats[f"{metric}_max"] = max(vals)
+            else:
+                stats[f"{metric}_mean"] = None
+                stats[f"{metric}_std"] = None
+                stats[f"{metric}_min"] = None
+                stats[f"{metric}_max"] = None
+        condition_stats[treatment] = stats
+
+    atomic_write_json(run_root / "condition_summary.json", condition_stats)
+    cond_csv_path = run_root / "condition_summary.csv"
+    if condition_stats:
+        fields = list(condition_stats["current"].keys())
+        tmp_csv = cond_csv_path.with_name(f".{cond_csv_path.name}.tmp")
+        with tmp_csv.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(list(condition_stats.values()))
+        tmp_csv.replace(cond_csv_path)
+
+    # 8. Write campaign_status.json
+    completed_runs_count = len(worker_summaries)
+    failed_runs_count = 0
+    for spec in specs:
+        summary_path = spec.runtime_root / "worker_summary.json"
+        if summary_path.exists():
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                if summary.get("status") == "failure":
+                    failed_runs_count += 1
+            except Exception:
+                failed_runs_count += 1
+
+    pending_runs_count = len(specs) - completed_runs_count - failed_runs_count
+    campaign_status = {
+        "campaign_id": eval_config.get("eval_run_id"),
+        "total_runs": len(specs),
+        "completed_runs": completed_runs_count,
+        "failed_runs": failed_runs_count,
+        "pending_runs": pending_runs_count,
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    atomic_write_json(run_root / "campaign_status.json", campaign_status)
+
+    # 9. Write eval_summary.json
+    eval_summary = {
+        "status": "valid" if completed_runs_count == len(specs) and failed_runs_count == 0 else "running",
+        "eval_run_id": eval_config.get("eval_run_id"),
+        "created_at": eval_config.get("created_at"),
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        **eval_config,
+        "campaign_status": campaign_status,
+        "condition_summary": condition_stats,
+    }
+    atomic_write_json(run_root / "eval_summary.json", eval_summary)
+
+
+def run_rts_paired_evaluation(
+    *,
+    repo_root: Path,
+    checkpoint_dir: Path | None,
+    zone_ids: tuple[str, ...],
+    output_root: Path,
+    replications: int = 60,
+    seed_base: int = 42,
+    simulated_seconds: float = 10000.0,
+    robot_count: int = 20,
+    order_rate: int = 500,
+    charging_enabled: bool = True,
+    max_workers: int = 1,
+    resume: bool = False,
+    progress: bool = False,
+    dry_run: bool = False,
+    rts_torch_threads: int | None = 1,
+    rts_torch_interop_threads: int | None = 1,
+) -> dict[str, Any]:
+    from src.rmfs.experiments.evaluation.seed_pack import build_seed_pack
+    from src.rmfs.decisions.charging.config import canonical_charging_config_path
+    from src.rmfs.orchestration.local_executor import run_specs
+
+    repo_root = Path(repo_root)
+    if max_workers < 1:
+        raise ValueError("max_workers must be >= 1")
+
+    # Verify checkpoint and calculate SHA-256 hash
+    if checkpoint_dir is None:
+        raise ValueError("checkpoint_dir is required for paired evaluation")
+    checkpoint_dir = Path(checkpoint_dir).resolve()
+    meta = verify_paired_checkpoint(checkpoint_dir)
+    policy_checkpoint_id = meta.get("policy_checkpoint_id", "batch_000005")
+
+    model_path = checkpoint_dir / "model.pt"
+    import hashlib
+    digest = hashlib.sha256()
+    with model_path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            digest.update(chunk)
+    rts_checkpoint_sha256 = digest.hexdigest()
+
+    # Determine steps
+    netlogo_steps_per_run = int(round(simulated_seconds / 0.15))
+    if simulated_seconds == 10000.0:
+        netlogo_steps_per_run = 66667
+
+    # Build seed pack
+    seed_pack = build_seed_pack(
+        seed_base=seed_base,
+        replications=replications,
+        netlogo_steps_per_run=netlogo_steps_per_run,
+        purpose="paired_current_vs_rl_evaluation",
+    )
+
+    eval_run_id = f"paired_current_vs_vrsla_{replications}rep_{int(simulated_seconds)}s"
+    run_root = Path(output_root) / eval_run_id
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    branch = git_value(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
+    commit = git_value(repo_root, "rev-parse", "HEAD")
+
+    # Config dict
+    eval_config = {
+        "eval_run_id": eval_run_id,
+        "checkpoint_dir": str(checkpoint_dir),
+        "policy_checkpoint_id": policy_checkpoint_id,
+        "rts_checkpoint_sha256": rts_checkpoint_sha256,
+        "zone_ids": list(zone_ids) if zone_ids else ["auto"],
+        "seed_pack_id": seed_pack["seed_pack_id"],
+        "replications": replications,
+        "seed_base": seed_base,
+        "simulated_seconds": simulated_seconds,
+        "netlogo_steps_per_run": netlogo_steps_per_run,
+        "robot_count": robot_count,
+        "order_rate": order_rate,
+        "charging_enabled": charging_enabled,
+        "charging_config_path": str(canonical_charging_config_path()),
+        "max_workers": max_workers,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "default_lukman_allocation_path": "src/rmfs/order_generation/pod_sku.py",
+    }
+
+    # Generate the 120 interleaved run specs
+    specs = []
+    for rep in range(1, replications + 1):
+        seed_info = seed_pack["seeds"][rep - 1]
+        seed_val = seed_info["seed"]
+
+        # Current spec
+        spec_current = RunSpec(
+            run_id=f"current_{rep:03d}",
+            ticks=netlogo_steps_per_run,
+            runtime_root=run_root / "workers" / f"current_{rep:03d}",
+            repo_root=repo_root,
+            branch=branch,
+            commit=commit,
+            python_executable=sys.executable,
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            rts_policy_mode="current",
+            rts_rollout_enabled=False,
+            rts_rollout_write_disk=False,
+            rts_zone_ids=list(zone_ids) if zone_ids else ["auto"],
+            rts_seed_base=seed_base,
+            rts_random_seed=seed_val,
+            rts_policy_checkpoint_dir=None,
+            rts_policy_checkpoint_id="none",
+            rts_policy_action_mode="sample",
+            rts_policy_device="cpu",
+            rts_feature_ablation="full",
+            rts_state_capture_mode="auto",
+            rts_charging_mode="enabled" if charging_enabled else "disabled",
+            committed_next_reservations_enabled=True,
+            experiment_id=eval_run_id,
+            scenario_id=f"paired_scenario_{rep:03d}",
+            artifact_label=eval_run_id,
+            worker_id=rep,
+            rts_torch_threads=None,
+            rts_torch_interop_threads=None,
+            robot_count=robot_count,
+            pps_mode="heuristic",
+            pps_model_path=None,
+            charging_enabled=charging_enabled,
+            charging_config_path=str(canonical_charging_config_path()),
+            run_profile="training",
+            run_horizon_ticks=netlogo_steps_per_run,
+            demand_horizon_ticks=netlogo_steps_per_run + 1000,
+            demand_buffer_ticks=1000,
+            order_generation_mode="shuffled_historical_cycle",
+            full_raw_order_replay=False,
+            order_rate_per_hour=order_rate,
+            pod_location_mode="randomize_slots",
+            pod_location_seed=seed_val,
+            kpi_schema_version="sensitivity_full_kpi.v1",
+            replication=rep,
+            campaign_id=eval_run_id,
+            machine_id="local",
+            stage_first_requested=1,
+            rts_checkpoint_sha256="none",
+            pps_model_sha256="none",
+            policy_configuration="current",
+        )
+
+        # RTS RL spec
+        spec_rl = RunSpec(
+            run_id=f"rts_rl_{rep:03d}",
+            ticks=netlogo_steps_per_run,
+            runtime_root=run_root / "workers" / f"rts_rl_{rep:03d}",
+            repo_root=repo_root,
+            branch=branch,
+            commit=commit,
+            python_executable=sys.executable,
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            rts_policy_mode="rts_rl_explicit",
+            rts_rollout_enabled=True,
+            rts_rollout_write_disk=False,
+            rts_zone_ids=list(zone_ids) if zone_ids else ["auto"],
+            rts_seed_base=seed_base,
+            rts_random_seed=seed_val,
+            rts_policy_checkpoint_dir=str(checkpoint_dir),
+            rts_policy_checkpoint_id=policy_checkpoint_id,
+            rts_policy_action_mode="greedy",
+            rts_policy_device="cpu",
+            rts_feature_ablation="full",
+            rts_state_capture_mode="auto",
+            rts_charging_mode="enabled" if charging_enabled else "disabled",
+            committed_next_reservations_enabled=True,
+            experiment_id=eval_run_id,
+            scenario_id=f"paired_scenario_{rep:03d}",
+            artifact_label=eval_run_id,
+            worker_id=rep,
+            rts_torch_threads=rts_torch_threads,
+            rts_torch_interop_threads=rts_torch_interop_threads,
+            robot_count=robot_count,
+            pps_mode="heuristic",
+            pps_model_path=None,
+            charging_enabled=charging_enabled,
+            charging_config_path=str(canonical_charging_config_path()),
+            run_profile="training",
+            run_horizon_ticks=netlogo_steps_per_run,
+            demand_horizon_ticks=netlogo_steps_per_run + 1000,
+            demand_buffer_ticks=1000,
+            order_generation_mode="shuffled_historical_cycle",
+            full_raw_order_replay=False,
+            order_rate_per_hour=order_rate,
+            pod_location_mode="randomize_slots",
+            pod_location_seed=seed_val,
+            kpi_schema_version="sensitivity_full_kpi.v1",
+            replication=rep,
+            campaign_id=eval_run_id,
+            machine_id="local",
+            stage_first_requested=1,
+            rts_checkpoint_sha256=rts_checkpoint_sha256,
+            pps_model_sha256="none",
+            policy_configuration="rts_rl_explicit",
+        )
+
+        specs.append(spec_current)
+        specs.append(spec_rl)
+
+    # Enforce strict plan assertions
+    assert_paired_plan(specs, seed_pack, replications, netlogo_steps_per_run)
+
+    # Initial write of outputs
+    write_paired_evaluation_outputs(run_root, seed_pack, eval_config, specs)
+
+    if dry_run:
+        summary_result = {
+            "status": "dry_run",
+            "valid": False,
+            "eval_run_id": eval_run_id,
+            "created_at": eval_config["created_at"],
+            **eval_config,
+            "worker_count": len(specs),
+        }
+        atomic_write_json(run_root / "eval_summary.json", summary_result)
+        return summary_result
+
+    # If resume is enabled, find completed specs to skip
+    specs_to_run = []
+    skipped_count = 0
+    for spec in specs:
+        summary_path = spec.runtime_root / "worker_summary.json"
+        if resume and summary_path.exists():
+            try:
+                existing_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                if existing_summary.get("status") == "success":
+                    skipped_count += 1
+                    continue
+            except Exception:
+                pass
+        specs_to_run.append(spec)
+
+    print(f"[paired_eval] Starting campaign with {len(specs_to_run)} runs ({skipped_count} skipped/resumed)")
+
+    # Define callbacks
+    def progress_postfix_callback(completed_list) -> dict[str, Any]:
+        completed_run_ids = {item["spec"].run_id for item in completed_list if item.get("return_code") == 0}
+        current_completed = sum(1 for item in completed_list if item["spec"].rts_policy_mode == "current" and item.get("return_code") == 0)
+        rts_rl_completed = sum(1 for item in completed_list if item["spec"].rts_policy_mode == "rts_rl_explicit" and item.get("return_code") == 0)
+        
+        # Include skipped runs in completed counts for postfix display
+        for spec in specs:
+            if spec.run_id not in [item["spec"].run_id for item in completed_list]:
+                summary_path = spec.runtime_root / "worker_summary.json"
+                if summary_path.exists():
+                    try:
+                        existing = json.loads(summary_path.read_text(encoding="utf-8"))
+                        if existing.get("status") == "success":
+                            completed_run_ids.add(spec.run_id)
+                            if spec.rts_policy_mode == "current":
+                                current_completed += 1
+                            elif spec.rts_policy_mode == "rts_rl_explicit":
+                                rts_rl_completed += 1
+                    except Exception:
+                        pass
+
+        paired_completed = 0
+        for r in range(1, replications + 1):
+            if f"current_{r:03d}" in completed_run_ids and f"rts_rl_{r:03d}" in completed_run_ids:
+                paired_completed += 1
+
+        failed = sum(1 for item in completed_list if item.get("return_code", 0) != 0)
+
+        return {
+            "completed": len(completed_run_ids),
+            "current_completed": current_completed,
+            "rts_rl_completed": rts_rl_completed,
+            "paired_completed": paired_completed,
+            "failed": failed,
+        }
+
+    # Write refresh on each worker completion
+    def on_worker_completed_callback(result, completed_list):
+        write_paired_evaluation_outputs(run_root, seed_pack, eval_config, specs)
+
+    # Run!
+    failures = 0
+    results = run_specs(
+        specs_to_run,
+        max_workers=max_workers,
+        progress=progress,
+        postfix_callback=progress_postfix_callback,
+        on_worker_completed=on_worker_completed_callback,
+    )
+    for res in results:
+        if int(res.get("return_code") or 0) != 0:
+            failures += 1
+
+    # Final refresh of aggregate outputs
+    write_paired_evaluation_outputs(run_root, seed_pack, eval_config, specs)
+
+    # Reclaim bulky runtime files if debug_rollouts is False
+    # (By default debug_rollouts is false)
+    # We clean rts_rollout.jsonl and worker_stdout.log for successful runs
+    cleaned_bytes = 0
+    for spec in specs:
+        summary_path = spec.runtime_root / "worker_summary.json"
+        if summary_path.exists():
+            try:
+                sum_data = json.loads(summary_path.read_text(encoding="utf-8"))
+                if sum_data.get("status") == "success":
+                    for name in ("rts_rollout.jsonl", "worker_stdout.log"):
+                        bulky = spec.runtime_root / name
+                        if bulky.exists():
+                            cleaned_bytes += bulky.stat().st_size
+                            bulky.unlink()
+            except Exception:
+                pass
+    if cleaned_bytes > 0:
+        print(f"[paired_eval] Cleaned {cleaned_bytes / 1_000_000:.2f} MB of temporary rollout/log files")
+
+    # Load final eval_summary
+    with (run_root / "eval_summary.json").open("r", encoding="utf-8") as fh:
+        final_summary = json.load(fh)
+    return final_summary
+
+

@@ -1005,7 +1005,13 @@ def _make_controller_progress_bar(enabled: bool, total_steps: int):
     )
 
 
-def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
+def run_specs(
+    specs: list[RunSpec],
+    max_workers: int,
+    progress: bool = False,
+    postfix_callback: getattr(sys.modules[__name__], "Callable", None) | None = None,
+    on_worker_completed: getattr(sys.modules[__name__], "Callable", None) | None = None,
+):
     if max_workers < 1:
         raise ValueError("max_workers must be >= 1")
     if not specs:
@@ -1056,7 +1062,13 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
                     continue
                 item["stdout"].close()
                 item["stderr"].close()
-                completed.append({"spec": item["spec"], "return_code": return_code})
+                res = {"spec": item["spec"], "return_code": return_code}
+                completed.append(res)
+                if on_worker_completed is not None:
+                    try:
+                        on_worker_completed(res, completed)
+                    except Exception as exc:
+                        print(f"warning: on_worker_completed callback failed: {exc}", file=sys.stderr)
             processes = still_running
 
             if progress_bar is not None:
@@ -1064,10 +1076,18 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
                 if current_progress > progress_last:
                     progress_bar.update(current_progress - progress_last)
                     progress_last = current_progress
+                postfix = {
+                    "running": len(processes),
+                    "pending": len(pending),
+                    "completed": len(completed),
+                }
+                if postfix_callback is not None:
+                    try:
+                        postfix.update(postfix_callback(completed))
+                    except Exception:
+                        pass
                 progress_bar.set_postfix(
-                    running=len(processes),
-                    pending=len(pending),
-                    completed=len(completed),
+                    **postfix,
                     refresh=False,
                 )
                 progress_bar.refresh()
