@@ -721,7 +721,7 @@ def run_rts_paired_evaluation(
         raise ValueError("checkpoint_dir is required for paired evaluation")
     checkpoint_dir = Path(checkpoint_dir).resolve()
     meta = verify_paired_checkpoint(checkpoint_dir)
-    policy_checkpoint_id = meta.get("policy_checkpoint_id", "batch_000005")
+    policy_checkpoint_id = meta.get("policy_checkpoint_id", checkpoint_dir.parent.name)
 
     model_path = checkpoint_dir / "model.pt"
     import hashlib

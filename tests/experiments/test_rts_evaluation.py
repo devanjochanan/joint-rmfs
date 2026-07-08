@@ -11,7 +11,7 @@ from src.rmfs.orchestration.run_spec import RunSpec
 
 def test_paired_spec_generation_dry_run(tmp_path):
     repo_root = Path(__file__).resolve().parents[2]
-    checkpoint_dir = repo_root / "data/models/rts/batch_000005/checkpoint"
+    checkpoint_dir = repo_root / "data/models/rts/batch_000014/checkpoint"
 
     # Run in dry-run mode
     summary = run_rts_paired_evaluation(
