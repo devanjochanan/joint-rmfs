@@ -96,18 +96,4 @@ scripts/validation/__pycache__/
 create_dummy_pps_model.py
 eval_output.log
 
-# Allow tracking the campaign definition manifest, shards, and launchers
-!data/runtime/distributed_sensitivity/
-!data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/
-!data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/manifest.json
-!data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/shards/
-!data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/shards/*.json
-!data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/launchers/
-!data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/launchers/*.ps1
-!data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/launchers/*.sh
 
-# Explicitly ignore run scratch files, outcomes, summaries inside this folder
-data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/**/runs/
-data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/**/machine_summary.json
-data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/**/worker_summary.json
-data/runtime/distributed_sensitivity/sensitivity_full_kpi_v2_e7c1a5bb20e3/**/run_outcomes.csv

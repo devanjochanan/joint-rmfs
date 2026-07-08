@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts.experiments.capacity_study_order_rate import (  # noqa: E402
     DEFAULT_CHARGING_CONFIG_PATH,
     DEFAULT_PPS_MODEL_PATH,
+    DEFAULT_RTS_CHECKPOINT_DIR,
     ORDER_RATES,
     PICKER_COUNT,
     REPLENISHMENT_COUNT,
@@ -309,6 +310,8 @@ def resolve_rts_checkpoint(
     explicit_checkpoint_dir: str | None = None,
     training_artifact: str | None = None,
 ) -> tuple[Path, Path, dict[str, Any], Path | None]:
+    if explicit_checkpoint_dir is None and training_artifact is None:
+        explicit_checkpoint_dir = str(DEFAULT_RTS_CHECKPOINT_DIR)
     if explicit_checkpoint_dir:
         checkpoint_dir = Path(explicit_checkpoint_dir)
         if not checkpoint_dir.is_absolute():
@@ -348,44 +351,127 @@ def pps_observation_schema(model: object) -> dict[str, Any]:
     }
 
 
+def validate_assets_strict(
+    repo_root: Path,
+    pps_relative_path: str,
+    rts_checkpoint_relative_dir: str,
+    expected_pps_sha256: str | None = None,
+    expected_rts_model_sha256: str | None = None,
+    expected_rts_metadata_sha256: str | None = None,
+    expected_rts_feature_schema_sha256: str | None = None,
+    expected_rts_checkpoint_id: str | None = None,
+) -> None:
+    # 1. PPS validation
+    pps_path = repo_root / pps_relative_path
+    if not pps_path.exists():
+        raise FileNotFoundError(f"PPS model path does not exist: {pps_path}")
+    pps_sha = sha256_file(pps_path)
+    if expected_pps_sha256 and pps_sha != expected_pps_sha256:
+        raise RuntimeError(f"PPS model hash mismatch: got {pps_sha}, expected {expected_pps_sha256}")
+    
+    # Strictly load and verify PPS
+    load_pps_rl_model_strict(pps_path, expected_sha256=pps_sha)
+    if PPS_RL_NUM_STATIONS != PICKER_COUNT:
+        raise RuntimeError(f"PPS model expects {PPS_RL_NUM_STATIONS} picking stations, campaign uses {PICKER_COUNT}")
+
+    # 2. RTS validation
+    checkpoint_dir = repo_root / rts_checkpoint_relative_dir
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(f"RTS checkpoint dir does not exist: {checkpoint_dir}")
+    
+    for name in ("model.pt", "metadata.json", "feature_schema.json"):
+        if not (checkpoint_dir / name).exists():
+            raise FileNotFoundError(f"missing RTS checkpoint file: {checkpoint_dir / name}")
+
+    # Check RTS hashes
+    model_sha = sha256_file(checkpoint_dir / "model.pt")
+    metadata_sha = sha256_file(checkpoint_dir / "metadata.json")
+    schema_sha = sha256_file(checkpoint_dir / "feature_schema.json")
+
+    if expected_rts_model_sha256 and model_sha != expected_rts_model_sha256:
+        raise RuntimeError(f"RTS model.pt hash mismatch: got {model_sha}, expected {expected_rts_model_sha256}")
+    if expected_rts_metadata_sha256 and metadata_sha != expected_rts_metadata_sha256:
+        raise RuntimeError(f"RTS metadata.json hash mismatch: got {metadata_sha}, expected {expected_rts_metadata_sha256}")
+    if expected_rts_feature_schema_sha256 and schema_sha != expected_rts_feature_schema_sha256:
+        raise RuntimeError(f"RTS feature_schema.json hash mismatch: got {schema_sha}, expected {expected_rts_feature_schema_sha256}")
+
+    # Load RTS policy to verify feature schema loads successfully
+    loaded = load_policy_from_checkpoint(checkpoint_dir, device="cpu")
+    checkpoint_id = resolve_policy_checkpoint_id(checkpoint_dir)
+    if loaded.policy_checkpoint_id != checkpoint_id:
+        raise RuntimeError(f"RTS checkpoint ID mismatch after strict load: loaded={loaded.policy_checkpoint_id}, dir={checkpoint_id}")
+    if expected_rts_checkpoint_id and checkpoint_id != expected_rts_checkpoint_id:
+        raise RuntimeError(f"RTS checkpoint ID mismatch: got {checkpoint_id}, expected {expected_rts_checkpoint_id}")
+
+    # Verify PPO status (real PPO update, not behavior cloning only)
+    metadata = read_json(checkpoint_dir / "metadata.json")
+    ppo_update = metadata.get("ppo_update_result", {}) or {}
+    if not ppo_update:
+        raise RuntimeError(f"RTS checkpoint metadata has no PPO update result: {checkpoint_dir / 'metadata.json'}")
+    if "behavior_cloning" in ppo_update:
+        raise RuntimeError(f"RTS checkpoint is behavior_cloning-only, not a real PPO update: {checkpoint_dir}")
+    if "optimizer_steps" not in ppo_update:
+        raise RuntimeError(f"RTS checkpoint has no optimizer steps in PPO update: {checkpoint_dir}")
+
+    # Verify VRSLA lineage
+    lineage = _lineage_from_metadata(metadata)
+    if not _is_required_vrsla_lineage(lineage):
+        training_root = checkpoint_dir.parents[1]
+        try:
+            lineage, source = verify_rts_lineage(checkpoint_dir, training_root)
+        except Exception as exc:
+            raise RuntimeError(f"RTS checkpoint lineage is not verified as VRSLA teacher initialized: {exc}") from exc
+        if not _is_required_vrsla_lineage(lineage):
+            raise RuntimeError(f"RTS checkpoint lineage is not verified as VRSLA teacher initialized: {checkpoint_dir}")
+
+
 def resolve_assets(args: argparse.Namespace) -> AssetBundle:
     pps_path = Path(args.pps_model_path or DEFAULT_PPS_MODEL_PATH)
     if not pps_path.is_absolute():
         pps_path = REPO_ROOT / pps_path
-    pps_sha = sha256_file(pps_path)
-    pps_model = load_pps_rl_model_strict(pps_path, expected_sha256=pps_sha)
-    if PPS_RL_NUM_STATIONS != PICKER_COUNT:
-        raise RuntimeError(f"PPS model expects {PPS_RL_NUM_STATIONS} picking stations, campaign uses {PICKER_COUNT}")
-
+    
     checkpoint_dir, training_root, lineage, source = resolve_rts_checkpoint(
         explicit_checkpoint_dir=args.rts_checkpoint_dir,
         training_artifact=args.rts_training_artifact,
     )
-    for name in ("model.pt", "metadata.json", "feature_schema.json"):
-        if not (checkpoint_dir / name).exists():
-            raise FileNotFoundError(f"missing RTS checkpoint file: {checkpoint_dir / name}")
-    loaded = load_policy_from_checkpoint(checkpoint_dir, device="cpu")
-    checkpoint_id = resolve_policy_checkpoint_id(checkpoint_dir)
-    if loaded.policy_checkpoint_id != checkpoint_id:
-        raise RuntimeError("RTS checkpoint ID mismatch after strict load")
 
     charging_path = Path(args.charging_config_path or DEFAULT_CHARGING_CONFIG_PATH)
     if not charging_path.is_absolute():
         charging_path = REPO_ROOT / charging_path
+
+    # Perform strict validation of canonical or overridden assets
+    validate_assets_strict(
+        repo_root=REPO_ROOT,
+        pps_relative_path=relative_to_repo(pps_path),
+        rts_checkpoint_relative_dir=relative_to_repo(checkpoint_dir),
+    )
+
+    # Re-read metadata to get lineage (in case it was resolved directly or verified via trace)
+    metadata = read_json(checkpoint_dir / "metadata.json")
+    final_lineage = _lineage_from_metadata(metadata)
+    if not _is_required_vrsla_lineage(final_lineage):
+        final_lineage, final_source = verify_rts_lineage(checkpoint_dir, training_root)
+    else:
+        final_source = checkpoint_dir
+
+    latest_rel_path = ""
+    if (training_root / "latest.json").exists():
+        latest_rel_path = relative_to_repo(training_root / "latest.json")
+
     return AssetBundle(
         pps_model_relative_path=relative_to_repo(pps_path),
-        pps_model_sha256=pps_sha,
-        pps_observation_schema=pps_observation_schema(pps_model),
+        pps_model_sha256=sha256_file(pps_path),
+        pps_observation_schema=pps_observation_schema(load_pps_rl_model_strict(pps_path)),
         rts_checkpoint_relative_dir=relative_to_repo(checkpoint_dir),
-        rts_checkpoint_id=checkpoint_id,
+        rts_checkpoint_id=resolve_policy_checkpoint_id(checkpoint_dir),
         rts_model_sha256=sha256_file(checkpoint_dir / "model.pt"),
         rts_metadata_sha256=sha256_file(checkpoint_dir / "metadata.json"),
         rts_feature_schema_sha256=sha256_file(checkpoint_dir / "feature_schema.json"),
         rts_feature_schema_id=load_feature_schema_id(checkpoint_dir / "feature_schema.json"),
         rts_training_artifact=training_root.name,
-        rts_training_latest_relative_path=relative_to_repo(training_root / "latest.json"),
-        rts_lineage=lineage,
-        rts_lineage_source_relative_dir=relative_to_repo(source) if source is not None else None,
+        rts_training_latest_relative_path=latest_rel_path,
+        rts_lineage=final_lineage,
+        rts_lineage_source_relative_dir=relative_to_repo(final_source) if final_source is not None else None,
         charging_config_relative_path=relative_to_repo(charging_path),
         charging_config_sha256=sha256_file(charging_path),
     )
@@ -586,6 +672,33 @@ def add_run_identity(
             "pps_model_sha256": assets.pps_model_sha256,
         },
     }
+
+
+def generate_campaign_id(
+    machines: list[Machine],
+    assets: AssetBundle,
+    rl_overhead_multiplier: float,
+) -> str:
+    config = {
+        "schema_version": CAMPAIGN_SCHEMA_VERSION,
+        "policy_configurations": list(POLICY_CONFIGURATIONS),
+        "robot_counts": list(ROBOT_COUNTS),
+        "order_rates": list(ORDER_RATES),
+        "picker_count": PICKER_COUNT,
+        "replenishment_count": REPLENISHMENT_COUNT,
+        "simulated_seconds": SIMULATED_SECONDS,
+        "seed_base": SEED_BASE_MINUS_ONE,
+        "stage_quotas": STAGE_QUOTAS,
+        "rl_overhead_multiplier": rl_overhead_multiplier,
+        "machines": [asdict(m) for m in sorted(machines, key=lambda m: m.machine_id)],
+        "pps_model_sha256": assets.pps_model_sha256,
+        "rts_model_sha256": assets.rts_model_sha256,
+        "rts_metadata_sha256": assets.rts_metadata_sha256,
+        "rts_feature_schema_sha256": assets.rts_feature_schema_sha256,
+    }
+    config_str = json.dumps(config, sort_keys=True)
+    config_hash = hashlib.sha256(config_str.encode("utf-8")).hexdigest()[:12]
+    return f"sensitivity_full_kpi_v2_{config_hash}"
 
 
 def build_campaign_plan(
@@ -848,20 +961,16 @@ def local_asset_path(repo_root: Path, relative_path: str) -> Path:
 
 def validate_local_assets(manifest: dict[str, Any], repo_root: Path) -> None:
     assets = manifest["assets"]
-    pps_path = local_asset_path(repo_root, assets["pps_model_relative_path"])
-    if sha256_file(pps_path) != assets["pps_model_sha256"]:
-        raise RuntimeError(f"PPS model hash mismatch on this machine: {pps_path}")
-    load_pps_rl_model_strict(pps_path, expected_sha256=assets["pps_model_sha256"])
-    checkpoint_dir = local_asset_path(repo_root, assets["rts_checkpoint_relative_dir"])
-    if sha256_file(checkpoint_dir / "model.pt") != assets["rts_model_sha256"]:
-        raise RuntimeError(f"RTS model hash mismatch on this machine: {checkpoint_dir}")
-    if sha256_file(checkpoint_dir / "metadata.json") != assets["rts_metadata_sha256"]:
-        raise RuntimeError(f"RTS metadata hash mismatch on this machine: {checkpoint_dir}")
-    if sha256_file(checkpoint_dir / "feature_schema.json") != assets["rts_feature_schema_sha256"]:
-        raise RuntimeError(f"RTS feature schema hash mismatch on this machine: {checkpoint_dir}")
-    loaded = load_policy_from_checkpoint(checkpoint_dir, device="cpu")
-    if loaded.policy_checkpoint_id != assets["rts_checkpoint_id"]:
-        raise RuntimeError("RTS checkpoint ID mismatch on this machine")
+    validate_assets_strict(
+        repo_root=repo_root,
+        pps_relative_path=assets["pps_model_relative_path"],
+        rts_checkpoint_relative_dir=assets["rts_checkpoint_relative_dir"],
+        expected_pps_sha256=assets["pps_model_sha256"],
+        expected_rts_model_sha256=assets["rts_model_sha256"],
+        expected_rts_metadata_sha256=assets["rts_metadata_sha256"],
+        expected_rts_feature_schema_sha256=assets["rts_feature_schema_sha256"],
+        expected_rts_checkpoint_id=assets["rts_checkpoint_id"],
+    )
 
 
 def condition_runtime_root(repo_root: Path, manifest: dict[str, Any], machine_id: str, run_id: str) -> Path:
@@ -1127,6 +1236,7 @@ def build_parser() -> argparse.ArgumentParser:
         "By default these regenerable files are reclaimed after each stage since runs are "
         "reproducible from their pinned seed; result JSON summaries are always kept.",
     )
+    parser.add_argument("--validate-only", action="store_true", default=False)
     return parser
 
 
@@ -1138,10 +1248,138 @@ def main(argv: Iterable[str] | None = None) -> int:
         path = rebalance_future_stages(manifest_path_from_arg(args.manifest))
         print(f"[sensitivity] wrote rebalance preview: {path}")
         return 0
+
+    # Auto-generation or validation when manifest is omitted (for execute or validate-only)
+    if (args.run_continuously or args.stage or args.validate_only) and not args.manifest:
+        machines = default_machines(REPO_ROOT)
+        assets = resolve_assets(args)
+        campaign_id = generate_campaign_id(machines, assets, float(args.rl_overhead_multiplier))
+        campaign_dir = REPO_ROOT / OUTPUT_ROOT_RELATIVE / campaign_id
+        manifest_path = campaign_dir / "manifest.json"
+        
+        new_manifest = build_campaign_plan(
+            campaign_id=campaign_id,
+            machines=machines,
+            assets=assets,
+            rl_overhead_multiplier=float(args.rl_overhead_multiplier),
+        )
+        
+        if manifest_path.exists():
+            # Check for stale plan: verify configurations and hashes match
+            try:
+                existing_manifest = read_json(manifest_path)
+                mismatches = []
+                if existing_manifest.get("campaign_id") != campaign_id:
+                    mismatches.append(f"campaign_id mismatch: existing={existing_manifest.get('campaign_id')}, expected={campaign_id}")
+                
+                # Check asset hashes
+                for key in ("pps_model_sha256", "rts_model_sha256", "rts_metadata_sha256", "rts_feature_schema_sha256", "charging_config_sha256"):
+                    existing_hash = existing_manifest.get("assets", {}).get(key)
+                    new_hash = asdict(assets).get(key)
+                    if existing_hash != new_hash:
+                        mismatches.append(f"asset hash mismatch for {key}: existing={existing_hash}, expected={new_hash}")
+                
+                # Check machines
+                existing_machines = existing_manifest.get("machines", [])
+                new_machines = [asdict(m) for m in machines]
+                if sorted(existing_machines, key=lambda x: x["machine_id"]) != sorted(new_machines, key=lambda x: x["machine_id"]):
+                     mismatches.append("machines configuration mismatch")
+                     
+                # Check runs
+                if len(existing_manifest.get("runs", [])) != len(new_manifest["runs"]):
+                    mismatches.append(f"runs count mismatch: existing={len(existing_manifest.get('runs', []))}, expected={len(new_manifest['runs'])}")
+                
+                if mismatches:
+                    raise RuntimeError(
+                        f"Existing campaign plan at {manifest_path} is stale or mismatched:\n" + 
+                        "\n".join(f" - {m}" for m in mismatches)
+                    )
+                print(f"[sensitivity] Reusing matched campaign plan: {manifest_path}")
+            except Exception as exc:
+                raise RuntimeError(f"Plan validation failed: {exc}") from exc
+        else:
+            if not args.validate_only:
+                print(f"[sensitivity] Materializing new local campaign plan under: {campaign_dir}")
+                write_campaign_files(new_manifest, dry_run=False)
+            else:
+                print(f"[sensitivity] Validating in-memory campaign plan (does not exist on disk).")
+                
+        args.manifest = str(manifest_path.relative_to(REPO_ROOT))
+
+    if args.validate_only:
+        print("[sensitivity] Running validation only...")
+        # Get the manifest
+        manifest_path = manifest_path_from_arg(args.manifest)
+        if manifest_path.exists():
+            manifest = read_json(manifest_path)
+        else:
+            machines = default_machines(REPO_ROOT)
+            assets = resolve_assets(args)
+            campaign_id = generate_campaign_id(machines, assets, float(args.rl_overhead_multiplier))
+            manifest = build_campaign_plan(
+                campaign_id=campaign_id,
+                machines=machines,
+                assets=assets,
+                rl_overhead_multiplier=float(args.rl_overhead_multiplier),
+            )
+            
+        # 1. strictly load canonical assets
+        validate_local_assets(manifest, REPO_ROOT)
+        
+        # 2. Check all 1,500 unique identities
+        runs = manifest["runs"]
+        if len(runs) != 1500:
+            raise AssertionError(f"Expected 1500 runs, got {len(runs)}")
+            
+        run_ids = [run["run_id"] for run in runs]
+        condition_keys = [run["condition_key"] for run in runs]
+        if len(set(run_ids)) != 1500:
+            raise AssertionError(f"Duplicate run IDs found, unique count: {len(set(run_ids))}")
+        if len(set(condition_keys)) != 1500:
+            raise AssertionError(f"Duplicate condition keys found, unique count: {len(set(condition_keys))}")
+            
+        # 3. Check stage quotas and seeds
+        expected_stage_counts = {"1": 30, "2": 38, "3": 532, "4": 900}
+        actual_stage_counts = manifest["assertions"]["stage_new_runs"]
+        if actual_stage_counts != expected_stage_counts:
+            raise AssertionError(f"Stage new runs count mismatch: expected {expected_stage_counts}, got {actual_stage_counts}")
+            
+        expected_quotas = {str(stage): STAGE_QUOTAS[stage] for stage in (1, 2, 3, 4)}
+        actual_allocations = manifest["assertions"]["stage_allocations"]
+        if actual_allocations != expected_quotas:
+            raise AssertionError(f"Stage quotas mismatch: expected {expected_quotas}, got {actual_allocations}")
+            
+        # Verify seeds
+        for replication in (1, 20, 50):
+            expected_seed = seed_for_replication(replication)
+            for run in runs:
+                if run["replication"] == replication:
+                    if run["seed"] != expected_seed:
+                        raise AssertionError(f"Seed mismatch for rep {replication}: expected {expected_seed}, got {run['seed']}")
+                        
+        # 4. Construct every RunSpec
+        machines = default_machines(REPO_ROOT)
+        machine_by_id = {m.machine_id: m for m in machines}
+        for run in runs:
+            m_id = run["machine_id"]
+            if m_id not in machine_by_id:
+                raise AssertionError(f"Unknown machine_id {m_id} in run spec")
+            machine = machine_by_id[m_id]
+            spec = build_run_spec_from_condition(run, manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+            
+            # 5. Confirm no run references data/runtime/rts_training
+            spec_dict = spec.to_json_dict()
+            for key, val in spec_dict.items():
+                if isinstance(val, str) and "data/runtime/rts_training" in val:
+                    raise AssertionError(f"RunSpec {run['run_id']} has key '{key}' referencing runtime training: {val}")
+        
+        print("[sensitivity] Validation successful! All checks passed.")
+        return 0
+
     if args.prepare_campaign:
         machines = default_machines(REPO_ROOT)
         assets = resolve_assets(args)
-        campaign_id = f"sensitivity_full_kpi_v2_{assets.rts_model_sha256[:12]}"
+        campaign_id = generate_campaign_id(machines, assets, float(args.rl_overhead_multiplier))
         manifest = build_campaign_plan(
             campaign_id=campaign_id,
             machines=machines,
@@ -1156,6 +1394,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "assertions": manifest["assertions"],
         }, indent=2, sort_keys=True))
         return 0
+
     if args.run_continuously or args.stage:
         if not args.manifest:
             raise SystemExit("execution requires --manifest")
@@ -1170,7 +1409,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             progress=bool(args.progress),
             keep_run_artifacts=bool(args.keep_run_artifacts),
         )
-    raise SystemExit("choose --prepare-campaign, --run-continuously, --stage, or --rebalance-future-stages")
+        
+    raise SystemExit("choose --prepare-campaign, --run-continuously, --stage, --validate-only, or --rebalance-future-stages")
 
 
 if __name__ == "__main__":

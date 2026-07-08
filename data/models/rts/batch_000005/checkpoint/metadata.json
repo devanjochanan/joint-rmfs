@@ -1,16 +1,16 @@
 {
-  "batch_id": 10,
-  "policy_checkpoint_id": "batch_000010",
+  "batch_id": 5,
+  "policy_checkpoint_id": "batch_000005",
   "training_config": {
-    "artifact_label": "dewa_rts_v7_vrsla_teacher_10000s_8w_10b_seed42",
+    "artifact_label": "dewa_rts_v6_vrsla_ppo_10000s_8w_30b_seed42",
     "output_root": "/home/dewan/Project Ta/Fresh Start Structure V1/Rika's Version/data/runtime/rts_training",
     "seed": 42,
-    "learning_rate": 0.0001,
+    "learning_rate": 0.0003,
     "gamma": 0.99,
     "gae_lambda": 0.95,
     "clip_epsilon": 0.1,
     "value_loss_coef": 0.5,
-    "entropy_coef": 0.01,
+    "entropy_coef": 0.05,
     "ppo_epochs": 4,
     "minibatch_size": 64,
     "max_grad_norm": 1.0,
@@ -28,29 +28,71 @@
     "checkpoint_every_batch": true,
     "keep_all_batch_checkpoints": true,
     "use_latest_only_for_resume": true,
-    "tensorboard_enabled": false,
+    "tensorboard_enabled": true,
     "rts_torch_threads": null,
     "rts_torch_interop_threads": null
   },
   "dataset_summary": {
-    "teacher_row_count": 69241,
-    "trainable_step_count": 0,
-    "avg_reward": 0.0,
-    "teacher_batch_count": 10,
-    "supervised_target": "teacher_action_index"
+    "decision_count": 5838,
+    "outcome_count": 11614,
+    "completed_paper_cycle_count": 4695,
+    "pending_paper_cycle_count": 5776,
+    "pending_count": 5776,
+    "censored_paper_cycle_count": 1143,
+    "censored_count": 1143,
+    "censored_count_by_reason": {
+      "censored_no_next_task": 1058,
+      "censored_maximum_horizon": 85
+    },
+    "rejected_count_by_reason": {},
+    "trainable_step_count": 4695,
+    "completion_rate": 0.8042137718396711,
+    "censor_rate": 0.19578622816032887,
+    "trainable_rate": 0.8042137718396711,
+    "feature_ablation": "full",
+    "avg_reward": -0.9970577734650786,
+    "reward_mean": -0.9970577734650786,
+    "reward_std": 0.25756038544505394,
+    "reward_min": -3.503342884426404,
+    "reward_max": -0.4317096466100151,
+    "reward_mode": "cold_start_paper_cycle_duration",
+    "reward_horizon": "paper_cycle_duration",
+    "reward_reference_required": false,
+    "cycle_reference_enabled": false,
+    "alpha_enabled": false,
+    "reward_time_scale": 78.52499999992847,
+    "reward_time_scale_source": "batch_000001_valid_cycles",
+    "reward_valid_cycle_count": 5044,
+    "rejected_duplicate_decision_count": 0,
+    "rejected_duplicate_outcome_count": 0,
+    "rejected_missing_outcome_count": 0,
+    "rejected_missing_completed_paper_cycle_count": 1143,
+    "rejected_reward_uncomputed_count": 0,
+    "rejected_non_on_policy_count": 0,
+    "rejected_checkpoint_mismatch_count": 0,
+    "rejected_missing_old_log_prob_count": 0,
+    "rejected_missing_old_value_count": 0,
+    "rejected_invalid_selected_action_count": 0,
+    "rejected_missing_state_count": 0,
+    "rejected_minimal_capture_count": 0,
+    "rejected_nontrainable_capture_count": 0,
+    "rejected_feature_error_count": 0,
+    "rejected_feature_schema_mismatch_count": 0,
+    "rejected_feature_ablation_mismatch_count": 0,
+    "rejected_action_mask_dimension_count": 0,
+    "rejected_state_contract_count": 0,
+    "rejected_timebase_mismatch_count": 0,
+    "rejected_runtime_invariant_count": 0,
+    "rejected_duplicate_trainable_outcome_count": 0
   },
   "ppo_update_result": {
-    "behavior_cloning": {
-      "epochs_completed": 50,
-      "best_epoch": 50,
-      "train_loss_initial": 3.0367031212712927,
-      "train_loss_final": 1.522742892413598,
-      "validation_loss_best": 1.5495115317796406,
-      "overall_action_agreement": 0.4674831386028509,
-      "zone_agreement": 0.475195332245346,
-      "branch_agreement": 0.9845178434742421,
-      "invalid_action_rate": 0.0
-    }
+    "optimizer_steps": 296,
+    "total_loss_mean": -0.023303055015669483,
+    "policy_loss_mean": 0.01675426139342095,
+    "value_loss_mean": 0.0905111877788865,
+    "entropy_mean": 1.7062581801736676,
+    "approx_kl_mean": 0.004183278875299604,
+    "clip_fraction_mean": 0.21706769615411758
   },
   "feature_schema": {
     "action_feature_names": [
@@ -120,17 +162,26 @@
   },
   "optimizer_state_fingerprint": {
     "schema_version": "rts_optimizer_fingerprint.v1",
-    "state_parameter_count": 0,
-    "moment_tensor_count": 0,
-    "min_step": 0.0,
-    "max_step": 0.0,
+    "state_parameter_count": 16,
+    "moment_tensor_count": 32,
+    "min_step": 1576.0,
+    "max_step": 1576.0,
     "learning_rates": [
       0.0001
     ],
-    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    "sha256": "0d2996e43b5bdb0aa07f514ab2da2e492851ff6d44681745f62344663a0c0ba2"
   },
   "cycle_reference_path": null,
-  "reward_normalizer": null,
+  "reward_normalizer": {
+    "reward_mode": "cold_start_paper_cycle_duration",
+    "reward_horizon": "paper_cycle_duration",
+    "reward_reference_required": false,
+    "cycle_reference_enabled": false,
+    "alpha_enabled": false,
+    "reward_time_scale": 78.52499999992847,
+    "reward_time_scale_source": "batch_000001_valid_cycles",
+    "reward_valid_cycle_count": 5044
+  },
   "lineage": {
     "initialization_method": "vrsla_behavior_cloning",
     "teacher_policy": "vrsla_event_driven",
@@ -142,28 +193,11 @@
     "pod_velocity_score_cache_identity": "a84038abc057d7b5",
     "historical_source_hash": "b3a8e1c89537db33",
     "pod_sku_allocation_identity": "8a60421bca6d1c1b",
-    "slot_score_cache_identity": "b9245ea987c07583"
-  },
-  "initialization_method": "vrsla_behavior_cloning",
-  "teacher_policy": "vrsla_event_driven",
-  "teacher_batch_count": 10,
-  "pod_velocity_semantics": "distinct_order_union",
-  "slot_score_semantics": "directed_loaded_cycle_distance",
-  "replenishment_teacher_rule": "seeded_50_50_when_both_masked_valid",
-  "critic_pretrained": false,
-  "behavior_cloning_result": {
-    "epochs_completed": 50,
-    "best_epoch": 50,
-    "train_loss_initial": 3.0367031212712927,
-    "train_loss_final": 1.522742892413598,
-    "validation_loss_best": 1.5495115317796406,
-    "overall_action_agreement": 0.4674831386028509,
-    "zone_agreement": 0.475195332245346,
-    "branch_agreement": 0.9845178434742421,
-    "invalid_action_rate": 0.0
-  },
-  "pod_velocity_score_cache_identity": "a84038abc057d7b5",
-  "historical_source_hash": "b3a8e1c89537db33",
-  "pod_sku_allocation_identity": "8a60421bca6d1c1b",
-  "slot_score_cache_identity": "b9245ea987c07583"
+    "slot_score_cache_identity": "b9245ea987c07583",
+    "lineage_trace": {
+      "selected_training_artifact": "dewa_rts_v6_vrsla_ppo_10000s_8w_30b_seed42",
+      "first_ppo_checkpoint_predecessor": "batch_000010",
+      "source_checkpoint_dir": "data/runtime/rts_training/dewa_rts_v7_vrsla_teacher_10000s_8w_10b_seed42/batch_000010/checkpoint"
+    }
+  }
 }
