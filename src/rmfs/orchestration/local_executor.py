@@ -111,6 +111,53 @@ def expected_worker_files(detail_db: bool = False) -> list[str]:
     return files
 
 
+# Per-run simulation scratch that is fully reproducible from a run's pinned seed.
+# Reclaimed after a run succeeds (and after any expected-file validation); result
+# files (worker_summary.json, run_spec.json, rts_rollout_summary.json) are kept.
+RECLAIMABLE_RUN_ARTIFACTS = (
+    "netlogo.state",
+    "warehouse.db",
+    "assign_order.csv",
+    "generated_order.csv",
+    "generated_database_order.csv",
+    "pod_info.csv",
+    "skus_data.csv",
+    "sorted_skus_data.csv",
+    "worker_stdout.log",
+    "worker_stderr.log",
+)
+
+
+def reclaim_completed_run_artifacts(run_root: Path) -> int:
+    """Delete regenerable simulation scratch from a successful run, returning bytes freed.
+
+    Keeps result files needed for aggregation and strict resume
+    (worker_summary.json, run_spec.json, rts_rollout_summary.json). Failed or
+    unfinished runs are left fully intact for debugging. Idempotent: already
+    missing files are ignored, so a resumed run re-cleans without error.
+    """
+    run_root = Path(run_root)
+    summary_path = run_root / "worker_summary.json"
+    if not summary_path.exists():
+        return 0
+    try:
+        with summary_path.open() as fh:
+            summary = json.load(fh)
+    except Exception:
+        return 0
+    if summary.get("status") != "success":
+        return 0
+    freed = 0
+    for name in RECLAIMABLE_RUN_ARTIFACTS:
+        artifact = run_root / name
+        try:
+            freed += artifact.stat().st_size
+        except OSError:
+            continue
+        artifact.unlink(missing_ok=True)
+    return freed
+
+
 def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
     pps_mode = normalize_pps_mode(spec.pps_mode)
     env = {
@@ -1322,13 +1369,16 @@ def run_controller(
         for result in worker_results
         if result["return_code"] != 0 or result["summary"].get("status") != "success"
     ]
-    cleanup_eligible_workers = []
+    reclaimed_workers = []
+    reclaimed_run_artifact_bytes = 0
     if not keep_runtime_artifacts:
         for result in worker_results:
             if result["return_code"] == 0 and result["summary"].get("status") == "success":
-                cleanup_marker = Path(result["runtime_files"]["state_file"]).parent / ".rmfs_cleanup_eligible"
-                cleanup_marker.write_text("successful worker; eligible for cleanup\n", encoding="utf-8")
-                cleanup_eligible_workers.append(result["run_id"])
+                run_root = Path(result["runtime_files"]["state_file"]).parent
+                freed = reclaim_completed_run_artifacts(run_root)
+                if freed > 0:
+                    reclaimed_run_artifact_bytes += freed
+                    reclaimed_workers.append(result["run_id"])
 
     controller_status = "success"
     failure_reasons = []
@@ -1414,7 +1464,8 @@ def run_controller(
         "detail_db": detail_db,
         "timing": timing,
         "worker_status_cadence": worker_status_cadence,
-        "cleanup_eligible_workers": cleanup_eligible_workers,
+        "reclaimed_workers": reclaimed_workers,
+        "reclaimed_run_artifact_bytes": reclaimed_run_artifact_bytes,
     }
     write_json(output_root / "controller_summary.json", summary)
 

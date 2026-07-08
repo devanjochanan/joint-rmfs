@@ -41,6 +41,7 @@ from src.rmfs.orchestration.local_executor import (  # noqa: E402
     SENSITIVITY_KPI_SCHEMA_VERSION,
     git_value,
     load_worker_summary,
+    reclaim_completed_run_artifacts,
     run_specs,
 )
 from src.rmfs.orchestration.run_spec import RunSpec  # noqa: E402
@@ -1043,6 +1044,7 @@ def execute_machine(
     stages: list[int],
     resume: bool,
     progress: bool,
+    keep_run_artifacts: bool = False,
 ) -> int:
     manifest = read_json(manifest_path)
     machines = machine_map(manifest)
@@ -1074,6 +1076,13 @@ def execute_machine(
             skipped=skipped,
             elapsed_seconds=elapsed,
         )
+        if not keep_run_artifacts:
+            reclaimed = 0
+            for condition in selected:
+                run_root = condition_runtime_root(REPO_ROOT, manifest, machine_id, condition["run_id"])
+                reclaimed += reclaim_completed_run_artifacts(run_root)
+            if reclaimed > 0:
+                print(f"[sensitivity] stage {stage}: reclaimed {reclaimed / 1_000_000:.0f} MB of regenerable run artifacts")
     return 0
 
 
@@ -1110,6 +1119,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pps-model-path", default=str(DEFAULT_PPS_MODEL_PATH))
     parser.add_argument("--charging-config-path", default=str(DEFAULT_CHARGING_CONFIG_PATH))
     parser.add_argument("--rl-overhead-multiplier", type=float, default=DEFAULT_RL_OVERHEAD_MULTIPLIER)
+    parser.add_argument(
+        "--keep-run-artifacts",
+        action="store_true",
+        default=False,
+        help="Preserve per-run simulation scratch (netlogo.state, order/pod CSVs, worker logs). "
+        "By default these regenerable files are reclaimed after each stage since runs are "
+        "reproducible from their pinned seed; result JSON summaries are always kept.",
+    )
     return parser
 
 
@@ -1151,6 +1168,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             stages=stages,
             resume=bool(args.resume),
             progress=bool(args.progress),
+            keep_run_artifacts=bool(args.keep_run_artifacts),
         )
     raise SystemExit("choose --prepare-campaign, --run-continuously, --stage, or --rebalance-future-stages")
 
