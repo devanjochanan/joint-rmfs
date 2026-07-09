@@ -1162,6 +1162,23 @@ def execute_machine(
     machine = machines[machine_id]
     validate_local_assets(manifest, REPO_ROOT)
     shard = load_machine_shard(manifest, manifest_path, machine_id)
+    # Startup sweep: reclaim regenerable artifacts from any run this machine has
+    # already completed (status==success), not just the current stage. This
+    # cleans up cruft left when a prior invocation crashed mid-stage (e.g. a
+    # disk-full abort) before its per-stage reclaim could run. Safe alongside
+    # live workers: reclaim_completed_run_artifacts only touches successful runs
+    # and always keeps result files.
+    if not keep_run_artifacts:
+        swept_bytes = 0
+        swept_runs = 0
+        for condition in shard["runs"]:
+            run_root = condition_runtime_root(REPO_ROOT, manifest, machine_id, condition["run_id"])
+            freed = reclaim_completed_run_artifacts(run_root)
+            if freed > 0:
+                swept_bytes += freed
+                swept_runs += 1
+        if swept_bytes > 0:
+            print(f"[sensitivity] startup sweep: reclaimed {swept_bytes / 1_000_000:.0f} MB from {swept_runs} completed run(s)")
     for stage in stages:
         selected = [run for run in shard["runs"] if int(run["stage_first_requested"]) == int(stage)]
         specs = []
