@@ -1,2 +1,4 @@
 # Auto-detect text files and normalize line endings to LF on commit
 * text=auto
+data/models/rts/batch_000014/checkpoint/metadata.json text eol=lf
+data/models/rts/batch_000014/checkpoint/feature_schema.json text eol=lf
