@@ -434,7 +434,31 @@ def write_json(path: Path, payload):
     tmp_path = path.with_name(f".{path.name}.tmp")
     with tmp_path.open("w") as fh:
         json.dump(payload, fh, indent=2)
-    tmp_path.replace(path)
+    _atomic_replace_with_retry(tmp_path, path)
+
+
+def _atomic_replace_with_retry(tmp_path: Path, path: Path, attempts: int = 12) -> None:
+    """Replace path with tmp_path, retrying transient Windows share violations.
+
+    On Windows os.replace/Path.replace raises PermissionError (WinError 5) when
+    another process momentarily holds the destination open -- e.g. the
+    controller polling worker_status.json for the progress bar. That window is
+    tiny, so retry with short backoff instead of letting the worker die at
+    ticks_completed=0. On POSIX the first attempt always succeeds.
+    """
+    last_exc: PermissionError | None = None
+    for attempt in range(attempts):
+        try:
+            tmp_path.replace(path)
+            return
+        except PermissionError as exc:
+            last_exc = exc
+            time.sleep(min(0.05 * (attempt + 1), 0.5))
+    try:
+        tmp_path.unlink()
+    except OSError:
+        pass
+    raise last_exc if last_exc is not None else RuntimeError(f"failed to replace {path}")
 
 
 def validate_generated_order_contract(spec: RunSpec) -> dict[str, object]:
