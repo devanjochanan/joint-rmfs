@@ -1189,9 +1189,24 @@ def execute_machine(
                 skipped.append(condition["run_id"])
                 continue
             specs.append(spec)
+        # Reclaim each run's regenerable artifacts the moment it completes,
+        # rather than batching at stage end -- with 100+ runs per stage,
+        # deferring cleanup lets the disk balloon before the stage finishes.
+        reclaim_stats = {"bytes": 0}
+
+        def _reclaim_on_complete(spec, return_code, _stats=reclaim_stats):
+            if keep_run_artifacts:
+                return
+            _stats["bytes"] += reclaim_completed_run_artifacts(spec.runtime_root)
+
         start = time.perf_counter()
         if specs:
-            run_specs(specs, max_workers=int(machine.max_workers), progress=progress)
+            run_specs(
+                specs,
+                max_workers=int(machine.max_workers),
+                progress=progress,
+                on_run_complete=_reclaim_on_complete,
+            )
         elapsed = time.perf_counter() - start
         write_machine_summary(
             manifest=manifest,
@@ -1202,13 +1217,8 @@ def execute_machine(
             skipped=skipped,
             elapsed_seconds=elapsed,
         )
-        if not keep_run_artifacts:
-            reclaimed = 0
-            for condition in selected:
-                run_root = condition_runtime_root(REPO_ROOT, manifest, machine_id, condition["run_id"])
-                reclaimed += reclaim_completed_run_artifacts(run_root)
-            if reclaimed > 0:
-                print(f"[sensitivity] stage {stage}: reclaimed {reclaimed / 1_000_000:.0f} MB of regenerable run artifacts")
+        if reclaim_stats["bytes"] > 0:
+            print(f"[sensitivity] stage {stage}: reclaimed {reclaim_stats['bytes'] / 1_000_000:.0f} MB incrementally as runs completed")
     return 0
 
 

@@ -1053,10 +1053,18 @@ def _make_controller_progress_bar(enabled: bool, total_steps: int):
         unit="step",
         dynamic_ncols=True,
         leave=True,
+        smoothing=0,
     )
 
 
-def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
+def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False, on_run_complete=None):
+    """Run worker specs concurrently.
+
+    on_run_complete(spec, return_code), if given, is invoked as each run
+    finishes -- callers can use it to reclaim per-run artifacts immediately
+    instead of accumulating them until the batch ends. Not passed by default,
+    so training/eval callers keep their rollout data intact.
+    """
     if max_workers < 1:
         raise ValueError("max_workers must be >= 1")
     if not specs:
@@ -1065,12 +1073,27 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
     for spec in specs:
         spec.runtime_root.mkdir(parents=True, exist_ok=True)
         write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
+        # Clear stale progress from a prior (crashed/resumed) attempt so the
+        # controller rate/ETA starts from this invocation's real progress
+        # rather than jumping off a leftover worker_status.json (which showed
+        # an absurdly high step/s on resume).
+        status_path = spec.runtime_root / "worker_status.json"
+        if status_path.exists():
+            try:
+                status_path.unlink()
+            except OSError:
+                pass
 
     processes = []
     completed = []
     total_steps = sum(int(spec.ticks) for spec in specs)
     progress_bar = _make_controller_progress_bar(progress, total_steps)
     progress_last = 0
+    # Refresh the display on a coarse cadence (~500 steps/worker) or whenever a
+    # worker starts/finishes, so the bar stays readable instead of bouncing.
+    display_step_threshold = 500 * max(1, int(max_workers))
+    last_display_progress = 0
+    last_display_time = time.monotonic()
 
     cap_bytes = _worker_log_cap_bytes()
 
@@ -1101,8 +1124,10 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
     pending = list(specs)
     try:
         while pending or processes:
+            counts_changed = False
             while pending and len(processes) < max_workers:
                 processes.append(launch(pending.pop(0)))
+                counts_changed = True
 
             still_running = []
             for item in processes:
@@ -1113,20 +1138,37 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
                 for pump in item["pumps"]:
                     pump.join(timeout=10)
                 completed.append({"spec": item["spec"], "return_code": return_code})
+                counts_changed = True
+                if on_run_complete is not None:
+                    try:
+                        on_run_complete(item["spec"], return_code)
+                    except Exception:
+                        pass
             processes = still_running
 
             if progress_bar is not None:
                 current_progress = min(total_steps, _read_worker_progress(specs))
-                if current_progress > progress_last:
-                    progress_bar.update(current_progress - progress_last)
-                    progress_last = current_progress
-                progress_bar.set_postfix(
-                    running=len(processes),
-                    pending=len(pending),
-                    completed=len(completed),
-                    refresh=False,
-                )
-                progress_bar.refresh()
+                now = time.monotonic()
+                # Coarse refresh: enough new steps, a worker started/finished, or
+                # a few seconds elapsed (keeps the elapsed clock alive without
+                # bouncing -- smoothing=0 keeps the rate/ETA an accurate average).
+                if (
+                    current_progress - last_display_progress >= display_step_threshold
+                    or counts_changed
+                    or now - last_display_time >= 3.0
+                ):
+                    if current_progress > progress_last:
+                        progress_bar.update(current_progress - progress_last)
+                        progress_last = current_progress
+                    progress_bar.set_postfix(
+                        running=len(processes),
+                        pending=len(pending),
+                        completed=len(completed),
+                        refresh=False,
+                    )
+                    progress_bar.refresh()
+                    last_display_progress = current_progress
+                    last_display_time = now
 
             if processes and (pending or len(processes) >= max_workers):
                 if progress_bar is None:
