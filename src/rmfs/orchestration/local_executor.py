@@ -37,7 +37,6 @@ ROOT_SENSITIVE_FILES = [
 ]
 
 BASE_EXPECTED_WORKER_FILES = [
-    "netlogo.state",
     "assign_order.csv",
     "pod_info.csv",
     "skus_data.csv",
@@ -52,7 +51,7 @@ DEFERRED_ROOT_READ_ONLY_INPUTS = [
     "raw_order.csv",
 ]
 
-SENSITIVITY_KPI_SCHEMA_VERSION = "sensitivity_full_kpi.v1"
+SENSITIVITY_KPI_SCHEMA_VERSION = "sensitivity_full_kpi.v2"
 SENSITIVITY_KPI_FIELDS = (
     "run_id",
     "seed",
@@ -94,6 +93,8 @@ SENSITIVITY_KPI_FIELDS = (
     "max_station_assignment_share",
     "station_imbalance_ratio",
     "campaign_id",
+    "allocation_patch_id",
+    "simulation_semantics_id",
     "machine_id",
     "stage_first_requested",
     "kpi_schema_version",
@@ -105,10 +106,12 @@ SENSITIVITY_KPI_FIELDS = (
 )
 
 
-def expected_worker_files(detail_db: bool = False) -> list[str]:
+def expected_worker_files(detail_db: bool = False, persist_final_state: bool = False) -> list[str]:
     files = list(BASE_EXPECTED_WORKER_FILES)
+    if persist_final_state:
+        files.insert(0, "netlogo.state")
     if detail_db:
-        files.insert(1, "warehouse.db")
+        files.insert(1 if persist_final_state else 0, "warehouse.db")
     return files
 
 
@@ -163,50 +166,142 @@ def _pump_bounded(src, dst_path: Path, cap_bytes: int) -> None:
             pass
 
 
-# Reclaimed after a run succeeds (and after any expected-file validation); result
-# files (worker_summary.json, run_spec.json, rts_rollout_summary.json) are kept.
-RECLAIMABLE_RUN_ARTIFACTS = (
+# Reclaimed after a sensitivity run terminates. Successful runs are reduced to
+# run_spec.json + worker_summary.json; failed runs keep bounded logs and status.
+SUCCESS_RECLAIMABLE_RUN_ARTIFACTS = (
     "netlogo.state",
     "warehouse.db",
     "assign_order.csv",
     "generated_order.csv",
+    "generated_backlog.csv",
     "generated_database_order.csv",
+    "generated_order_meta.json",
     "pod_info.csv",
     "skus_data.csv",
     "sorted_skus_data.csv",
+    "rts_rollout.jsonl",
+    "debug_trace.jsonl",
+    "timing_summary.json",
+    "worker_status.json",
     "worker_stdout.log",
     "worker_stderr.log",
+    "rts_rollout_summary.json",
 )
+
+FAILED_RECLAIMABLE_RUN_ARTIFACTS = tuple(
+    name
+    for name in SUCCESS_RECLAIMABLE_RUN_ARTIFACTS
+    if name not in {"worker_status.json", "worker_stdout.log", "worker_stderr.log", "rts_rollout_summary.json"}
+)
+
+
+def directory_size_bytes(root: Path) -> int:
+    total = 0
+    root = Path(root)
+    if not root.exists():
+        return 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _unlink_run_artifacts(run_root: Path, artifact_names: tuple[str, ...]) -> dict[str, object]:
+    stats: dict[str, object] = {"bytes": 0, "by_filename": {}}
+    by_filename: dict[str, int] = {}
+    for name in artifact_names:
+        artifact = run_root / name
+        try:
+            size = artifact.stat().st_size
+        except OSError:
+            continue
+        try:
+            artifact.unlink(missing_ok=True)
+        except OSError:
+            continue
+        stats["bytes"] = int(stats["bytes"]) + int(size)
+        by_filename[name] = by_filename.get(name, 0) + int(size)
+    stats["by_filename"] = by_filename
+    return stats
+
+
+def _merge_reclaim_stats(target: dict[str, object], addition: dict[str, object]) -> dict[str, object]:
+    target["bytes"] = int(target.get("bytes", 0) or 0) + int(addition.get("bytes", 0) or 0)
+    target_by_filename = dict(target.get("by_filename", {}) or {})
+    for name, size in dict(addition.get("by_filename", {}) or {}).items():
+        target_by_filename[str(name)] = target_by_filename.get(str(name), 0) + int(size)
+    target["by_filename"] = target_by_filename
+    return target
+
+
+def _embed_rollout_summary(run_root: Path) -> None:
+    summary_path = run_root / "worker_summary.json"
+    rollout_path = run_root / "rts_rollout_summary.json"
+    if not summary_path.exists() or not rollout_path.exists():
+        return
+    try:
+        with summary_path.open() as fh:
+            summary = json.load(fh)
+        with rollout_path.open() as fh:
+            rollout_summary = json.load(fh)
+    except Exception:
+        return
+    summary["rts_rollout_summary"] = rollout_summary
+    summary["rts_rollout_summary_embedded"] = True
+    write_json(summary_path, summary)
+
+
+def reclaim_completed_run_artifacts_with_stats(run_root: Path) -> dict[str, object]:
+    """Delete regenerable simulation scratch from a successful run."""
+    run_root = Path(run_root)
+    summary_path = run_root / "worker_summary.json"
+    if not summary_path.exists():
+        return {"bytes": 0, "by_filename": {}}
+    try:
+        with summary_path.open() as fh:
+            summary = json.load(fh)
+    except Exception:
+        return {"bytes": 0, "by_filename": {}}
+    if summary.get("status") != "success":
+        return {"bytes": 0, "by_filename": {}}
+    _embed_rollout_summary(run_root)
+    return _unlink_run_artifacts(run_root, SUCCESS_RECLAIMABLE_RUN_ARTIFACTS)
+
+
+def reclaim_failed_run_artifacts_with_stats(run_root: Path) -> dict[str, object]:
+    """Delete large regenerable scratch while preserving failure diagnostics."""
+    run_root = Path(run_root)
+    return _unlink_run_artifacts(run_root, FAILED_RECLAIMABLE_RUN_ARTIFACTS)
+
+
+def reclaim_interrupted_run_artifacts_with_stats(run_root: Path) -> dict[str, object]:
+    """Delete stale scratch for a run that will restart from step zero."""
+    run_root = Path(run_root)
+    summary_path = run_root / "worker_summary.json"
+    if summary_path.exists():
+        try:
+            with summary_path.open() as fh:
+                summary = json.load(fh)
+            if summary.get("status") == "success":
+                return {"bytes": 0, "by_filename": {}}
+        except Exception:
+            pass
+    return reclaim_failed_run_artifacts_with_stats(run_root)
 
 
 def reclaim_completed_run_artifacts(run_root: Path) -> int:
     """Delete regenerable simulation scratch from a successful run, returning bytes freed.
 
     Keeps result files needed for aggregation and strict resume
-    (worker_summary.json, run_spec.json, rts_rollout_summary.json). Failed or
-    unfinished runs are left fully intact for debugging. Idempotent: already
-    missing files are ignored, so a resumed run re-cleans without error.
+    (worker_summary.json, run_spec.json). Failed or unfinished runs are left to
+    the failed/interrupted cleanup helpers so diagnostics are preserved.
+    Idempotent: already missing files are ignored.
     """
-    run_root = Path(run_root)
-    summary_path = run_root / "worker_summary.json"
-    if not summary_path.exists():
-        return 0
-    try:
-        with summary_path.open() as fh:
-            summary = json.load(fh)
-    except Exception:
-        return 0
-    if summary.get("status") != "success":
-        return 0
-    freed = 0
-    for name in RECLAIMABLE_RUN_ARTIFACTS:
-        artifact = run_root / name
-        try:
-            freed += artifact.stat().st_size
-        except OSError:
-            continue
-        artifact.unlink(missing_ok=True)
-    return freed
+    return int(reclaim_completed_run_artifacts_with_stats(run_root).get("bytes", 0) or 0)
 
 
 def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
@@ -342,6 +437,14 @@ def _safe_div(numerator, denominator) -> float:
     return _safe_float(numerator) / denom
 
 
+def _sensitivity_rts_checkpoint_id(spec: RunSpec) -> str | None:
+    if spec.rts_policy_checkpoint_id:
+        return spec.rts_policy_checkpoint_id
+    if str(spec.policy_configuration or "").strip() == "all_off":
+        return "not_applicable"
+    return None
+
+
 def _robot_objects(warehouse) -> list[object]:
     if warehouse is None:
         return []
@@ -461,11 +564,13 @@ def derive_sensitivity_kpi_payload(
         "max_station_assignment_share": _safe_div(max_station, station_total),
         "station_imbalance_ratio": _safe_div(max_station, min_station),
         "campaign_id": spec.campaign_id,
+        "allocation_patch_id": spec.allocation_patch_id,
+        "simulation_semantics_id": spec.simulation_semantics_id,
         "machine_id": spec.machine_id,
         "stage_first_requested": spec.stage_first_requested,
         "kpi_schema_version": spec.kpi_schema_version,
         "repo_commit": spec.commit,
-        "rts_checkpoint_id": spec.rts_policy_checkpoint_id,
+        "rts_checkpoint_id": _sensitivity_rts_checkpoint_id(spec),
         "rts_checkpoint_sha256": spec.rts_checkpoint_sha256,
         "pps_model_sha256": spec.pps_model_sha256,
     }
@@ -668,6 +773,7 @@ def run_worker(spec: RunSpec):
         "final_metrics": None,
         "runtime_root": str(spec.runtime_root),
         "repo_root": str(spec.repo_root),
+        "persist_final_state": bool(spec.persist_final_state),
         "requested_robot_count": int(spec.robot_count),
         "realized_robot_count": None,
         "expected_picking_station_count": spec.expected_picking_station_count,
@@ -734,7 +840,7 @@ def run_worker(spec: RunSpec):
 
 
         with timed("setup"):
-            session = netlogo.HeadlessSimulationSession(persist_final_state=True)
+            session = netlogo.HeadlessSimulationSession(persist_final_state=spec.persist_final_state)
             setup_result = session.setup()
         if isinstance(setup_result, str) and "An error occurred" in setup_result:
             raise RuntimeError(setup_result)
@@ -982,6 +1088,12 @@ def run_worker(spec: RunSpec):
         rts_summary_path = spec.runtime_root / "rts_rollout_summary.json"
         if rts_summary_path.exists():
             summary["rts_rollout_summary_path"] = str(rts_summary_path)
+            try:
+                with rts_summary_path.open() as fh:
+                    summary["rts_rollout_summary"] = json.load(fh)
+                summary["rts_rollout_summary_embedded"] = True
+            except Exception:
+                summary["rts_rollout_summary_embedded"] = False
         try:
             from src.rmfs.rl.rts.static_runtime_index import static_runtime_index_diagnostics
 
@@ -1020,14 +1132,17 @@ def run_worker(spec: RunSpec):
             "pps_rl_enabled": normalize_pps_mode(spec.pps_mode) == "ppo",
             "charging_enabled": spec.charging_enabled,
             "charging_config_path": spec.charging_config_path,
+            "persist_final_state": bool(spec.persist_final_state),
             "campaign_id": spec.campaign_id,
+            "allocation_patch_id": spec.allocation_patch_id,
+            "simulation_semantics_id": spec.simulation_semantics_id,
             "machine_id": spec.machine_id,
             "stage_first_requested": spec.stage_first_requested,
             "kpi_schema_version": spec.kpi_schema_version,
             "policy_configuration": spec.policy_configuration,
             "replication": spec.replication,
             "seed": spec.campaign_seed if spec.campaign_seed is not None else spec.rts_random_seed,
-            "rts_checkpoint_id": spec.rts_policy_checkpoint_id,
+            "rts_checkpoint_id": _sensitivity_rts_checkpoint_id(spec),
             "rts_checkpoint_sha256": spec.rts_checkpoint_sha256,
             "pps_model_sha256": spec.pps_model_sha256,
         })
@@ -1081,13 +1196,35 @@ def _make_controller_progress_bar(enabled: bool, total_steps: int):
     )
 
 
-def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False, on_run_complete=None):
+def _annotate_worker_summary(spec: RunSpec, extra: dict[str, object]) -> None:
+    summary_path = spec.runtime_root / "worker_summary.json"
+    if not summary_path.exists():
+        return
+    try:
+        with summary_path.open() as fh:
+            summary = json.load(fh)
+    except Exception:
+        return
+    summary.update(extra)
+    write_json(summary_path, summary)
+
+
+def run_specs(
+    specs: list[RunSpec],
+    max_workers: int,
+    progress: bool = False,
+    on_run_complete=None,
+    before_launch=None,
+):
     """Run worker specs concurrently.
 
     on_run_complete(spec, return_code), if given, is invoked as each run
     finishes -- callers can use it to reclaim per-run artifacts immediately
     instead of accumulating them until the batch ends. Not passed by default,
     so training/eval callers keep their rollout data intact.
+
+    before_launch(spec, active_count), if given, can return False to pause
+    launches while active workers finish and cleanup frees space.
     """
     if max_workers < 1:
         raise ValueError("max_workers must be >= 1")
@@ -1149,19 +1286,38 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False, on
     try:
         while pending or processes:
             counts_changed = False
+            launch_blocked = False
             while pending and len(processes) < max_workers:
+                if before_launch is not None:
+                    should_launch = before_launch(pending[0], len(processes))
+                    if should_launch is False:
+                        launch_blocked = True
+                        break
                 processes.append(launch(pending.pop(0)))
                 counts_changed = True
 
             still_running = []
             for item in processes:
+                peak = max(
+                    int(item.get("peak_runtime_directory_bytes", 0) or 0),
+                    directory_size_bytes(item["spec"].runtime_root),
+                )
+                item["peak_runtime_directory_bytes"] = peak
                 return_code = item["proc"].poll()
                 if return_code is None:
                     still_running.append(item)
                     continue
                 for pump in item["pumps"]:
                     pump.join(timeout=10)
-                completed.append({"spec": item["spec"], "return_code": return_code})
+                _annotate_worker_summary(
+                    item["spec"],
+                    {"peak_runtime_directory_bytes": int(item.get("peak_runtime_directory_bytes", 0) or 0)},
+                )
+                completed.append({
+                    "spec": item["spec"],
+                    "return_code": return_code,
+                    "peak_runtime_directory_bytes": int(item.get("peak_runtime_directory_bytes", 0) or 0),
+                })
                 counts_changed = True
                 if on_run_complete is not None:
                     try:
@@ -1194,11 +1350,13 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False, on
                     last_display_progress = current_progress
                     last_display_time = now
 
-            if processes and (pending or len(processes) >= max_workers):
+            if processes:
                 if progress_bar is None:
                     processes[0]["proc"].wait(timeout=None)
                 else:
                     time.sleep(0.5)
+            elif pending and not processes and launch_blocked and not counts_changed:
+                raise RuntimeError("worker launch blocked before any active worker could free resources")
     finally:
         if progress_bar is not None:
             current_progress = min(total_steps, _read_worker_progress(specs))
@@ -1235,6 +1393,7 @@ def run_controller(
     rts_policy_device: str = "cpu",
     rts_state_capture_mode: str = "auto",
     keep_runtime_artifacts: bool = False,
+    persist_final_state: bool = False,
     detail_db: bool | None = None,
     timing: bool = False,
     worker_status_cadence: int = 100,
@@ -1334,6 +1493,7 @@ def run_controller(
         "rts_state_capture_mode": rts_state_capture_mode,
         "committed_next_reservations_enabled": committed_next_reservations_enabled,
         "keep_runtime_artifacts": keep_runtime_artifacts,
+        "persist_final_state": bool(persist_final_state),
         "detail_db": detail_db,
         "timing": timing,
         "worker_status_cadence": worker_status_cadence,
@@ -1341,6 +1501,7 @@ def run_controller(
             "debug_trace": "enabled" if debug_trace else "disabled",
             "successful_workers": "preserved" if keep_runtime_artifacts else "cleanup_eligible",
             "failed_workers": "preserved",
+            "persist_final_state": bool(persist_final_state),
             "detail_db": "enabled" if detail_db else "disabled",
             "worker_status_cadence": worker_status_cadence,
         },
@@ -1408,6 +1569,7 @@ def run_controller(
             rts_policy_device=rts_policy_device,
             rts_state_capture_mode=rts_state_capture_mode,
             committed_next_reservations_enabled=committed_next_reservations_enabled,
+            persist_final_state=bool(persist_final_state),
             keep_runtime_artifacts=keep_runtime_artifacts,
             detail_db=detail_db,
             timing=timing,
@@ -1453,7 +1615,10 @@ def run_controller(
         worker_summary = load_worker_summary(spec.runtime_root)
         expected_files = {
             name: file_digest(spec.runtime_root / name)
-            for name in expected_worker_files(detail_db=spec.detail_db)
+            for name in expected_worker_files(
+                detail_db=spec.detail_db,
+                persist_final_state=spec.persist_final_state,
+            )
         }
         missing = [name for name, info in expected_files.items() if not info["exists"]]
         if missing:
@@ -1581,6 +1746,7 @@ def run_controller(
         "rts_policy_device": rts_policy_device,
         "rts_state_capture_mode": rts_state_capture_mode,
         "keep_runtime_artifacts": keep_runtime_artifacts,
+        "persist_final_state": bool(persist_final_state),
         "detail_db": detail_db,
         "timing": timing,
         "worker_status_cadence": worker_status_cadence,
@@ -1611,6 +1777,7 @@ def main(argv=None):
     controller_parser.add_argument("--repo-root", default=None)
     controller_parser.add_argument("--debug-trace", action="store_true", default=False)
     controller_parser.add_argument("--keep-runtime-artifacts", action="store_true", default=False)
+    controller_parser.add_argument("--persist-final-state", action="store_true", default=False)
     controller_parser.add_argument("--detail-db", action="store_true", default=None, help="Enable detail SQLite DB writes in workers. Disabled by default for headless runs.")
     controller_parser.add_argument("--timing", action="store_true", default=False, help="Collect compact worker timing summaries.")
     controller_parser.add_argument("--progress", action="store_true", default=False, help="Show a tqdm progress bar for completed backend steps.")
@@ -1692,6 +1859,7 @@ def main(argv=None):
         rts_policy_device=args.rts_policy_device,
         rts_state_capture_mode=args.rts_state_capture_mode,
         keep_runtime_artifacts=args.keep_runtime_artifacts,
+        persist_final_state=args.persist_final_state,
         detail_db=args.detail_db,
         timing=args.timing,
         progress=args.progress,

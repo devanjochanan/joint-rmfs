@@ -8,11 +8,13 @@ machine, and the existing local RunSpec executor on each PC.
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as _dt
 import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -39,10 +41,16 @@ from scripts.experiments.capacity_study_order_rate import (  # noqa: E402
 from src.rmfs.decisions.pps.runtime import PPS_RL_NUM_STATIONS, load_pps_rl_model_strict  # noqa: E402
 from src.rmfs.experiments.identity import short_hash  # noqa: E402
 from src.rmfs.orchestration.local_executor import (  # noqa: E402
+    FAILED_RECLAIMABLE_RUN_ARTIFACTS,
     SENSITIVITY_KPI_SCHEMA_VERSION,
+    SENSITIVITY_KPI_FIELDS,
+    SUCCESS_RECLAIMABLE_RUN_ARTIFACTS,
+    directory_size_bytes,
     git_value,
     load_worker_summary,
-    reclaim_completed_run_artifacts,
+    reclaim_completed_run_artifacts_with_stats,
+    reclaim_failed_run_artifacts_with_stats,
+    reclaim_interrupted_run_artifacts_with_stats,
     run_specs,
 )
 from src.rmfs.orchestration.run_spec import RunSpec  # noqa: E402
@@ -50,12 +58,16 @@ from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id  # 
 from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint  # noqa: E402
 from src.rmfs.runtime_io.run_profiles import TICK_TO_SECOND  # noqa: E402
 
-CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v1"
+CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v2"
+SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v1"
+ALLOCATION_PATCH_LABEL = "allocation_patch_0001"
+CANONICAL_RTS_CHECKPOINT_ID = "batch_000014"
 POLICY_CONFIGURATIONS = ("all_off", "all_on_rl")
 SIMULATED_SECONDS = 87_000.0
 BACKEND_STEPS_PER_RUN = 580_000
 SEED_BASE_MINUS_ONE = 41
 DEFAULT_RL_OVERHEAD_MULTIPLIER = 1.35
+DEFAULT_MIN_FREE_DISK_GB = 20.0
 OUTPUT_ROOT_RELATIVE = Path("data/runtime/distributed_sensitivity")
 INPUT_ROOT_RELATIVE = Path("data/input/base")
 ARCHIVED_ROOTS_IGNORED = (
@@ -63,21 +75,24 @@ ARCHIVED_ROOTS_IGNORED = (
     "data/runtime/capacity_study_order_rate_packB",
     "data/runtime/capacity_study_order_rate_packC",
 )
-STAGE_QUOTAS = {
-    1: {"win_lukman": 9, "win_admin": 8, "citi_angiebow": 7, "codex_local": 6},
-    2: {"win_lukman": 11, "win_admin": 10, "citi_angiebow": 9, "codex_local": 8},
-    3: {"win_lukman": 150, "win_admin": 143, "citi_angiebow": 131, "codex_local": 108},
-    4: {"win_lukman": 253, "win_admin": 242, "citi_angiebow": 222, "codex_local": 183},
-}
 STAGE_NAMES = {
     1: "full_matrix_replication_1",
-    2: "central_comparison_to_20_replications",
-    3: "full_matrix_to_20_replications",
-    4: "full_matrix_to_50_replications",
+    2: "central_all_on_rl_replications_2_to_20",
+    3: "central_all_off_replications_2_to_20",
+    4: "remaining_full_matrix_to_20_replications",
 }
 CENTRAL_ROBOT_COUNT = 20
 CENTRAL_ORDER_RATE = 500
 DEFAULT_LOCAL_PYTHON = Path("/home/dewan/torch-gpu/bin/python")
+MACHINE_IDS = (
+    "win_lukman",
+    "win_admin",
+    "citi_angiebow",
+    "codex_local",
+    "alisha_pc",
+    "dewa_macbook",
+    "citi_gojira",
+)
 
 
 @dataclass(frozen=True)
@@ -88,6 +103,7 @@ class Machine:
     python: str
     max_workers: int
     effective_steps_per_second: float
+    eligible_stages: tuple[int, ...]
     anydesk_id: str | None = None
 
 
@@ -119,6 +135,27 @@ def write_json(path: Path, payload: Any) -> None:
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def canonical_json_sha256(path: Path) -> str:
+    payload = read_json(path)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def git_blob_identity(repo_relative_path: str) -> str | None:
+    value = git_clean_value("rev-parse", f"HEAD:{repo_relative_path}")
+    return value or None
+
+
+def normalized_text_sha256(path: Path) -> str:
+    text = Path(path).read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def tracked_text_identity(path: Path) -> str:
+    rel = relative_to_repo(path)
+    return git_blob_identity(rel) or normalized_text_sha256(path)
 
 
 def relative_to_repo(path: Path) -> str:
@@ -167,6 +204,7 @@ def local_max_workers() -> int:
 
 
 def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
+    all_stages = (1, 2, 3, 4)
     return [
         Machine(
             machine_id="win_lukman",
@@ -176,6 +214,7 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
             python=r"D:\lukman-rmfs\.rmfs\Scripts\python.exe",
             max_workers=8,
             effective_steps_per_second=414.64,
+            eligible_stages=all_stages,
         ),
         Machine(
             machine_id="win_admin",
@@ -185,6 +224,7 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
             python=r"C:\Users\admin\Documents\Dewa's Sandbox\torch-gpu\Scripts\python.exe",
             max_workers=8,
             effective_steps_per_second=395.66,
+            eligible_stages=all_stages,
         ),
         Machine(
             machine_id="citi_angiebow",
@@ -193,21 +233,81 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
             python="/home/citi/Documents/Dewa's Sandbox/torch-gpu/bin/python",
             max_workers=4,
             effective_steps_per_second=363.25,
+            eligible_stages=all_stages,
         ),
         Machine(
             machine_id="codex_local",
             os=platform.system().lower() or "auto",
             repository=str(repo_root),
             python=local_python_executable(),
-            max_workers=local_max_workers(),
+            max_workers=8,
             effective_steps_per_second=300.0,
+            eligible_stages=all_stages,
+        ),
+        Machine(
+            machine_id="alisha_pc",
+            os="windows",
+            repository=r"C:\Users\ayual\Program TA\netlogo-rmfs",
+            python=r"python",
+            max_workers=8,
+            effective_steps_per_second=330.0,
+            eligible_stages=all_stages,
+        ),
+        Machine(
+            machine_id="dewa_macbook",
+            os="macos",
+            repository="",
+            python="python3",
+            max_workers=8,
+            effective_steps_per_second=260.0,
+            eligible_stages=(1, 2, 3),
+        ),
+        Machine(
+            machine_id="citi_gojira",
+            os="linux",
+            repository="/home/citi/Documents/Dewa's Sandbox/netlogo-rmfs",
+            python="/home/citi/Documents/Dewa's Sandbox/torch-gpu/bin/python",
+            max_workers=24,
+            effective_steps_per_second=850.0,
+            eligible_stages=all_stages,
         ),
     ]
 
 
+def stable_json_hash(payload: Any, length: int = 12) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()[:length]
+
+
+def allocation_config_rows(machines: list[Machine]) -> list[dict[str, Any]]:
+    return [
+        {
+            "machine_id": machine.machine_id,
+            "max_workers": int(machine.max_workers),
+            "eligible_stages": list(machine.eligible_stages),
+            "effective_steps_per_second": float(machine.effective_steps_per_second),
+            "rate_semantics": "aggregate_machine_throughput_at_configured_worker_count",
+        }
+        for machine in sorted(machines, key=lambda item: item.machine_id)
+    ]
+
+
+def generate_allocation_patch_id(machines: list[Machine], rl_overhead_multiplier: float) -> str:
+    payload = {
+        "allocation_patch_label": ALLOCATION_PATCH_LABEL,
+        "allocation_algorithm": "eligible_worker_slots_lpt.v1",
+        "machine_allocation_config": allocation_config_rows(machines),
+        "condition_cost_model": {
+            "base_backend_steps": BACKEND_STEPS_PER_RUN,
+            "rl_overhead_multiplier": float(rl_overhead_multiplier),
+            "robot_count_adjustment_per_5": 0.015,
+            "order_rate_adjustment_per_100": 0.02,
+        },
+    }
+    return f"{ALLOCATION_PATCH_LABEL}_{stable_json_hash(payload)}"
+
+
 def hash_machine_config(machines: list[Machine]) -> str:
-    payload = [asdict(machine) for machine in machines]
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return stable_json_hash(allocation_config_rows(machines))
 
 
 def load_feature_schema_id(schema_path: Path) -> str:
@@ -361,6 +461,13 @@ def validate_assets_strict(
     expected_rts_feature_schema_sha256: str | None = None,
     expected_rts_checkpoint_id: str | None = None,
 ) -> None:
+    canonical_pps = relative_to_repo(DEFAULT_PPS_MODEL_PATH)
+    canonical_rts = relative_to_repo(DEFAULT_RTS_CHECKPOINT_DIR)
+    if Path(pps_relative_path).as_posix() != canonical_pps:
+        raise RuntimeError(f"distributed sensitivity requires canonical PPS model {canonical_pps}, got {pps_relative_path}")
+    if Path(rts_checkpoint_relative_dir).as_posix() != canonical_rts:
+        raise RuntimeError(f"distributed sensitivity requires canonical RTS checkpoint {canonical_rts}, got {rts_checkpoint_relative_dir}")
+
     # 1. PPS validation
     pps_path = repo_root / pps_relative_path
     if not pps_path.exists():
@@ -402,6 +509,8 @@ def validate_assets_strict(
         raise RuntimeError(f"RTS checkpoint ID mismatch after strict load: loaded={loaded.policy_checkpoint_id}, dir={checkpoint_id}")
     if expected_rts_checkpoint_id and checkpoint_id != expected_rts_checkpoint_id:
         raise RuntimeError(f"RTS checkpoint ID mismatch: got {checkpoint_id}, expected {expected_rts_checkpoint_id}")
+    if checkpoint_id != CANONICAL_RTS_CHECKPOINT_ID:
+        raise RuntimeError(f"distributed sensitivity requires RTS checkpoint ID {CANONICAL_RTS_CHECKPOINT_ID}, got {checkpoint_id}")
 
     # Verify PPO status (real PPO update, not behavior cloning only)
     metadata = read_json(checkpoint_dir / "metadata.json")
@@ -495,22 +604,18 @@ def base_condition_rows(stage: int, already_requested: set[str]) -> list[dict[st
         ]
     elif stage == 2:
         candidates = [
-            (policy, CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, replication)
+            ("all_on_rl", CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, replication)
             for replication in range(1, 21)
-            for policy in POLICY_CONFIGURATIONS
         ]
     elif stage == 3:
         candidates = [
-            (policy, robot_count, order_rate, replication)
+            ("all_off", CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, replication)
             for replication in range(1, 21)
-            for policy in POLICY_CONFIGURATIONS
-            for robot_count in ROBOT_COUNTS
-            for order_rate in ORDER_RATES
         ]
     elif stage == 4:
         candidates = [
             (policy, robot_count, order_rate, replication)
-            for replication in range(1, 51)
+            for replication in range(1, 21)
             for policy in POLICY_CONFIGURATIONS
             for robot_count in ROBOT_COUNTS
             for order_rate in ORDER_RATES
@@ -546,6 +651,74 @@ def estimate_condition_steps(row: dict[str, Any], *, rl_overhead_multiplier: flo
     return BACKEND_STEPS_PER_RUN * max(0.2, multiplier)
 
 
+def build_input_identity(input_meta: dict[str, Any]) -> dict[str, Any]:
+    file_identities = {}
+    for rel_path in sorted(input_meta.get("file_digests", {})):
+        file_identities[rel_path] = tracked_text_identity(REPO_ROOT / INPUT_ROOT_RELATIVE / rel_path)
+    return {
+        "input_root_relative": INPUT_ROOT_RELATIVE.as_posix(),
+        "tracked_file_identities": file_identities,
+        "layout_sha256": input_meta["layout"]["layout_sha256"],
+    }
+
+
+def build_scientific_identity(
+    *,
+    assets: AssetBundle,
+    input_identity: dict[str, Any],
+) -> dict[str, Any]:
+    rts_dir = REPO_ROOT / assets.rts_checkpoint_relative_dir
+    charging_path = REPO_ROOT / assets.charging_config_relative_path
+    return {
+        "schema_version": CAMPAIGN_SCHEMA_VERSION,
+        "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
+        "kpi_schema_version": SENSITIVITY_KPI_SCHEMA_VERSION,
+        "policy_configurations": list(POLICY_CONFIGURATIONS),
+        "robot_counts": list(ROBOT_COUNTS),
+        "order_rates": list(ORDER_RATES),
+        "picking_stations": PICKER_COUNT,
+        "replenishment_stations": REPLENISHMENT_COUNT,
+        "replication_range": {"first": 1, "last": 20},
+        "seed_formula": "seed = 41 + replication",
+        "seed_base_minus_one": SEED_BASE_MINUS_ONE,
+        "simulated_seconds": SIMULATED_SECONDS,
+        "backend_steps_per_full_run": BACKEND_STEPS_PER_RUN,
+        "tick_to_second": TICK_TO_SECOND,
+        "input_identity": input_identity,
+        "scenario_layout_identity": {
+            "scenario_hash": short_hash(input_identity),
+            "layout_hash": input_identity["layout_sha256"],
+        },
+        "assets": {
+            "pps_model_relative_path": assets.pps_model_relative_path,
+            "pps_model_sha256": assets.pps_model_sha256,
+            "pps_observation_schema": assets.pps_observation_schema,
+            "rts_checkpoint_relative_dir": assets.rts_checkpoint_relative_dir,
+            "rts_checkpoint_id": assets.rts_checkpoint_id,
+            "rts_model_sha256": assets.rts_model_sha256,
+            "rts_metadata_canonical_sha256": canonical_json_sha256(rts_dir / "metadata.json"),
+            "rts_feature_schema_canonical_sha256": canonical_json_sha256(rts_dir / "feature_schema.json"),
+            "rts_feature_schema_id": assets.rts_feature_schema_id,
+            "charging_config_relative_path": assets.charging_config_relative_path,
+            "charging_config_canonical_sha256": canonical_json_sha256(charging_path),
+        },
+        "run_profile": {
+            "order_generation_mode": "shuffled_historical_cycle",
+            "full_raw_order_replay": False,
+            "pod_location_mode": "randomize_slots",
+            "robot_task_allocator": "legacy_nearest",
+            "task_allocator_scope": "active_job_queue",
+            "detail_db": False,
+            "persist_final_state": False,
+            "charging_semantics": "canonical_config_for_all_on_rl_disabled_for_all_off",
+        },
+    }
+
+
+def generate_campaign_id_from_identity(scientific_identity: dict[str, Any]) -> str:
+    return f"sensitivity_full_kpi_v2_{stable_json_hash(scientific_identity)}"
+
+
 def allocate_stage(
     rows: list[dict[str, Any]],
     *,
@@ -553,63 +726,78 @@ def allocate_stage(
     machines: list[Machine],
     rl_overhead_multiplier: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    quotas = dict(STAGE_QUOTAS[stage])
-    if sum(quotas.values()) != len(rows):
-        raise RuntimeError(f"stage {stage} quota sum {sum(quotas.values())} != row count {len(rows)}")
-    machine_by_id = {machine.machine_id: machine for machine in machines}
     assigned_counts = {machine.machine_id: 0 for machine in machines}
     assigned_steps = {machine.machine_id: 0.0 for machine in machines}
+    slots = []
+    for machine in machines:
+        if int(stage) not in set(int(item) for item in machine.eligible_stages):
+            continue
+        slot_count = max(1, int(machine.max_workers))
+        slot_rate = float(machine.effective_steps_per_second) / float(slot_count)
+        for slot_index in range(slot_count):
+            slots.append({
+                "machine": machine,
+                "slot_index": slot_index,
+                "slot_rate": slot_rate,
+                "assigned_steps": 0.0,
+            })
+    if not slots and rows:
+        raise RuntimeError(f"stage {stage} has no eligible machine slots")
     ordered = sorted(
         rows,
         key=lambda row: (
             -estimate_condition_steps(row, rl_overhead_multiplier=rl_overhead_multiplier),
+            int(row["stage_first_requested"]),
             row["policy_configuration"],
-            -int(row["robot_count"]),
-            -int(row["order_rate"]),
+            int(row["robot_count"]),
+            int(row["order_rate"]),
             int(row["replication"]),
         ),
     )
     allocated = []
     for row in ordered:
-        eligible = [
-            machine
-            for machine in machines
-            if assigned_counts[machine.machine_id] < quotas[machine.machine_id]
-        ]
-        if not eligible:
-            raise RuntimeError(f"stage {stage} has no eligible machine for {row['condition_key']}")
-        machine = min(
-            eligible,
+        slot = min(
+            slots,
             key=lambda item: (
-                assigned_steps[item.machine_id] / float(item.effective_steps_per_second),
-                assigned_counts[item.machine_id],
-                item.machine_id,
+                item["assigned_steps"] / float(item["slot_rate"]),
+                assigned_counts[item["machine"].machine_id],
+                item["machine"].machine_id,
+                item["slot_index"],
             ),
         )
+        machine = slot["machine"]
         estimated_steps = estimate_condition_steps(row, rl_overhead_multiplier=rl_overhead_multiplier)
         assigned_counts[machine.machine_id] += 1
         assigned_steps[machine.machine_id] += estimated_steps
+        slot["assigned_steps"] += estimated_steps
         allocated.append({
             **row,
             "machine_id": machine.machine_id,
+            "machine_slot_index": int(slot["slot_index"]),
             "estimated_backend_steps": estimated_steps,
             "estimated_cost_model": {
                 "base_backend_steps": BACKEND_STEPS_PER_RUN,
                 "rl_overhead_multiplier": rl_overhead_multiplier,
+                "effective_steps_per_second_semantics": "aggregate_machine_throughput_at_configured_worker_count",
+                "slot_rate_steps_per_second": slot["slot_rate"],
             },
         })
     projection = {
-        machine_id: assigned_steps[machine_id] / float(machine_by_id[machine_id].effective_steps_per_second)
-        for machine_id in assigned_steps
+        machine.machine_id: assigned_steps[machine.machine_id] / float(machine.effective_steps_per_second)
+        for machine in machines
     }
     return allocated, {
         "stage": stage,
         "name": STAGE_NAMES[stage],
         "new_runs": len(allocated),
-        "quota": quotas,
         "assigned_counts": assigned_counts,
         "assigned_estimated_steps": assigned_steps,
         "projected_finish_seconds": projection,
+        "eligible_machines": [
+            machine.machine_id
+            for machine in machines
+            if int(stage) in set(int(item) for item in machine.eligible_stages)
+        ],
     }
 
 
@@ -617,6 +805,8 @@ def add_run_identity(
     row: dict[str, Any],
     *,
     campaign_id: str,
+    allocation_patch_id: str,
+    scientific_identity: dict[str, Any],
     branch: str | None,
     commit: str | None,
     ticks: int,
@@ -626,6 +816,7 @@ def add_run_identity(
 ) -> dict[str, Any]:
     identity = {
         "campaign_id": campaign_id,
+        "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
         "policy_configuration": row["policy_configuration"],
         "robot_count": row["robot_count"],
         "order_rate": row["order_rate"],
@@ -637,10 +828,13 @@ def add_run_identity(
         "tick_to_second": TICK_TO_SECOND,
         "scenario_hash": scenario_hash,
         "layout_hash": layout_hash,
-        "repo_commit": commit,
+        "kpi_schema_version": SENSITIVITY_KPI_SCHEMA_VERSION,
         "rts_checkpoint_id": assets.rts_checkpoint_id,
         "rts_checkpoint_sha256": assets.rts_model_sha256,
+        "rts_metadata_canonical_sha256": scientific_identity["assets"]["rts_metadata_canonical_sha256"],
+        "rts_feature_schema_canonical_sha256": scientific_identity["assets"]["rts_feature_schema_canonical_sha256"],
         "pps_model_sha256": assets.pps_model_sha256,
+        "charging_config_canonical_sha256": scientific_identity["assets"]["charging_config_canonical_sha256"],
     }
     run_prefix = (
         f"{row['policy_configuration']}__r{row['robot_count']}__arr{row['order_rate']}"
@@ -656,18 +850,23 @@ def add_run_identity(
         "tick_to_second": TICK_TO_SECOND,
         "branch": branch,
         "commit": commit,
+        "allocation_patch_id": allocation_patch_id,
+        "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
         "scenario_id": f"scenario_{scenario_hash}",
         "scenario_hash": scenario_hash,
         "layout_hash": layout_hash,
         "run_spec_identity": {
             "run_id": run_id,
             "campaign_id": campaign_id,
-            "machine_id": row["machine_id"],
-            "stage_first_requested": row["stage_first_requested"],
+            "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
             "kpi_schema_version": SENSITIVITY_KPI_SCHEMA_VERSION,
             "policy_configuration": row["policy_configuration"],
+            "robot_count": row["robot_count"],
+            "order_rate_per_hour": row["order_rate"],
             "replication": row["replication"],
             "campaign_seed": row["seed"],
+            "netlogo_steps_requested": ticks,
+            "tick_to_second": TICK_TO_SECOND,
             "rts_checkpoint_sha256": assets.rts_model_sha256,
             "pps_model_sha256": assets.pps_model_sha256,
         },
@@ -679,26 +878,12 @@ def generate_campaign_id(
     assets: AssetBundle,
     rl_overhead_multiplier: float,
 ) -> str:
-    config = {
-        "schema_version": CAMPAIGN_SCHEMA_VERSION,
-        "policy_configurations": list(POLICY_CONFIGURATIONS),
-        "robot_counts": list(ROBOT_COUNTS),
-        "order_rates": list(ORDER_RATES),
-        "picker_count": PICKER_COUNT,
-        "replenishment_count": REPLENISHMENT_COUNT,
-        "simulated_seconds": SIMULATED_SECONDS,
-        "seed_base": SEED_BASE_MINUS_ONE,
-        "stage_quotas": STAGE_QUOTAS,
-        "rl_overhead_multiplier": rl_overhead_multiplier,
-        "machines": [asdict(m) for m in sorted(machines, key=lambda m: m.machine_id)],
-        "pps_model_sha256": assets.pps_model_sha256,
-        "rts_model_sha256": assets.rts_model_sha256,
-        "rts_metadata_sha256": assets.rts_metadata_sha256,
-        "rts_feature_schema_sha256": assets.rts_feature_schema_sha256,
-    }
-    config_str = json.dumps(config, sort_keys=True)
-    config_hash = hashlib.sha256(config_str.encode("utf-8")).hexdigest()[:12]
-    return f"sensitivity_full_kpi_v2_{config_hash}"
+    input_meta = validate_input_root(REPO_ROOT / INPUT_ROOT_RELATIVE)
+    scientific_identity = build_scientific_identity(
+        assets=assets,
+        input_identity=build_input_identity(input_meta),
+    )
+    return generate_campaign_id_from_identity(scientific_identity)
 
 
 def build_campaign_plan(
@@ -712,14 +897,14 @@ def build_campaign_plan(
     if ticks != BACKEND_STEPS_PER_RUN:
         raise RuntimeError(f"expected {BACKEND_STEPS_PER_RUN} backend steps, got {ticks}")
     input_meta = validate_input_root(REPO_ROOT / INPUT_ROOT_RELATIVE)
-    scenario_hash = short_hash({
-        "input_root": INPUT_ROOT_RELATIVE.as_posix(),
-        "file_digests": {
-            key: value["sha256"]
-            for key, value in input_meta["file_digests"].items()
-        },
-    })
-    layout_hash = input_meta["layout"]["layout_sha256"]
+    input_identity = build_input_identity(input_meta)
+    scientific_identity = build_scientific_identity(assets=assets, input_identity=input_identity)
+    expected_campaign_id = generate_campaign_id_from_identity(scientific_identity)
+    if campaign_id != expected_campaign_id:
+        raise RuntimeError(f"campaign_id mismatch: got {campaign_id}, expected {expected_campaign_id}")
+    allocation_patch_id = generate_allocation_patch_id(machines, rl_overhead_multiplier)
+    scenario_hash = scientific_identity["scenario_layout_identity"]["scenario_hash"]
+    layout_hash = scientific_identity["scenario_layout_identity"]["layout_hash"]
     branch = git_clean_value("rev-parse", "--abbrev-ref", "HEAD")
     commit = git_clean_value("rev-parse", "HEAD")
     already_requested: set[str] = set()
@@ -737,6 +922,8 @@ def build_campaign_plan(
             add_run_identity(
                 row,
                 campaign_id=campaign_id,
+                allocation_patch_id=allocation_patch_id,
+                scientific_identity=scientific_identity,
                 branch=branch,
                 commit=commit,
                 ticks=ticks,
@@ -753,6 +940,15 @@ def build_campaign_plan(
     return {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
         "campaign_id": campaign_id,
+        "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
+        "scientific_identity": scientific_identity,
+        "allocation_patch_id": allocation_patch_id,
+        "allocation_patch_label": ALLOCATION_PATCH_LABEL,
+        "allocation_config": {
+            "algorithm": "eligible_worker_slots_lpt.v1",
+            "machine_allocation_config": allocation_config_rows(machines),
+            "effective_steps_per_second_semantics": "aggregate_machine_throughput_at_configured_worker_count",
+        },
         "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "repo_root_at_prepare": str(REPO_ROOT),
         "branch": branch,
@@ -822,11 +1018,10 @@ def dry_run_assertions(
         "replication_seeds": {
             "1": seed_for_replication(1),
             "20": seed_for_replication(20),
-            "50": seed_for_replication(50),
         },
         "replication_seed_uniformity": {
             str(replication): len({run["seed"] for run in runs if run["replication"] == replication})
-            for replication in (1, 20, 50)
+            for replication in (1, 20)
         },
         "unique_run_ids": len({run["run_id"] for run in runs}),
         "unique_condition_keys": len({run["condition_key"] for run in runs}),
@@ -839,27 +1034,29 @@ def dry_run_assertions(
             for run in by_stage[1]
             if run["policy_configuration"] == "all_on_rl"
         }),
+        "macbook_stage4_count": sum(
+            1
+            for run in by_stage[4]
+            if run["machine_id"] == "dewa_macbook"
+        ),
         "stage_projected_finish_seconds": {
             str(stage): stage_summaries[str(stage)]["projected_finish_seconds"]
             for stage in (1, 2, 3, 4)
         },
     }
-    expected_stage_counts = {"1": 30, "2": 38, "3": 532, "4": 900}
-    expected_allocations = {str(stage): STAGE_QUOTAS[stage] for stage in (1, 2, 3, 4)}
+    expected_stage_counts = {"1": 30, "2": 19, "3": 19, "4": 532}
     if assertions["stage_new_runs"] != expected_stage_counts:
         raise AssertionError(assertions["stage_new_runs"])
-    if assertions["stage_allocations"] != expected_allocations:
-        raise AssertionError(assertions["stage_allocations"])
-    if assertions["total_unique_fresh_runs"] != 1500:
+    if assertions["total_unique_fresh_runs"] != 600:
         raise AssertionError(assertions["total_unique_fresh_runs"])
-    if assertions["replication_seeds"] != {"1": 42, "20": 61, "50": 91}:
+    if assertions["replication_seeds"] != {"1": 42, "20": 61}:
         raise AssertionError(assertions["replication_seeds"])
     if assertions["duplicate_run_ids"] or assertions["duplicate_condition_keys"]:
         raise AssertionError("duplicate campaign identities detected")
     if assertions["all_on_rl_unique_asset_hash_pairs"] != 1:
         raise AssertionError("all_on_rl runs must pin one RTS/PPS hash pair")
-    if assertions["all_on_rl_stage1_machines"] != sorted(machine_ids):
-        raise AssertionError("Stage 1 all_on_rl is not spread across all machines")
+    if assertions["macbook_stage4_count"] != 0:
+        raise AssertionError("MacBook received Stage 4 assignments")
     return assertions
 
 
@@ -931,6 +1128,8 @@ def write_campaign_files(manifest: dict[str, Any], *, dry_run: bool = False) -> 
         shard = {
             "schema_version": CAMPAIGN_SCHEMA_VERSION,
             "campaign_id": manifest["campaign_id"],
+            "allocation_patch_id": manifest["allocation_patch_id"],
+            "simulation_semantics_id": manifest["simulation_semantics_id"],
             "machine_id": machine_id,
             "runs": shard_runs,
             "stage_counts": {
@@ -1001,6 +1200,7 @@ def build_run_spec_from_condition(
         "robot_count": int(condition["robot_count"]),
         "expected_picking_station_count": PICKER_COUNT,
         "expected_replenishment_station_count": REPLENISHMENT_COUNT,
+        "persist_final_state": False,
         "keep_runtime_artifacts": False,
         "detail_db": False,
         "timing": False,
@@ -1025,6 +1225,8 @@ def build_run_spec_from_condition(
         "rts_torch_threads": 1,
         "rts_torch_interop_threads": 1,
         "campaign_id": manifest["campaign_id"],
+        "allocation_patch_id": manifest["allocation_patch_id"],
+        "simulation_semantics_id": manifest["simulation_semantics_id"],
         "machine_id": machine.machine_id,
         "stage_first_requested": int(condition["stage_first_requested"]),
         "kpi_schema_version": manifest["kpi_schema_version"],
@@ -1057,6 +1259,7 @@ def build_run_spec_from_condition(
         **common,
         rts_policy_mode="current",
         rts_rollout_enabled=False,
+        rts_policy_checkpoint_id="not_applicable",
         rts_state_capture_mode="auto",
         pps_mode="heuristic",
         charging_enabled=False,
@@ -1071,19 +1274,23 @@ def run_complete_for_campaign(condition: dict[str, Any], spec: RunSpec, manifest
         return False
     try:
         previous_spec = read_json(spec_path)
-        current_spec = spec.to_json_dict()
         summary = load_worker_summary(spec.runtime_root)
     except Exception:
         return False
     required_identity = condition["run_spec_identity"]
+    summary_key_map = {
+        "campaign_seed": "seed",
+        "robot_count": "requested_robot_count",
+    }
     for key, expected in required_identity.items():
         if previous_spec.get(key) != expected:
             return False
-        if summary.get(key) != expected and key not in {"campaign_seed"}:
+        summary_key = summary_key_map.get(key, key)
+        if key in {"order_rate_per_hour", "netlogo_steps_requested", "tick_to_second"}:
+            continue
+        if summary.get(summary_key) != expected:
             return False
     if summary.get("seed") != condition["seed"]:
-        return False
-    if previous_spec != current_spec:
         return False
     if summary.get("status") != "success":
         return False
@@ -1146,6 +1353,135 @@ def write_machine_summary(
     write_json(root / "machine_summary.json", payload)
 
 
+RUN_OUTCOME_BASE_FIELDS = (
+    "campaign_id",
+    "allocation_patch_id",
+    "simulation_semantics_id",
+    "run_id",
+    "condition_key",
+    "policy_configuration",
+    "robot_count",
+    "order_rate",
+    "replication",
+    "seed",
+    "stage_first_requested",
+    "status",
+    "termination_reason",
+    "source_machine_id",
+    "repo_commit",
+    "error_type",
+    "error_message",
+)
+RUN_OUTCOME_HASH_FIELDS = (
+    "scenario_hash",
+    "layout_hash",
+    "rts_checkpoint_id",
+    "rts_checkpoint_sha256",
+    "rts_metadata_canonical_sha256",
+    "rts_feature_schema_canonical_sha256",
+    "pps_model_sha256",
+    "charging_config_canonical_sha256",
+)
+RUN_OUTCOME_FIELDS = tuple(dict.fromkeys((*RUN_OUTCOME_BASE_FIELDS, *SENSITIVITY_KPI_FIELDS, *RUN_OUTCOME_HASH_FIELDS)))
+
+
+def rebuild_run_outcomes_csv(*, manifest: dict[str, Any], machine: Machine, repo_root: Path) -> Path:
+    machine_root = campaign_root(repo_root, manifest) / machine.machine_id
+    conditions = {
+        run["run_id"]: run
+        for run in manifest["runs"]
+        if run["machine_id"] == machine.machine_id
+    }
+    rows = []
+    for run_id, condition in sorted(conditions.items(), key=lambda item: condition_sort_key(item[1])):
+        summary_path = machine_root / "runs" / run_id / "worker_summary.json"
+        if not summary_path.exists():
+            continue
+        try:
+            summary = read_json(summary_path)
+        except Exception:
+            continue
+        row = {field: "" for field in RUN_OUTCOME_FIELDS}
+        row.update({
+            "campaign_id": manifest["campaign_id"],
+            "allocation_patch_id": manifest["allocation_patch_id"],
+            "simulation_semantics_id": manifest["simulation_semantics_id"],
+            "run_id": run_id,
+            "condition_key": condition["condition_key"],
+            "policy_configuration": condition["policy_configuration"],
+            "robot_count": condition["robot_count"],
+            "order_rate": condition["order_rate"],
+            "replication": condition["replication"],
+            "seed": condition["seed"],
+            "stage_first_requested": condition["stage_first_requested"],
+            "status": summary.get("status", ""),
+            "termination_reason": summary.get("termination_reason", summary.get("finalization", {}).get("reason", "")),
+            "source_machine_id": machine.machine_id,
+            "repo_commit": summary.get("repo_commit", manifest.get("commit", "")),
+            "error_type": summary.get("error_type", ""),
+            "error_message": summary.get("error_message", ""),
+            "scenario_hash": condition.get("scenario_hash", ""),
+            "layout_hash": condition.get("layout_hash", ""),
+            "rts_metadata_canonical_sha256": condition["identity"].get("rts_metadata_canonical_sha256", ""),
+            "rts_feature_schema_canonical_sha256": condition["identity"].get("rts_feature_schema_canonical_sha256", ""),
+            "charging_config_canonical_sha256": condition["identity"].get("charging_config_canonical_sha256", ""),
+        })
+        for field in SENSITIVITY_KPI_FIELDS:
+            value = summary.get(field, summary.get("kpi", {}).get(field, ""))
+            if value not in ("", None) or row.get(field, "") == "":
+                row[field] = value
+        for field in RUN_OUTCOME_HASH_FIELDS:
+            if row.get(field, "") == "":
+                row[field] = summary.get(field, "")
+        rows.append(row)
+
+    path = machine_root / "run_outcomes.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    with tmp_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(RUN_OUTCOME_FIELDS), extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    tmp_path.replace(path)
+    return path
+
+
+def condition_sort_key(run: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        int(run["stage_first_requested"]),
+        run["policy_configuration"],
+        int(run["robot_count"]),
+        int(run["order_rate"]),
+        int(run["replication"]),
+        run["run_id"],
+    )
+
+
+def min_free_disk_bytes_from_env() -> int:
+    raw = os.environ.get("RMFS_SENSITIVITY_MIN_FREE_GB")
+    try:
+        gb = float(raw) if raw is not None else DEFAULT_MIN_FREE_DISK_GB
+    except (TypeError, ValueError):
+        gb = DEFAULT_MIN_FREE_DISK_GB
+    return int(max(0.0, gb) * 1024 * 1024 * 1024)
+
+
+def free_disk_bytes(path: Path) -> int:
+    target = Path(path)
+    while not target.exists() and target != target.parent:
+        target = target.parent
+    return int(shutil.disk_usage(target).free)
+
+
+def merge_reclaim_stats(target: dict[str, Any], addition: dict[str, Any]) -> dict[str, Any]:
+    target["bytes"] = int(target.get("bytes", 0) or 0) + int(addition.get("bytes", 0) or 0)
+    by_filename = dict(target.get("by_filename", {}) or {})
+    for name, size in dict(addition.get("by_filename", {}) or {}).items():
+        by_filename[str(name)] = by_filename.get(str(name), 0) + int(size)
+    target["by_filename"] = by_filename
+    return target
+
+
 def execute_machine(
     *,
     manifest_path: Path,
@@ -1162,63 +1498,123 @@ def execute_machine(
     machine = machines[machine_id]
     validate_local_assets(manifest, REPO_ROOT)
     shard = load_machine_shard(manifest, manifest_path, machine_id)
-    # Startup sweep: reclaim regenerable artifacts from any run this machine has
-    # already completed (status==success), not just the current stage. This
-    # cleans up cruft left when a prior invocation crashed mid-stage (e.g. a
-    # disk-full abort) before its per-stage reclaim could run. Safe alongside
-    # live workers: reclaim_completed_run_artifacts only touches successful runs
-    # and always keeps result files.
+    cleanup_stats: dict[str, Any] = {"bytes": 0, "by_filename": {}}
+    startup_reclaimed_runs = 0
     if not keep_run_artifacts:
-        swept_bytes = 0
-        swept_runs = 0
         for condition in shard["runs"]:
             run_root = condition_runtime_root(REPO_ROOT, manifest, machine_id, condition["run_id"])
-            freed = reclaim_completed_run_artifacts(run_root)
-            if freed > 0:
-                swept_bytes += freed
-                swept_runs += 1
-        if swept_bytes > 0:
-            print(f"[sensitivity] startup sweep: reclaimed {swept_bytes / 1_000_000:.0f} MB from {swept_runs} completed run(s)")
-    for stage in stages:
-        selected = [run for run in shard["runs"] if int(run["stage_first_requested"]) == int(stage)]
-        specs = []
-        skipped = []
-        for condition in selected:
-            spec = build_run_spec_from_condition(condition, manifest=manifest, machine=machine, repo_root=REPO_ROOT)
-            if resume and run_complete_for_campaign(condition, spec, manifest):
-                skipped.append(condition["run_id"])
-                continue
-            specs.append(spec)
-        # Reclaim each run's regenerable artifacts the moment it completes,
-        # rather than batching at stage end -- with 100+ runs per stage,
-        # deferring cleanup lets the disk balloon before the stage finishes.
-        reclaim_stats = {"bytes": 0}
+            if run_complete_for_campaign(
+                condition,
+                build_run_spec_from_condition(condition, manifest=manifest, machine=machine, repo_root=REPO_ROOT),
+                manifest,
+            ):
+                stats = reclaim_completed_run_artifacts_with_stats(run_root)
+            else:
+                stats = reclaim_interrupted_run_artifacts_with_stats(run_root)
+            if int(stats.get("bytes", 0) or 0) > 0:
+                startup_reclaimed_runs += 1
+                merge_reclaim_stats(cleanup_stats, stats)
+        if int(cleanup_stats.get("bytes", 0) or 0) > 0:
+            print(
+                f"[sensitivity] startup sweep: reclaimed {int(cleanup_stats['bytes']) / 1_000_000:.0f} MB "
+                f"from {startup_reclaimed_runs} run(s)"
+            )
 
-        def _reclaim_on_complete(spec, return_code, _stats=reclaim_stats):
-            if keep_run_artifacts:
-                return
-            _stats["bytes"] += reclaim_completed_run_artifacts(spec.runtime_root)
+    selected = sorted(
+        [run for run in shard["runs"] if int(run["stage_first_requested"]) in {int(stage) for stage in stages}],
+        key=condition_sort_key,
+    )
+    specs = []
+    skipped = []
+    for condition in selected:
+        spec = build_run_spec_from_condition(condition, manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+        if resume and run_complete_for_campaign(condition, spec, manifest):
+            skipped.append(condition["run_id"])
+            continue
+        specs.append(spec)
 
-        start = time.perf_counter()
+    min_free = min_free_disk_bytes_from_env()
+    campaign_root_path = campaign_root(REPO_ROOT, manifest)
+    peak_runtime_directory_bytes = 0
+
+    def _before_launch(spec: RunSpec, active_count: int) -> bool:
+        available = free_disk_bytes(campaign_root_path)
+        if available >= min_free:
+            return True
+        if active_count > 0:
+            print(
+                "[sensitivity] free disk below floor; pausing new launches until active workers finish: "
+                f"path={campaign_root_path} free={available} required={min_free}"
+            )
+            return False
+        raise RuntimeError(
+            "insufficient free disk before launching sensitivity worker: "
+            f"path={campaign_root_path} free={available} required={min_free}"
+        )
+
+    def _reclaim_on_complete(spec: RunSpec, return_code: int) -> None:
+        nonlocal peak_runtime_directory_bytes
+        peak_runtime_directory_bytes = max(peak_runtime_directory_bytes, directory_size_bytes(spec.runtime_root))
+        if not keep_run_artifacts:
+            summary = load_worker_summary(spec.runtime_root)
+            if int(return_code) == 0 and summary.get("status") == "success":
+                stats = reclaim_completed_run_artifacts_with_stats(spec.runtime_root)
+            else:
+                stats = reclaim_failed_run_artifacts_with_stats(spec.runtime_root)
+            merge_reclaim_stats(cleanup_stats, stats)
+        rebuild_run_outcomes_csv(manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+
+    previous_log_cap = os.environ.get("RMFS_WORKER_LOG_CAP_MB")
+    os.environ["RMFS_WORKER_LOG_CAP_MB"] = "5"
+    start = time.perf_counter()
+    completed = []
+    try:
         if specs:
-            run_specs(
+            completed = run_specs(
                 specs,
                 max_workers=int(machine.max_workers),
                 progress=progress,
                 on_run_complete=_reclaim_on_complete,
+                before_launch=_before_launch,
             )
-        elapsed = time.perf_counter() - start
-        write_machine_summary(
-            manifest=manifest,
-            machine=machine,
-            repo_root=REPO_ROOT,
-            stage=stage,
-            launched=[spec.run_id for spec in specs],
-            skipped=skipped,
-            elapsed_seconds=elapsed,
+    finally:
+        if previous_log_cap is None:
+            os.environ.pop("RMFS_WORKER_LOG_CAP_MB", None)
+        else:
+            os.environ["RMFS_WORKER_LOG_CAP_MB"] = previous_log_cap
+
+    for item in completed:
+        peak_runtime_directory_bytes = max(
+            peak_runtime_directory_bytes,
+            int(item.get("peak_runtime_directory_bytes", 0) or 0),
         )
-        if reclaim_stats["bytes"] > 0:
-            print(f"[sensitivity] stage {stage}: reclaimed {reclaim_stats['bytes'] / 1_000_000:.0f} MB incrementally as runs completed")
+    elapsed = time.perf_counter() - start
+    rebuild_run_outcomes_csv(manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+    write_machine_summary(
+        manifest=manifest,
+        machine=machine,
+        repo_root=REPO_ROOT,
+        stage=None if stages == [1, 2, 3, 4] else min(stages) if len(stages) == 1 else None,
+        launched=[spec.run_id for spec in specs],
+        skipped=skipped,
+        elapsed_seconds=elapsed,
+    )
+    machine_summary_path = campaign_root_path / machine.machine_id / "machine_summary.json"
+    if machine_summary_path.exists():
+        summary = read_json(machine_summary_path)
+        summary.update({
+            "stages_requested": [int(stage) for stage in stages],
+            "allocation_patch_id": manifest["allocation_patch_id"],
+            "simulation_semantics_id": manifest["simulation_semantics_id"],
+            "cleanup_reclaimed_total_bytes": cleanup_stats.get("bytes", 0),
+            "cleanup_reclaimed_bytes_by_filename": cleanup_stats.get("by_filename", {}),
+            "persist_final_state_enabled": False,
+            "peak_runtime_directory_bytes": peak_runtime_directory_bytes,
+            "min_free_disk_bytes": min_free,
+        })
+        write_json(machine_summary_path, summary)
+    if int(cleanup_stats.get("bytes", 0) or 0) > 0:
+        print(f"[sensitivity] reclaimed {int(cleanup_stats['bytes']) / 1_000_000:.0f} MB during this invocation")
     return 0
 
 
@@ -1242,7 +1638,7 @@ def rebalance_future_stages(manifest_path: Path) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare or run the distributed RMFS sensitivity campaign.")
     parser.add_argument("--prepare-campaign", action="store_true", default=False)
-    parser.add_argument("--machine-id", choices=("win_lukman", "win_admin", "citi_angiebow", "codex_local"))
+    parser.add_argument("--machine-id", choices=MACHINE_IDS)
     parser.add_argument("--manifest", default=None)
     parser.add_argument("--run-continuously", action="store_true", default=False)
     parser.add_argument("--stage", action="append", type=int, choices=(1, 2, 3, 4))
@@ -1306,11 +1702,15 @@ def main(argv: Iterable[str] | None = None) -> int:
                     if existing_hash != new_hash:
                         mismatches.append(f"asset hash mismatch for {key}: existing={existing_hash}, expected={new_hash}")
                 
-                # Check machines
-                existing_machines = existing_manifest.get("machines", [])
-                new_machines = [asdict(m) for m in machines]
-                if sorted(existing_machines, key=lambda x: x["machine_id"]) != sorted(new_machines, key=lambda x: x["machine_id"]):
-                     mismatches.append("machines configuration mismatch")
+                if existing_manifest.get("allocation_patch_id") != new_manifest.get("allocation_patch_id"):
+                    mismatches.append(
+                        "allocation_patch_id mismatch: "
+                        f"existing={existing_manifest.get('allocation_patch_id')}, expected={new_manifest.get('allocation_patch_id')}"
+                    )
+                if existing_manifest.get("simulation_semantics_id") != SIMULATION_SEMANTICS_ID:
+                    mismatches.append("simulation_semantics_id mismatch")
+                if existing_manifest.get("allocation_config", {}).get("machine_allocation_config") != new_manifest.get("allocation_config", {}).get("machine_allocation_config"):
+                    mismatches.append("machine allocation configuration mismatch")
                      
                 # Check runs
                 if len(existing_manifest.get("runs", [])) != len(new_manifest["runs"]):
@@ -1353,31 +1753,28 @@ def main(argv: Iterable[str] | None = None) -> int:
         # 1. strictly load canonical assets
         validate_local_assets(manifest, REPO_ROOT)
         
-        # 2. Check all 1,500 unique identities
+        # 2. Check all 600 unique identities
         runs = manifest["runs"]
-        if len(runs) != 1500:
-            raise AssertionError(f"Expected 1500 runs, got {len(runs)}")
+        if len(runs) != 600:
+            raise AssertionError(f"Expected 600 runs, got {len(runs)}")
             
         run_ids = [run["run_id"] for run in runs]
         condition_keys = [run["condition_key"] for run in runs]
-        if len(set(run_ids)) != 1500:
+        if len(set(run_ids)) != 600:
             raise AssertionError(f"Duplicate run IDs found, unique count: {len(set(run_ids))}")
-        if len(set(condition_keys)) != 1500:
+        if len(set(condition_keys)) != 600:
             raise AssertionError(f"Duplicate condition keys found, unique count: {len(set(condition_keys))}")
             
-        # 3. Check stage quotas and seeds
-        expected_stage_counts = {"1": 30, "2": 38, "3": 532, "4": 900}
+        # 3. Check stage counts and seeds
+        expected_stage_counts = {"1": 30, "2": 19, "3": 19, "4": 532}
         actual_stage_counts = manifest["assertions"]["stage_new_runs"]
         if actual_stage_counts != expected_stage_counts:
             raise AssertionError(f"Stage new runs count mismatch: expected {expected_stage_counts}, got {actual_stage_counts}")
-            
-        expected_quotas = {str(stage): STAGE_QUOTAS[stage] for stage in (1, 2, 3, 4)}
-        actual_allocations = manifest["assertions"]["stage_allocations"]
-        if actual_allocations != expected_quotas:
-            raise AssertionError(f"Stage quotas mismatch: expected {expected_quotas}, got {actual_allocations}")
+        if manifest["assertions"].get("macbook_stage4_count") != 0:
+            raise AssertionError("MacBook received Stage 4 assignments")
             
         # Verify seeds
-        for replication in (1, 20, 50):
+        for replication in (1, 20):
             expected_seed = seed_for_replication(replication)
             for run in runs:
                 if run["replication"] == replication:
@@ -1385,8 +1782,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                         raise AssertionError(f"Seed mismatch for rep {replication}: expected {expected_seed}, got {run['seed']}")
                         
         # 4. Construct every RunSpec
-        machines = default_machines(REPO_ROOT)
-        machine_by_id = {m.machine_id: m for m in machines}
+        machine_by_id = machine_map(manifest)
         for run in runs:
             m_id = run["machine_id"]
             if m_id not in machine_by_id:
@@ -1399,6 +1795,31 @@ def main(argv: Iterable[str] | None = None) -> int:
             for key, val in spec_dict.items():
                 if isinstance(val, str) and "data/runtime/rts_training" in val:
                     raise AssertionError(f"RunSpec {run['run_id']} has key '{key}' referencing runtime training: {val}")
+            if spec.persist_final_state is not False:
+                raise AssertionError(f"RunSpec {run['run_id']} unexpectedly persists final state")
+            if spec.rts_policy_checkpoint_id != ("not_applicable" if run["policy_configuration"] == "all_off" else manifest["assets"]["rts_checkpoint_id"]):
+                raise AssertionError(f"RunSpec {run['run_id']} has wrong RTS checkpoint ID")
+        print(json.dumps({
+            "campaign_id": manifest["campaign_id"],
+            "allocation_patch_id": manifest["allocation_patch_id"],
+            "simulation_semantics_id": manifest["simulation_semantics_id"],
+            "stage_counts": actual_stage_counts,
+            "per_machine_stage_counts": manifest["assertions"]["stage_allocations"],
+            "total_runs": len(runs),
+            "macbook_stage4_count": manifest["assertions"]["macbook_stage4_count"],
+            "sensitivity_persist_final_state": False,
+            "expected_worker_files_without_state": [
+                "assign_order.csv",
+                "pod_info.csv",
+                "skus_data.csv",
+                "sorted_skus_data.csv",
+                "worker_summary.json",
+            ],
+            "successful_run_retained_files": ["run_spec.json", "worker_summary.json"],
+            "successful_run_deleted_files": list(SUCCESS_RECLAIMABLE_RUN_ARTIFACTS),
+            "failed_run_deleted_files": list(FAILED_RECLAIMABLE_RUN_ARTIFACTS),
+            "min_free_disk_bytes": min_free_disk_bytes_from_env(),
+        }, indent=2, sort_keys=True))
         
         print("[sensitivity] Validation successful! All checks passed.")
         return 0
@@ -1416,6 +1837,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         root = write_campaign_files(manifest, dry_run=bool(args.dry_run))
         print(json.dumps({
             "campaign_id": campaign_id,
+            "allocation_patch_id": manifest["allocation_patch_id"],
+            "simulation_semantics_id": manifest["simulation_semantics_id"],
             "campaign_root": str(root),
             "dry_run": bool(args.dry_run),
             "assertions": manifest["assertions"],

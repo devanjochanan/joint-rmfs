@@ -1795,7 +1795,7 @@ def finalize_headless_run(
 class HeadlessSimulationSession:
     """Resident worker path; GUI compatibility continues through setup()/tick()."""
 
-    def __init__(self, *, persist_final_state: bool = True):
+    def __init__(self, *, persist_final_state: bool = False):
         self.persist_final_state = bool(persist_final_state)
         self.warehouse = None
         self.setup_payload = None

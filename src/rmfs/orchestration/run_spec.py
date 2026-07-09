@@ -43,6 +43,7 @@ class RunSpec:
     pps_model_path: str | None = None
     charging_enabled: bool | None = None
     charging_config_path: str | None = None
+    persist_final_state: bool = False
     keep_runtime_artifacts: bool = False
     detail_db: bool = False
     timing: bool = False
@@ -69,6 +70,8 @@ class RunSpec:
     rts_torch_threads: int | None = None
     rts_torch_interop_threads: int | None = None
     campaign_id: str | None = None
+    allocation_patch_id: str | None = None
+    simulation_semantics_id: str | None = None
     machine_id: str | None = None
     stage_first_requested: int | None = None
     kpi_schema_version: str | None = None
