@@ -599,8 +599,21 @@ def derive_sensitivity_kpi_payload(
 
 
 def git_value(repo_root: Path, *args):
+    import shutil
+    git_exec = shutil.which("git")
+    if not git_exec:
+        for path in [
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files\Git\bin\git.exe",
+            r"C:\Program Files (x86)\Git\cmd\git.exe",
+        ]:
+            if Path(path).exists():
+                git_exec = path
+                break
+    if not git_exec:
+        git_exec = "git"
     try:
-        return subprocess.check_output(["git", *args], cwd=repo_root, text=True).strip()
+        return subprocess.check_output([git_exec, *args], cwd=repo_root, text=True).strip()
     except Exception:
         return None
 
