@@ -200,20 +200,6 @@ def relative_to_repo(path: Path) -> str:
         raise ValueError(f"path must be inside repository for portable shards: {resolved}") from exc
 
 
-def resolve_git_executable() -> str:
-    git_path = shutil.which("git")
-    if git_path:
-        return git_path
-    for path in [
-        r"C:\Program Files\Git\cmd\git.exe",
-        r"C:\Program Files\Git\bin\git.exe",
-        r"C:\Program Files (x86)\Git\cmd\git.exe",
-    ]:
-        if Path(path).exists():
-            return path
-    return "git"
-
-
 def git_clean_value(*args: str) -> str | None:
     return git_value(REPO_ROOT, *args)
 
@@ -221,18 +207,13 @@ def git_clean_value(*args: str) -> str | None:
 def dirty_tracked_files(repo_root: Path = REPO_ROOT) -> list[str]:
     try:
         output = subprocess.check_output(
-            [resolve_git_executable(), "status", "--porcelain", "--untracked-files=no"],
+            ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=repo_root,
             text=True,
             stderr=subprocess.STDOUT,
         )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"could not verify clean tracked files: {exc.output.strip()}") from exc
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "git executable not found in PATH or standard Windows installation directories. "
-            "Please ensure Git is installed."
-        ) from exc
     dirty = []
     for line in output.splitlines():
         if not line.strip():
