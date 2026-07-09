@@ -31,6 +31,7 @@ class _Pipe:
 
 class _FakeProcess:
     instances = []
+    poll_plan = []
 
     def __init__(self, *args, **kwargs):
         self.args = args
@@ -38,9 +39,14 @@ class _FakeProcess:
         self.stdout = _Pipe()
         self.stderr = _Pipe()
         self.returncode = None
+        self.polls_remaining = _FakeProcess.poll_plan.pop(0) if _FakeProcess.poll_plan else 1
         _FakeProcess.instances.append(self)
 
     def poll(self):
+        if self.returncode is None:
+            self.polls_remaining -= 1
+            if self.polls_remaining <= 0:
+                self.returncode = 0
         return self.returncode
 
     def wait(self, timeout=None):
@@ -273,6 +279,7 @@ def test_failed_and_interrupted_cleanup_preserves_diagnostics(tmp_path: Path):
 
 def test_run_specs_rechecks_launch_guard_after_cleanup(tmp_path: Path, monkeypatch):
     _FakeProcess.instances = []
+    _FakeProcess.poll_plan = [1, 1]
     specs = [_spec(tmp_path, "first"), _spec(tmp_path, "second")]
     launch_checks = []
     completions = []
@@ -300,3 +307,96 @@ def test_run_specs_rechecks_launch_guard_after_cleanup(tmp_path: Path, monkeypat
         ("second", 1, []),
     ]
     assert launch_checks[-1] == ("second", 0, [("first", 0)])
+
+
+def test_run_specs_surfaces_completion_callback_failure(tmp_path: Path, monkeypatch):
+    _FakeProcess.instances = []
+    _FakeProcess.poll_plan = [1, 1]
+    specs = [_spec(tmp_path, "first"), _spec(tmp_path, "second")]
+    launched = []
+
+    def before_launch(spec, active_count):
+        launched.append(spec.run_id)
+        return True
+
+    def on_complete(spec, return_code):
+        raise ValueError("export failed")
+
+    monkeypatch.setattr("src.rmfs.orchestration.local_executor.subprocess.Popen", _FakeProcess)
+
+    try:
+        run_specs(
+            specs,
+            max_workers=1,
+            before_launch=before_launch,
+            on_run_complete=on_complete,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("callback failure was swallowed")
+
+    assert "run_id=first" in message
+    assert "operation=on_run_complete" in message
+    assert "ValueError: export failed" in message
+    assert launched == ["first"]
+
+
+def test_run_specs_progress_survives_deleted_status_and_reaches_total(tmp_path: Path, monkeypatch):
+    _FakeProcess.instances = []
+    _FakeProcess.poll_plan = [1, 1]
+    specs = [_spec(tmp_path, "first"), _spec(tmp_path, "second")]
+    progress_updates = []
+
+    class FakeBar:
+        def __init__(self, total, **_kwargs):
+            self.total = total
+            self.current = 0
+
+        def update(self, amount):
+            self.current += amount
+            progress_updates.append(self.current)
+
+        def set_postfix(self, **_kwargs):
+            return None
+
+        def refresh(self):
+            return None
+
+        def close(self):
+            return None
+
+    def on_complete(spec, return_code):
+        _write_json(
+            spec.runtime_root / "worker_summary.json",
+            {
+                "status": "success",
+                "netlogo_steps_completed": spec.ticks,
+            },
+        )
+        (spec.runtime_root / "worker_status.json").unlink(missing_ok=True)
+
+    monkeypatch.setattr("src.rmfs.orchestration.local_executor.subprocess.Popen", _FakeProcess)
+    monkeypatch.setattr("src.rmfs.orchestration.local_executor._make_controller_progress_bar", lambda _enabled, total: FakeBar(total))
+
+    run_specs(specs, max_workers=1, progress=True, on_run_complete=on_complete)
+
+    assert progress_updates == sorted(progress_updates)
+    assert progress_updates[-1] == sum(spec.ticks for spec in specs)
+
+
+def test_run_specs_non_progress_detects_earliest_finish_and_refills_slot(tmp_path: Path, monkeypatch):
+    _FakeProcess.instances = []
+    _FakeProcess.poll_plan = [6, 1, 1]
+    specs = [_spec(tmp_path, "slow"), _spec(tmp_path, "fast"), _spec(tmp_path, "replacement")]
+    completions = []
+
+    def on_complete(spec, return_code):
+        completions.append(spec.run_id)
+
+    monkeypatch.setattr("src.rmfs.orchestration.local_executor.subprocess.Popen", _FakeProcess)
+
+    run_specs(specs, max_workers=2, progress=False, on_run_complete=on_complete)
+
+    assert completions[:2] == ["fast", "replacement"]
+    assert completions[-1] == "slow"

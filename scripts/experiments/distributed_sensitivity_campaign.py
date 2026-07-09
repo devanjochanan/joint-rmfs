@@ -93,6 +93,17 @@ MACHINE_IDS = (
     "dewa_macbook",
     "citi_gojira",
 )
+SCIENTIFIC_TRACKED_PATHS = (
+    "data/input/base/generated_pod.csv",
+    "data/input/base/items.csv",
+    "data/input/base/pods.csv",
+    "data/input/base/raw_order.csv",
+    "data/input/charging/salsa_charging_config.json",
+    "data/models/pps/pps_rl_best.zip",
+    "data/models/rts/batch_000014/checkpoint/model.pt",
+    "data/models/rts/batch_000014/checkpoint/metadata.json",
+    "data/models/rts/batch_000014/checkpoint/feature_schema.json",
+)
 
 
 @dataclass(frozen=True)
@@ -168,6 +179,41 @@ def relative_to_repo(path: Path) -> str:
 
 def git_clean_value(*args: str) -> str | None:
     return git_value(REPO_ROOT, *args)
+
+
+def dirty_tracked_files(repo_root: Path = REPO_ROOT) -> list[str]:
+    try:
+        output = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=repo_root,
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"could not verify clean tracked files: {exc.output.strip()}") from exc
+    dirty = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        dirty.append(line[3:] if len(line) > 3 else line.strip())
+    return dirty
+
+
+def ensure_clean_tracked_scientific_files(repo_root: Path = REPO_ROOT) -> None:
+    scientific = set(SCIENTIFIC_TRACKED_PATHS)
+    dirty = [
+        path
+        for path in dirty_tracked_files(repo_root)
+        if path in scientific or path.split(" -> ")[-1] in scientific
+    ]
+    if dirty:
+        preview = "\n".join(f" - {path}" for path in dirty[:20])
+        suffix = "" if len(dirty) <= 20 else f"\n - ... {len(dirty) - 20} more"
+        raise RuntimeError(
+            "tracked files differ from HEAD; refusing distributed sensitivity operation "
+            "because scientific identity is derived from tracked content:\n"
+            f"{preview}{suffix}"
+        )
 
 
 def linux_physical_core_count() -> int | None:
@@ -655,10 +701,74 @@ def build_input_identity(input_meta: dict[str, Any]) -> dict[str, Any]:
     file_identities = {}
     for rel_path in sorted(input_meta.get("file_digests", {})):
         file_identities[rel_path] = tracked_text_identity(REPO_ROOT / INPUT_ROOT_RELATIVE / rel_path)
+    required = {"generated_pod.csv", "items.csv", "pods.csv", "raw_order.csv"}
+    missing = sorted(required - set(file_identities))
+    if missing:
+        raise RuntimeError(f"scientific input identity missing executed input files: {missing}")
     return {
         "input_root_relative": INPUT_ROOT_RELATIVE.as_posix(),
         "tracked_file_identities": file_identities,
-        "layout_sha256": input_meta["layout"]["layout_sha256"],
+        "layout_identity": file_identities["generated_pod.csv"],
+    }
+
+
+def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, Any]) -> dict[str, Any]:
+    asset_dict = asdict(assets) if isinstance(assets, AssetBundle) else dict(assets)
+    common = {
+        "order_generation_mode": "shuffled_historical_cycle",
+        "full_raw_order_replay": False,
+        "pod_location_mode": "randomize_slots",
+        "persist_final_state": False,
+        "detail_db": False,
+        "timing": False,
+        "robot_task_allocator": "legacy_nearest",
+        "regret_k": None,
+        "task_allocator_scope": "active_job_queue",
+        "worker_status_cadence": 1000,
+    }
+    if policy == "all_on_rl":
+        return {
+            **common,
+            "rts_policy_mode": "rts_rl_explicit",
+            "rts_rollout_enabled": True,
+            "rts_rollout_write_disk": False,
+            "rts_zone_selection_mode": "auto",
+            "rts_zone_ids": ["auto"],
+            "rts_checkpoint_id": asset_dict["rts_checkpoint_id"],
+            "rts_policy_action_mode": "greedy",
+            "rts_policy_device": "cpu",
+            "rts_feature_ablation": "full",
+            "rts_state_capture_mode": "full",
+            "pps_mode": "ppo",
+            "pps_model_mode": "canonical_ppo",
+            "charging_enabled": True,
+            "charging_config_mode": "canonical",
+            "committed_next_reservations_enabled": True,
+        }
+    if policy == "all_off":
+        return {
+            **common,
+            "rts_policy_mode": "current",
+            "rts_rollout_enabled": False,
+            "rts_rollout_write_disk": False,
+            "rts_checkpoint_id": "not_applicable",
+            "rts_policy_action_mode": None,
+            "rts_policy_device": None,
+            "rts_feature_ablation": None,
+            "rts_state_capture_mode": "auto",
+            "pps_mode": "heuristic",
+            "pps_model_mode": "heuristic",
+            "charging_enabled": False,
+            "charging_config_mode": "disabled",
+            "committed_next_reservations_enabled": False,
+        }
+    raise ValueError(f"unknown policy configuration: {policy}")
+
+
+def treatment_execution_contracts(assets: AssetBundle | dict[str, Any]) -> dict[str, Any]:
+    return {
+        policy: treatment_execution_contract(policy, assets)
+        for policy in POLICY_CONFIGURATIONS
     }
 
 
@@ -687,7 +797,7 @@ def build_scientific_identity(
         "input_identity": input_identity,
         "scenario_layout_identity": {
             "scenario_hash": short_hash(input_identity),
-            "layout_hash": input_identity["layout_sha256"],
+            "layout_hash": input_identity["layout_identity"],
         },
         "assets": {
             "pps_model_relative_path": assets.pps_model_relative_path,
@@ -712,6 +822,7 @@ def build_scientific_identity(
             "persist_final_state": False,
             "charging_semantics": "canonical_config_for_all_on_rl_disabled_for_all_off",
         },
+        "treatment_execution_contracts": treatment_execution_contracts(assets),
     }
 
 
@@ -1185,6 +1296,7 @@ def build_run_spec_from_condition(
 ) -> RunSpec:
     assets = manifest["assets"]
     seed = int(condition["seed"])
+    contract = treatment_execution_contract(condition["policy_configuration"], assets)
     common = {
         "run_id": condition["run_id"],
         "ticks": int(condition["ticks"]),
@@ -1200,28 +1312,28 @@ def build_run_spec_from_condition(
         "robot_count": int(condition["robot_count"]),
         "expected_picking_station_count": PICKER_COUNT,
         "expected_replenishment_station_count": REPLENISHMENT_COUNT,
-        "persist_final_state": False,
+        "persist_final_state": bool(contract["persist_final_state"]),
         "keep_runtime_artifacts": False,
-        "detail_db": False,
-        "timing": False,
-        "worker_status_cadence": 1000,
+        "detail_db": bool(contract["detail_db"]),
+        "timing": bool(contract["timing"]),
+        "worker_status_cadence": int(contract["worker_status_cadence"]),
         "run_profile": "training",
         "run_horizon_ticks": int(condition["ticks"]),
         "demand_horizon_ticks": int(condition["ticks"]) + 1000,
         "demand_buffer_ticks": 1000,
-        "order_generation_mode": "shuffled_historical_cycle",
-        "full_raw_order_replay": False,
+        "order_generation_mode": str(contract["order_generation_mode"]),
+        "full_raw_order_replay": bool(contract["full_raw_order_replay"]),
         "order_rate_per_hour": int(condition["order_rate"]),
-        "pod_location_mode": "randomize_slots",
+        "pod_location_mode": str(contract["pod_location_mode"]),
         "pod_location_seed": seed,
         "experiment_id": manifest["campaign_id"],
         "scenario_id": condition["scenario_id"],
         "artifact_label": condition["run_id"],
         "batch_id": int(condition["stage_first_requested"]),
         "worker_id": int(condition["replication"]),
-        "robot_task_allocator": "legacy_nearest",
-        "regret_k": None,
-        "task_allocator_scope": "active_job_queue",
+        "robot_task_allocator": str(contract["robot_task_allocator"]),
+        "regret_k": contract["regret_k"],
+        "task_allocator_scope": str(contract["task_allocator_scope"]),
         "rts_torch_threads": 1,
         "rts_torch_interop_threads": 1,
         "campaign_id": manifest["campaign_id"],
@@ -1239,31 +1351,32 @@ def build_run_spec_from_condition(
     if condition["policy_configuration"] == "all_on_rl":
         return RunSpec(
             **common,
-            rts_policy_mode="rts_rl_explicit",
-            rts_rollout_enabled=True,
-            rts_rollout_write_disk=False,
-            rts_zone_ids=["auto"],
+            rts_policy_mode=str(contract["rts_policy_mode"]),
+            rts_rollout_enabled=bool(contract["rts_rollout_enabled"]),
+            rts_rollout_write_disk=bool(contract["rts_rollout_write_disk"]),
+            rts_zone_ids=list(contract["rts_zone_ids"]),
             rts_policy_checkpoint_dir=str(local_asset_path(repo_root, assets["rts_checkpoint_relative_dir"])),
-            rts_policy_checkpoint_id=assets["rts_checkpoint_id"],
-            rts_policy_action_mode="greedy",
-            rts_policy_device="cpu",
-            rts_feature_ablation="full",
-            rts_state_capture_mode="full",
-            pps_mode="ppo",
+            rts_policy_checkpoint_id=str(contract["rts_checkpoint_id"]),
+            rts_policy_action_mode=str(contract["rts_policy_action_mode"]),
+            rts_policy_device=str(contract["rts_policy_device"]),
+            rts_feature_ablation=str(contract["rts_feature_ablation"]),
+            rts_state_capture_mode=str(contract["rts_state_capture_mode"]),
+            pps_mode=str(contract["pps_mode"]),
             pps_model_path=str(local_asset_path(repo_root, assets["pps_model_relative_path"])),
-            charging_enabled=True,
+            charging_enabled=bool(contract["charging_enabled"]),
             charging_config_path=str(local_asset_path(repo_root, assets["charging_config_relative_path"])),
-            committed_next_reservations_enabled=True,
+            committed_next_reservations_enabled=bool(contract["committed_next_reservations_enabled"]),
         )
     return RunSpec(
         **common,
-        rts_policy_mode="current",
-        rts_rollout_enabled=False,
-        rts_policy_checkpoint_id="not_applicable",
-        rts_state_capture_mode="auto",
-        pps_mode="heuristic",
-        charging_enabled=False,
-        committed_next_reservations_enabled=False,
+        rts_policy_mode=str(contract["rts_policy_mode"]),
+        rts_rollout_enabled=bool(contract["rts_rollout_enabled"]),
+        rts_rollout_write_disk=bool(contract["rts_rollout_write_disk"]),
+        rts_policy_checkpoint_id=str(contract["rts_checkpoint_id"]),
+        rts_state_capture_mode=str(contract["rts_state_capture_mode"]),
+        pps_mode=str(contract["pps_mode"]),
+        charging_enabled=bool(contract["charging_enabled"]),
+        committed_next_reservations_enabled=bool(contract["committed_next_reservations_enabled"]),
     )
 
 
@@ -1301,6 +1414,23 @@ def run_complete_for_campaign(condition: dict[str, Any], spec: RunSpec, manifest
     if not bool(summary.get("kpi_complete")):
         return False
     return True
+
+
+def completion_failure_summary(
+    condition: dict[str, Any],
+    spec: RunSpec,
+    return_codes: dict[str, int],
+) -> dict[str, Any]:
+    summary = load_worker_summary(spec.runtime_root)
+    return {
+        "run_id": condition["run_id"],
+        "condition_key": condition["condition_key"],
+        "stage": condition["stage_first_requested"],
+        "return_code": return_codes.get(condition["run_id"]),
+        "status": summary.get("status", "missing"),
+        "error_type": summary.get("error_type", ""),
+        "error_message": summary.get("error_message", ""),
+    }
 
 
 def load_machine_shard(manifest: dict[str, Any], manifest_path: Path, machine_id: str) -> dict[str, Any]:
@@ -1491,6 +1621,7 @@ def execute_machine(
     progress: bool,
     keep_run_artifacts: bool = False,
 ) -> int:
+    ensure_clean_tracked_scientific_files(REPO_ROOT)
     manifest = read_json(manifest_path)
     machines = machine_map(manifest)
     if machine_id not in machines:
@@ -1568,6 +1699,7 @@ def execute_machine(
     os.environ["RMFS_WORKER_LOG_CAP_MB"] = "5"
     start = time.perf_counter()
     completed = []
+    run_return_codes: dict[str, int] = {}
     try:
         if specs:
             completed = run_specs(
@@ -1584,6 +1716,7 @@ def execute_machine(
             os.environ["RMFS_WORKER_LOG_CAP_MB"] = previous_log_cap
 
     for item in completed:
+        run_return_codes[item["spec"].run_id] = int(item.get("return_code", -1))
         peak_runtime_directory_bytes = max(
             peak_runtime_directory_bytes,
             int(item.get("peak_runtime_directory_bytes", 0) or 0),
@@ -1615,6 +1748,28 @@ def execute_machine(
         write_json(machine_summary_path, summary)
     if int(cleanup_stats.get("bytes", 0) or 0) > 0:
         print(f"[sensitivity] reclaimed {int(cleanup_stats['bytes']) / 1_000_000:.0f} MB during this invocation")
+
+    invalid = []
+    for condition in selected:
+        spec = build_run_spec_from_condition(condition, manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+        if not run_complete_for_campaign(condition, spec, manifest):
+            invalid.append(completion_failure_summary(condition, spec, run_return_codes))
+    if invalid:
+        try:
+            rebuild_run_outcomes_csv(manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+        except Exception as exc:
+            print(f"[sensitivity] warning: failed to rebuild run_outcomes.csv after invalid runs: {type(exc).__name__}: {exc}")
+        print(f"[sensitivity] {len(invalid)} selected run(s) did not satisfy strict completion:")
+        for row in invalid[:20]:
+            print(
+                " - "
+                f"run_id={row['run_id']} condition={row['condition_key']} stage={row['stage']} "
+                f"return_code={row['return_code']} status={row['status']} "
+                f"error={row['error_type']}: {row['error_message']}"
+            )
+        if len(invalid) > 20:
+            print(f" - ... {len(invalid) - 20} more")
+        return 1
     return 0
 
 
@@ -1665,6 +1820,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.prepare_campaign or args.validate_only or args.run_continuously or args.stage:
+        ensure_clean_tracked_scientific_files(REPO_ROOT)
     if args.rebalance_future_stages:
         if not args.manifest:
             raise SystemExit("--rebalance-future-stages requires --manifest")
@@ -1807,6 +1964,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             "per_machine_stage_counts": manifest["assertions"]["stage_allocations"],
             "total_runs": len(runs),
             "macbook_stage4_count": manifest["assertions"]["macbook_stage4_count"],
+            "clean_tracked_scientific_inputs": True,
+            "strict_completion_required": True,
+            "completion_callbacks_fail_closed": True,
+            "treatment_execution_contracts": manifest["scientific_identity"]["treatment_execution_contracts"],
             "sensitivity_persist_final_state": False,
             "expected_worker_files_without_state": [
                 "assign_order.csv",

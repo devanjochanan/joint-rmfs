@@ -9,16 +9,22 @@ from scripts.experiments.distributed_sensitivity_campaign import (
     SIMULATION_SEMANTICS_ID,
     AssetBundle,
     Machine,
+    build_input_identity,
     build_campaign_plan,
     build_run_spec_from_condition,
+    build_scientific_identity,
     default_machines,
+    ensure_clean_tracked_scientific_files,
     execute_machine,
     generate_allocation_patch_id,
     generate_campaign_id,
+    generate_campaign_id_from_identity,
+    main,
     relative_to_repo,
     rebuild_run_outcomes_csv,
     run_complete_for_campaign,
     seed_for_replication,
+    treatment_execution_contracts,
     write_json,
 )
 
@@ -184,8 +190,31 @@ def test_continuous_execution_combines_stages_before_calling_run_specs(tmp_path,
 
     def fake_run_specs(specs, **kwargs):
         launched["stage_order"] = [spec.stage_first_requested for spec in specs]
-        return []
+        completed = []
+        for spec in specs:
+            write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
+            write_json(
+                spec.runtime_root / "worker_summary.json",
+                {
+                    "run_id": spec.run_id,
+                    "campaign_id": spec.campaign_id,
+                    "simulation_semantics_id": spec.simulation_semantics_id,
+                    "kpi_schema_version": spec.kpi_schema_version,
+                    "policy_configuration": spec.policy_configuration,
+                    "replication": spec.replication,
+                    "seed": spec.campaign_seed,
+                    "requested_robot_count": spec.robot_count,
+                    "rts_checkpoint_sha256": spec.rts_checkpoint_sha256,
+                    "pps_model_sha256": spec.pps_model_sha256,
+                    "status": "success",
+                    "finalization": {"finalized": True},
+                    "kpi_complete": True,
+                },
+            )
+            completed.append({"spec": spec, "return_code": 0, "peak_runtime_directory_bytes": 0})
+        return completed
 
+    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.ensure_clean_tracked_scientific_files", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.validate_local_assets", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_specs", fake_run_specs)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.rebuild_run_outcomes_csv", lambda **_kwargs: root / machine.machine_id / "run_outcomes.csv")
@@ -199,6 +228,99 @@ def test_continuous_execution_combines_stages_before_calling_run_specs(tmp_path,
     )
 
     assert launched["stage_order"][:8] == [1, 1, 1, 1, 1, 1, 2, 2]
+
+
+def test_execute_machine_returns_nonzero_for_invalid_selected_run(tmp_path, monkeypatch):
+    root_rel = f"data/runtime/distributed_sensitivity/test_invalid_{tmp_path.name}"
+    manifest = {**build_manifest(), "campaign_root_relative": root_rel}
+    machine = default_machines()[0]
+    condition = next(run for run in manifest["runs"] if run["machine_id"] == machine.machine_id)
+    manifest = {
+        **manifest,
+        "machines": [machine.__dict__],
+        "runs": [condition],
+        "shards": {machine.machine_id: "shards/test_shard.json"},
+    }
+    root = Path.cwd() / root_rel
+    write_json(root / "manifest.json", manifest)
+    write_json(root / "shards" / "test_shard.json", {"runs": [condition]})
+
+    def fake_run_specs(specs, **_kwargs):
+        spec = specs[0]
+        write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
+        write_json(
+            spec.runtime_root / "worker_summary.json",
+            {
+                "run_id": spec.run_id,
+                "status": "failure",
+                "error_type": "RuntimeError",
+                "error_message": "boom",
+            },
+        )
+        return [{"spec": spec, "return_code": 1, "peak_runtime_directory_bytes": 0}]
+
+    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.ensure_clean_tracked_scientific_files", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.validate_local_assets", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_specs", fake_run_specs)
+
+    assert execute_machine(
+        manifest_path=root / "manifest.json",
+        machine_id=machine.machine_id,
+        stages=[condition["stage_first_requested"]],
+        resume=False,
+        progress=False,
+    ) == 1
+
+
+def test_execute_machine_returns_zero_only_after_strict_completion(tmp_path, monkeypatch):
+    root_rel = f"data/runtime/distributed_sensitivity/test_success_{tmp_path.name}"
+    manifest = {**build_manifest(), "campaign_root_relative": root_rel}
+    machine = default_machines()[0]
+    condition = next(run for run in manifest["runs"] if run["machine_id"] == machine.machine_id)
+    manifest = {
+        **manifest,
+        "machines": [machine.__dict__],
+        "runs": [condition],
+        "shards": {machine.machine_id: "shards/test_shard.json"},
+    }
+    root = Path.cwd() / root_rel
+    write_json(root / "manifest.json", manifest)
+    write_json(root / "shards" / "test_shard.json", {"runs": [condition]})
+
+    def fake_run_specs(specs, **_kwargs):
+        spec = specs[0]
+        write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
+        write_json(
+            spec.runtime_root / "worker_summary.json",
+            {
+                "run_id": spec.run_id,
+                "campaign_id": spec.campaign_id,
+                "simulation_semantics_id": spec.simulation_semantics_id,
+                "kpi_schema_version": spec.kpi_schema_version,
+                "policy_configuration": spec.policy_configuration,
+                "replication": spec.replication,
+                "seed": spec.campaign_seed,
+                "requested_robot_count": spec.robot_count,
+                "rts_checkpoint_sha256": spec.rts_checkpoint_sha256,
+                "pps_model_sha256": spec.pps_model_sha256,
+                "status": "success",
+                "finalization": {"finalized": True},
+                "kpi_complete": True,
+            },
+        )
+        return [{"spec": spec, "return_code": 1, "peak_runtime_directory_bytes": 0}]
+
+    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.ensure_clean_tracked_scientific_files", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.validate_local_assets", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_specs", fake_run_specs)
+
+    assert execute_machine(
+        manifest_path=root / "manifest.json",
+        machine_id=machine.machine_id,
+        stages=[condition["stage_first_requested"]],
+        resume=False,
+        progress=False,
+    ) == 0
 
 
 def test_run_outcomes_csv_rebuilds_from_retained_worker_summary(tmp_path):
@@ -268,3 +390,93 @@ def test_resume_identity_accepts_cleaned_success_summary(tmp_path):
     )
 
     assert run_complete_for_campaign(condition, spec, manifest) is True
+
+
+def test_clean_scientific_inputs_reject_dirty_tracked_input(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.experiments.distributed_sensitivity_campaign.dirty_tracked_files",
+        lambda _repo_root: ["data/input/base/raw_order.csv"],
+    )
+
+    try:
+        ensure_clean_tracked_scientific_files(Path.cwd())
+    except RuntimeError as exc:
+        assert "data/input/base/raw_order.csv" in str(exc)
+    else:
+        raise AssertionError("dirty scientific input was accepted")
+
+
+def test_clean_scientific_inputs_ignore_runtime_outputs(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.experiments.distributed_sensitivity_campaign.dirty_tracked_files",
+        lambda _repo_root: ["data/runtime/distributed_sensitivity/manifest.json"],
+    )
+
+    ensure_clean_tracked_scientific_files(Path.cwd())
+
+
+def test_dirty_scientific_inputs_stop_prepare_validate_and_execution(monkeypatch):
+    def fail_clean(*_args, **_kwargs):
+        raise RuntimeError("dirty scientific input")
+
+    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.ensure_clean_tracked_scientific_files", fail_clean)
+
+    for argv in (
+        ["--prepare-campaign", "--dry-run"],
+        ["--validate-only"],
+        ["--manifest", "data/runtime/distributed_sensitivity/x/manifest.json", "--machine-id", "win_lukman", "--stage", "1"],
+    ):
+        try:
+            main(argv)
+        except RuntimeError as exc:
+            assert "dirty scientific input" in str(exc)
+        else:
+            raise AssertionError(f"dirty scientific input did not stop {argv}")
+
+
+def test_input_identity_uses_git_blob_for_layout_not_raw_sha(monkeypatch):
+    input_meta = {
+        "file_digests": {
+            "generated_pod.csv": {"sha256": "raw-layout"},
+            "items.csv": {"sha256": "raw-items"},
+            "pods.csv": {"sha256": "raw-pods"},
+            "raw_order.csv": {"sha256": "raw-orders"},
+        },
+        "layout": {"layout_sha256": "raw-layout"},
+    }
+    identities = {
+        "data/input/base/generated_pod.csv": "blob-layout",
+        "data/input/base/items.csv": "blob-items",
+        "data/input/base/pods.csv": "blob-pods",
+        "data/input/base/raw_order.csv": "blob-orders",
+    }
+    monkeypatch.setattr(
+        "scripts.experiments.distributed_sensitivity_campaign.git_blob_identity",
+        lambda rel_path: identities[rel_path],
+    )
+
+    identity = build_input_identity(input_meta)
+
+    assert identity["layout_identity"] == "blob-layout"
+    assert identity["tracked_file_identities"]["generated_pod.csv"] == "blob-layout"
+    assert "raw-layout" not in identity.values()
+
+
+def test_treatment_contract_changes_campaign_id_but_allocation_does_not():
+    assets = fake_assets()
+    manifest = build_manifest()
+    identity = dict(manifest["scientific_identity"])
+    changed = {
+        **identity,
+        "treatment_execution_contracts": {
+            **identity["treatment_execution_contracts"],
+            "all_on_rl": {
+                **identity["treatment_execution_contracts"]["all_on_rl"],
+                "rts_policy_action_mode": "sample",
+            },
+        },
+    }
+
+    assert generate_campaign_id_from_identity(changed) != manifest["campaign_id"]
+    assert generate_campaign_id(default_machines(), assets, 99.0) == manifest["campaign_id"]
+    assert treatment_execution_contracts(assets)["all_off"]["persist_final_state"] is False

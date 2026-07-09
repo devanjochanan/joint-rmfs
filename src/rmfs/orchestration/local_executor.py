@@ -1178,6 +1178,30 @@ def _read_worker_progress(specs: list[RunSpec]) -> int:
     return completed_steps
 
 
+def _terminal_worker_steps(spec: RunSpec) -> int:
+    summary_path = spec.runtime_root / "worker_summary.json"
+    if summary_path.exists():
+        try:
+            with summary_path.open() as fh:
+                summary = json.load(fh)
+            return max(0, int(summary.get("netlogo_steps_completed", summary.get("ticks_completed", 0)) or 0))
+        except Exception:
+            pass
+    status_path = spec.runtime_root / "worker_status.json"
+    if status_path.exists():
+        try:
+            with status_path.open() as fh:
+                status = json.load(fh)
+            return max(0, int(status.get("current_progress_steps", 0) or 0))
+        except Exception:
+            pass
+    return 0
+
+
+def _read_active_worker_progress(processes: list[dict[str, object]]) -> int:
+    return _read_worker_progress([item["spec"] for item in processes])
+
+
 def _make_controller_progress_bar(enabled: bool, total_steps: int):
     if not enabled:
         return None
@@ -1283,11 +1307,13 @@ def run_specs(
         return {"spec": spec, "proc": proc, "pumps": pumps}
 
     pending = list(specs)
+    terminal_completed_steps = 0
+    callback_error: RuntimeError | None = None
     try:
         while pending or processes:
             counts_changed = False
             launch_blocked = False
-            while pending and len(processes) < max_workers:
+            while pending and len(processes) < max_workers and callback_error is None:
                 if before_launch is not None:
                     should_launch = before_launch(pending[0], len(processes))
                     if should_launch is False:
@@ -1322,12 +1348,19 @@ def run_specs(
                 if on_run_complete is not None:
                     try:
                         on_run_complete(item["spec"], return_code)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        if callback_error is None:
+                            callback_error = RuntimeError(
+                                "completion callback failed: "
+                                f"run_id={item['spec'].run_id} operation=on_run_complete "
+                                f"error={type(exc).__name__}: {exc}"
+                            )
+                            callback_error.__cause__ = exc
+                terminal_completed_steps += _terminal_worker_steps(item["spec"])
             processes = still_running
 
             if progress_bar is not None:
-                current_progress = min(total_steps, _read_worker_progress(specs))
+                current_progress = min(total_steps, terminal_completed_steps + _read_active_worker_progress(processes))
                 now = time.monotonic()
                 # Coarse refresh: enough new steps, a worker started/finished, or
                 # a few seconds elapsed (keeps the elapsed clock alive without
@@ -1351,15 +1384,14 @@ def run_specs(
                     last_display_time = now
 
             if processes:
-                if progress_bar is None:
-                    processes[0]["proc"].wait(timeout=None)
-                else:
-                    time.sleep(0.5)
+                time.sleep(0.5 if progress_bar is not None else 0.25)
             elif pending and not processes and launch_blocked and not counts_changed:
                 raise RuntimeError("worker launch blocked before any active worker could free resources")
+            elif callback_error is not None and not processes:
+                raise callback_error
     finally:
         if progress_bar is not None:
-            current_progress = min(total_steps, _read_worker_progress(specs))
+            current_progress = min(total_steps, terminal_completed_steps + _read_active_worker_progress(processes))
             if current_progress > progress_last:
                 progress_bar.update(current_progress - progress_last)
             progress_bar.close()
