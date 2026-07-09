@@ -64,7 +64,6 @@ class PodManager:
         return self.pods
     
     def is_sku_need_replenished(self, sku_id):
-        print(f"sku_id {sku_id} level {self.skus_data[sku_id]['global_inv_level']}")
         if float(self.skus_data[sku_id]['global_inv_level']) <= float(self.skus_data[sku_id]['global_threshold_inv_level']):
             return sku_id, True
         else:

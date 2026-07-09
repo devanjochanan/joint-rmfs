@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 import traceback
 
@@ -112,6 +113,56 @@ def expected_worker_files(detail_db: bool = False) -> list[str]:
 
 
 # Per-run simulation scratch that is fully reproducible from a run's pinned seed.
+# Worker stdout/stderr are diagnostic only -- all real results are written to
+# JSON/CSV files. Cap the captured console logs so a stray print() in a
+# simulation hot loop can never fill the disk mid-run (the reclaim-on-success
+# path below cannot help an in-flight run whose log is still growing). Override
+# the 25 MB default with RMFS_WORKER_LOG_CAP_MB (0 = unbounded, legacy behavior).
+def _worker_log_cap_bytes() -> int:
+    raw = os.environ.get("RMFS_WORKER_LOG_CAP_MB", "25")
+    try:
+        mb = int(raw)
+    except (TypeError, ValueError):
+        mb = 25
+    return max(0, mb) * 1024 * 1024
+
+
+def _pump_bounded(src, dst_path: Path, cap_bytes: int) -> None:
+    """Copy a subprocess pipe to dst_path, writing at most cap_bytes.
+
+    Once the cap is reached the pipe is still drained (so the child never blocks
+    on a full pipe buffer) but further bytes are discarded after a one-time
+    truncation marker. cap_bytes <= 0 means unbounded.
+    """
+    written = 0
+    marked = False
+    try:
+        with open(dst_path, "wb") as dst:
+            while True:
+                chunk = src.read(65536)
+                if not chunk:
+                    break
+                if cap_bytes <= 0:
+                    dst.write(chunk)
+                    dst.flush()
+                elif written < cap_bytes:
+                    room = cap_bytes - written
+                    dst.write(chunk[:room])
+                    written += min(len(chunk), room)
+                    if written >= cap_bytes and not marked:
+                        dst.write(b"\n[log truncated: exceeded RMFS_WORKER_LOG_CAP_MB; further output discarded]\n")
+                        marked = True
+                    dst.flush()
+                # else: cap reached -- keep draining, discard the rest
+    except Exception:
+        pass
+    finally:
+        try:
+            src.close()
+        except Exception:
+            pass
+
+
 # Reclaimed after a run succeeds (and after any expected-file validation); result
 # files (worker_summary.json, run_spec.json, rts_rollout_summary.json) are kept.
 RECLAIMABLE_RUN_ARTIFACTS = (
@@ -1021,11 +1072,11 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
     progress_bar = _make_controller_progress_bar(progress, total_steps)
     progress_last = 0
 
+    cap_bytes = _worker_log_cap_bytes()
+
     def launch(spec: RunSpec):
         stdout_path = spec.runtime_root / "worker_stdout.log"
         stderr_path = spec.runtime_root / "worker_stderr.log"
-        stdout_fh = stdout_path.open("w")
-        stderr_fh = stderr_path.open("w")
         proc = subprocess.Popen(
             [
                 spec.python_executable or sys.executable,
@@ -1036,11 +1087,16 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
                 str(spec.runtime_root / "run_spec.json"),
             ],
             cwd=spec.repo_root,
-            stdout=stdout_fh,
-            stderr=stderr_fh,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        return {"spec": spec, "proc": proc, "stdout": stdout_fh, "stderr": stderr_fh}
+        pumps = (
+            threading.Thread(target=_pump_bounded, args=(proc.stdout, stdout_path, cap_bytes), daemon=True),
+            threading.Thread(target=_pump_bounded, args=(proc.stderr, stderr_path, cap_bytes), daemon=True),
+        )
+        for pump in pumps:
+            pump.start()
+        return {"spec": spec, "proc": proc, "pumps": pumps}
 
     pending = list(specs)
     try:
@@ -1054,8 +1110,8 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
                 if return_code is None:
                     still_running.append(item)
                     continue
-                item["stdout"].close()
-                item["stderr"].close()
+                for pump in item["pumps"]:
+                    pump.join(timeout=10)
                 completed.append({"spec": item["spec"], "return_code": return_code})
             processes = still_running
 
@@ -1084,10 +1140,8 @@ def run_specs(specs: list[RunSpec], max_workers: int, progress: bool = False):
                 progress_bar.update(current_progress - progress_last)
             progress_bar.close()
         for item in processes:
-            if not item["stdout"].closed:
-                item["stdout"].close()
-            if not item["stderr"].closed:
-                item["stderr"].close()
+            for pump in item.get("pumps", ()):
+                pump.join(timeout=5)
 
     return completed
 
