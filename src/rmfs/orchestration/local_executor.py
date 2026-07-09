@@ -105,6 +105,17 @@ SENSITIVITY_KPI_FIELDS = (
     "pps_model_sha256",
 )
 
+SENSITIVITY_NUMERICAL_THREAD_DEFAULTS = {
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "BLIS_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "RMFS_RTS_TORCH_THREADS": "1",
+    "RMFS_RTS_TORCH_INTEROP_THREADS": "1",
+}
+
 
 def expected_worker_files(detail_db: bool = False, persist_final_state: bool = False) -> list[str]:
     files = list(BASE_EXPECTED_WORKER_FILES)
@@ -358,6 +369,15 @@ def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
     if spec.pod_location_seed is not None:
         env["RMFS_POD_LOCATION_SEED"] = str(spec.pod_location_seed)
     return env
+
+
+def worker_child_environment(spec: RunSpec) -> dict[str, str]:
+    child_env = os.environ.copy()
+    child_env.update(worker_environment_overrides(spec))
+    if spec.kpi_schema_version == SENSITIVITY_KPI_SCHEMA_VERSION:
+        for key, value in SENSITIVITY_NUMERICAL_THREAD_DEFAULTS.items():
+            child_env[key] = value
+    return child_env
 
 
 def file_digest(path: Path):
@@ -1285,6 +1305,7 @@ def run_specs(
     def launch(spec: RunSpec):
         stdout_path = spec.runtime_root / "worker_stdout.log"
         stderr_path = spec.runtime_root / "worker_stderr.log"
+        child_env = worker_child_environment(spec)
         proc = subprocess.Popen(
             [
                 spec.python_executable or sys.executable,
@@ -1295,6 +1316,7 @@ def run_specs(
                 str(spec.runtime_root / "run_spec.json"),
             ],
             cwd=spec.repo_root,
+            env=child_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

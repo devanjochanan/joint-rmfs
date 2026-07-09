@@ -4,6 +4,8 @@ import csv
 import os
 import math
 import threading
+import tempfile
+import time
 import re
 from collections import defaultdict, deque
 import ast
@@ -211,6 +213,67 @@ class Inventory(Universe):
     @property
     def generated_order_csv(self):
         return self.runtime_path("generated_order_csv", "generated_order.csv")
+
+    @staticmethod
+    def _assign_order_retryable(exc):
+        if isinstance(exc, PermissionError):
+            return True
+        if isinstance(exc, (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError)):
+            return True
+        if isinstance(exc, OSError):
+            winerror = getattr(exc, "winerror", None)
+            errno = getattr(exc, "errno", None)
+            return winerror in {32, 33} or errno in {13, 16}
+        return False
+
+    def _with_assign_order_retry(self, action, operation):
+        attempts = 7
+        delay = 0.05
+        last_exc = None
+        for attempt in range(attempts):
+            try:
+                return operation()
+            except Exception as exc:  # retry only transient file/share and parse states below
+                if not self._assign_order_retryable(exc):
+                    raise
+                last_exc = exc
+                if attempt >= attempts - 1:
+                    break
+                time.sleep(delay)
+                delay = min(delay * 2.0, 1.0)
+        raise RuntimeError(
+            f"assign_order.csv {action} failed after {attempts} attempts: "
+            f"{type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+
+    def _read_assign_order_csv(self):
+        return self._with_assign_order_retry(
+            "read",
+            lambda: pd.read_csv(self.assign_order_csv),
+        )
+
+    def _write_assign_order_csv(self, df):
+        path = os.path.abspath(self.assign_order_csv)
+        directory = os.path.dirname(path) or "."
+        basename = os.path.basename(path)
+
+        def write_once():
+            os.makedirs(directory, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix=f".{basename}.", suffix=".tmp", dir=directory, text=True)
+            try:
+                with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+                    df.to_csv(fh, index=False)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_path, path)
+            finally:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        return self._with_assign_order_retry("atomic write", write_once)
 
     @staticmethod
     def _normalize_sku_qty_dict(sku_qty):
@@ -1394,10 +1457,10 @@ class Inventory(Universe):
                 sku_details.get("quantity_delivered", 0) >= sku_details.get("total_quantity", 0)
             )
             if sku_fully_delivered:
-                assign_order_df = pd.read_csv(self.assign_order_csv)
+                assign_order_df = self._read_assign_order_csv()
                 assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'status'] = 1
                 assign_order_df.loc[((assign_order_df['order_id'] == order.order_id) & (assign_order_df['item_id'] == sku)), 'order_finished'] = int(self._tick)
-                assign_order_df.to_csv(self.assign_order_csv, index=False)
+                self._write_assign_order_csv(assign_order_df)
             new_row = {
                 "pod_id": pod.pod_id,
                 "item_id": sku,
@@ -1517,15 +1580,14 @@ class Inventory(Universe):
     def find_new_orders(self):
         file_path = self.assign_order_csv
         if os.path.exists(file_path):
-            assign_order_df = pd.read_csv(file_path)
+            assign_order_df = self._read_assign_order_csv()
         else:
             orders_df = pd.read_csv(self.generated_order_csv)
             assign_order_df = orders_df.copy()
             assign_order_df['assigned_station'] = pd.Series([None] * len(assign_order_df), dtype="object")
             assign_order_df['assigned_pod'] = pd.Series([None] * len(assign_order_df), dtype="object")
             assign_order_df['status'] = -3
-            assign_order_df.to_csv(self.assign_order_csv, index=False)
-            assign_order_df = pd.read_csv(file_path)
+            self._write_assign_order_csv(assign_order_df)
 
         current_second = self.next_process_tick
         previous_second = (self.next_process_tick - 1)

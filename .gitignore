@@ -40,6 +40,7 @@ netlogo_profile_summary.txt
 output/
 PS/
 robot sa data/
+docs/Analysis/
 
 # Local agent rules file
 AGENTS.md

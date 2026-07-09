@@ -137,11 +137,34 @@ class AssetBundle:
     charging_config_sha256: str
 
 
+def replace_with_retry(tmp_path: Path, path: Path, *, attempts: int = 7) -> None:
+    delay = 0.05
+    last_exc: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            tmp_path.replace(path)
+            return
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            errno = getattr(exc, "errno", None)
+            if winerror not in {32, 33} and errno not in {13, 16}:
+                raise
+            last_exc = exc
+            if attempt >= attempts - 1:
+                break
+            time.sleep(delay)
+            delay = min(delay * 2.0, 1.0)
+    raise RuntimeError(
+        f"failed to replace {path} after {attempts} attempts: "
+        f"{type(last_exc).__name__}: {last_exc}"
+    ) from last_exc
+
+
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp")
     tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
-    tmp_path.replace(path)
+    replace_with_retry(tmp_path, path)
 
 
 def read_json(path: Path) -> Any:
@@ -1572,7 +1595,7 @@ def rebuild_run_outcomes_csv(*, manifest: dict[str, Any], machine: Machine, repo
         writer = csv.DictWriter(fh, fieldnames=list(RUN_OUTCOME_FIELDS), extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
-    tmp_path.replace(path)
+    replace_with_retry(tmp_path, path)
     return path
 
 

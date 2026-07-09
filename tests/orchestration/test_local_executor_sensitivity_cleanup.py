@@ -400,3 +400,58 @@ def test_run_specs_non_progress_detects_earliest_finish_and_refills_slot(tmp_pat
 
     assert completions[:2] == ["fast", "replacement"]
     assert completions[-1] == "slow"
+
+
+def test_run_specs_passes_sensitivity_thread_limits_to_child_env(tmp_path: Path, monkeypatch):
+    _FakeProcess.instances = []
+    _FakeProcess.poll_plan = [1]
+    spec = _spec(tmp_path, "thread_env")
+
+    monkeypatch.setattr("src.rmfs.orchestration.local_executor.subprocess.Popen", _FakeProcess)
+
+    run_specs([spec], max_workers=1, progress=False)
+
+    env = _FakeProcess.instances[0].kwargs["env"]
+    for key in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "BLIS_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "RMFS_RTS_TORCH_THREADS",
+        "RMFS_RTS_TORCH_INTEROP_THREADS",
+    ):
+        assert env[key] == "1"
+
+
+
+def test_run_specs_worker_failure_does_not_stop_siblings_or_pending_runs(tmp_path: Path, monkeypatch):
+    class ReturnCodeProcess(_FakeProcess):
+        codes = []
+
+        def poll(self):
+            if self.returncode is None:
+                self.polls_remaining -= 1
+                if self.polls_remaining <= 0:
+                    self.returncode = self.codes.pop(0)
+            return self.returncode
+
+    ReturnCodeProcess.instances = []
+    ReturnCodeProcess.poll_plan = [1, 3, 1]
+    ReturnCodeProcess.codes = [1, 0, 0]
+    specs = [_spec(tmp_path, "failed"), _spec(tmp_path, "slow_ok"), _spec(tmp_path, "pending_ok")]
+    completions = []
+
+    def on_complete(spec, return_code):
+        completions.append((spec.run_id, return_code))
+
+    monkeypatch.setattr("src.rmfs.orchestration.local_executor.subprocess.Popen", ReturnCodeProcess)
+
+    completed = run_specs(specs, max_workers=2, progress=False, on_run_complete=on_complete)
+
+    assert {item["spec"].run_id for item in completed} == {"failed", "slow_ok", "pending_ok"}
+    assert ("failed", 1) in completions
+    assert ("slow_ok", 0) in completions
+    assert ("pending_ok", 0) in completions
+    assert len(completions) == 3
