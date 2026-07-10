@@ -80,11 +80,46 @@ def sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_original_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
-    path = original_manifest_path(repo_root)
-    if not path.exists():
-        raise FileNotFoundError(f"missing original campaign manifest: {path}")
-    manifest = base.read_json(path)
+def _default_asset_args() -> argparse.Namespace:
+    return argparse.Namespace(
+        pps_model_path=None,
+        rts_checkpoint_dir=None,
+        rts_training_artifact=None,
+        charging_config_path=None,
+    )
+
+
+def _write_local_campaign_manifest(manifest: dict[str, Any]) -> None:
+    root = base.campaign_root(REPO_ROOT, manifest)
+    root.mkdir(parents=True, exist_ok=True)
+    shard_paths = {}
+    for machine in manifest["machines"]:
+        machine_id = machine["machine_id"]
+        shard_runs = [run for run in manifest["runs"] if run.get("machine_id") == machine_id]
+        shard = {
+            "schema_version": manifest["schema_version"],
+            "campaign_id": manifest["campaign_id"],
+            "allocation_patch_id": manifest["allocation_patch_id"],
+            "simulation_semantics_id": manifest["simulation_semantics_id"],
+            "machine_id": machine_id,
+            "runs": shard_runs,
+        }
+        if manifest["campaign_id"] == ORIGINAL_CAMPAIGN_ID:
+            shard["stage_counts"] = {
+                str(stage): sum(1 for run in shard_runs if int(run["stage_first_requested"]) == stage)
+                for stage in (1, 2, 3, 4)
+            }
+        path = root / base.shard_relative_path(machine_id)
+        base.write_json(path, shard)
+        shard_paths[machine_id] = path.relative_to(root).as_posix()
+    manifest = dict(manifest)
+    manifest["shards"] = shard_paths
+    if manifest["campaign_id"] == ORIGINAL_CAMPAIGN_ID:
+        manifest["launchers"] = base.write_launchers(root, manifest)
+    base.write_json(root / "manifest.json", manifest)
+
+
+def _validate_original_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     if manifest.get("campaign_id") != ORIGINAL_CAMPAIGN_ID:
         raise RuntimeError(f"unexpected original campaign_id: {manifest.get('campaign_id')}")
     if manifest.get("allocation_patch_id") != ORIGINAL_ALLOCATION_PATCH_ID:
@@ -92,6 +127,29 @@ def load_original_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
     if len(manifest.get("runs", [])) != 600:
         raise RuntimeError(f"original campaign must contain 600 runs, found {len(manifest.get('runs', []))}")
     return manifest
+
+
+def build_original_manifest() -> dict[str, Any]:
+    machines = base.default_machines(REPO_ROOT)
+    assets = base.resolve_assets(_default_asset_args())
+    campaign_id = base.generate_campaign_id(machines, assets, base.DEFAULT_RL_OVERHEAD_MULTIPLIER)
+    if campaign_id != ORIGINAL_CAMPAIGN_ID:
+        raise RuntimeError(f"generated original campaign_id {campaign_id} does not match {ORIGINAL_CAMPAIGN_ID}")
+    return base.build_campaign_plan(
+        campaign_id=campaign_id,
+        machines=machines,
+        assets=assets,
+        rl_overhead_multiplier=base.DEFAULT_RL_OVERHEAD_MULTIPLIER,
+    )
+
+
+def load_original_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
+    path = original_manifest_path(repo_root)
+    if path.exists():
+        return _validate_original_manifest(base.read_json(path))
+    manifest = build_original_manifest()
+    _write_local_campaign_manifest(manifest)
+    return _validate_original_manifest(manifest)
 
 
 def append_machines() -> list[base.Machine]:
@@ -591,6 +649,48 @@ def extension_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def _rebuild_extension_manifest_for_campaign_id(
+    manifest: dict[str, Any],
+    campaign_id: str,
+    allocation_patch_id: str,
+) -> dict[str, Any]:
+    assets = base.AssetBundle(**manifest["assets"])
+    scientific_identity = manifest["scientific_identity"]
+    scenario_hash = scientific_identity["scenario_layout_identity"]["scenario_hash"]
+    layout_hash = scientific_identity["scenario_layout_identity"]["layout_hash"]
+    branch = base.git_clean_value("rev-parse", "--abbrev-ref", "HEAD")
+    commit = base.git_clean_value("rev-parse", "HEAD")
+    runs = [
+        base.add_run_identity(
+            row,
+            campaign_id=campaign_id,
+            allocation_patch_id=allocation_patch_id,
+            scientific_identity=scientific_identity,
+            branch=branch,
+            commit=commit,
+            ticks=int(manifest["backend_steps_per_full_run"]),
+            assets=assets,
+            scenario_hash=scenario_hash,
+            layout_hash=layout_hash,
+        )
+        for row in extension_rows()
+    ]
+    rebuilt = {
+        **manifest,
+        "campaign_id": campaign_id,
+        "allocation_patch_id": allocation_patch_id,
+        "allocation_patch_label": APPEND_ALLOCATION_PATCH_LABEL,
+        "campaign_root_relative": (base.OUTPUT_ROOT_RELATIVE / campaign_id).as_posix(),
+        "branch": branch,
+        "commit": commit,
+        "runs": runs,
+        "assertions": extension_assertions(runs),
+        "shards": {},
+        "launchers": {},
+    }
+    return rebuilt
+
+
 def build_extension_manifest(parent_manifest: dict[str, Any], machines: list[base.Machine], allocation_patch_id: str) -> dict[str, Any]:
     parent_manifest_sha = sha256_path(original_manifest_path(REPO_ROOT))
     scientific_identity = extension_scientific_identity(parent_manifest, parent_manifest_sha)
@@ -1055,8 +1155,33 @@ def load_plan(machine_id: str | None = None) -> dict[str, Any] | list[dict[str, 
     return plans
 
 
+def load_or_materialize_extension_manifest(campaign_id: str, allocation_patch_id: str) -> dict[str, Any]:
+    path = local_extension_manifest_path(campaign_id)
+    if path.exists():
+        manifest = base.read_json(path)
+    else:
+        parent_manifest = load_original_manifest(REPO_ROOT)
+        manifest = build_extension_manifest(parent_manifest, append_machines(), allocation_patch_id)
+        if manifest.get("campaign_id") != campaign_id:
+            manifest = _rebuild_extension_manifest_for_campaign_id(manifest, campaign_id, allocation_patch_id)
+        write_extension_files(manifest, dry_run=False)
+    return {
+        **manifest,
+        "allocation_patch_id": allocation_patch_id,
+        "allocation_patch_label": APPEND_ALLOCATION_PATCH_LABEL,
+        "machines": [base.asdict(machine) for machine in append_machines()],
+    }
+
+
 def manifest_for_item(item: dict[str, Any]) -> dict[str, Any]:
-    return base.read_json(REPO_ROOT / item["source_manifest"])
+    path = REPO_ROOT / item["source_manifest"]
+    if path.exists():
+        return base.read_json(path)
+    if item["source_campaign_id"] == ORIGINAL_CAMPAIGN_ID:
+        return load_original_manifest(REPO_ROOT)
+    if str(item["source_campaign_id"]).startswith("sensitivity_full_kpi_rep21_40_"):
+        return load_or_materialize_extension_manifest(item["source_campaign_id"], item["allocation_patch_id"])
+    raise FileNotFoundError(f"missing source manifest for execution-plan item: {path}")
 
 
 def condition_for_item(manifest: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
