@@ -98,3 +98,43 @@ def test_host_lifecycle_persists_rows_before_workspace_deletion_and_exports_kpi_
     report = importer.import_exports([archive], tmp_path / "imported")
     assert report["accepted"] == 2
     assert any(item.get("terminal_failure") for item in report["failures"])
+
+
+def test_host_automatically_drains_stage4_only_after_its_critical_stages(tmp_path, monkeypatch):
+    machine = campaign.default_machines()[0]
+    plan = campaign.build_campaign_plan(
+        campaign_id=campaign.generate_campaign_id([machine], fake_assets(), 1.35),
+        machines=[machine],
+        assets=fake_assets(),
+    )
+    conditions = [
+        next(run for run in plan["runs"] if run["policy_configuration"] == treatment and run["stage_first_requested"] == stage)
+        for stage, treatment in ((1, "all_off"), (2, "all_off"), (3, "all_on_rl"), (4, "all_off"))
+    ]
+    conditions = [{**condition, "machine_id": machine.machine_id} for condition in conditions]
+    manifest = {**plan, "machines": [machine.__dict__], "runs": conditions}
+    manifest_path = tmp_path / "manifest.json"
+    campaign.write_json(manifest_path, manifest)
+
+    calls = []
+    stage_by_run_id = {condition["run_id"]: condition["stage_first_requested"] for condition in conditions}
+
+    def fake_run_specs(specs, **_kwargs):
+        calls.append([stage_by_run_id[spec.run_id] for spec in specs])
+        return [
+            {"spec": spec, "return_code": 0, "worker_summary": _success_summary(spec), "kpi_payload": _success_summary(spec)["kpi"]}
+            for spec in specs
+        ]
+
+    monkeypatch.setattr(campaign, "run_specs", fake_run_specs)
+    monkeypatch.setattr(campaign, "validate_local_assets", lambda *_args, **_kwargs: None)
+    assert campaign.execute_host(
+        manifest_path=manifest_path,
+        machine_id=machine.machine_id,
+        stages=[1, 2, 3, 4],
+        resume=True,
+        progress=False,
+        max_retries=0,
+        host_data_root=tmp_path / "host",
+    ) == 0
+    assert calls == [[1], [2], [3], [4]]

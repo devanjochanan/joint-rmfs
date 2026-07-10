@@ -1385,7 +1385,7 @@ def write_launchers(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
                 (
                     f"& \"{machine.python}\" \"scripts\\experiments\\distributed_sensitivity_campaign.py\" "
                     f"--manifest \"{rel_manifest}\" --machine-id \"{machine.machine_id}\" "
-                    "--execute-host --stage 1 --stage 2 --stage 3 --resume --progress"
+                    "--execute-host --resume --progress"
                 ),
                 "",
             ])
@@ -1398,7 +1398,7 @@ def write_launchers(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
                 (
                     f"exec {json.dumps(machine.python)} scripts/experiments/distributed_sensitivity_campaign.py "
                     f"--manifest {json.dumps(rel_manifest_posix.as_posix())} --machine-id {json.dumps(machine.machine_id)} "
-                    "--execute-host --stage 1 --stage 2 --stage 3 --resume --progress"
+                    "--execute-host --resume --progress"
                 ),
                 "",
             ])
@@ -2280,21 +2280,36 @@ def execute_host(
     os.environ["RMFS_WORKER_LOG_CAP_MB"] = "5"
 
     eligible_stages = {int(stage) for stage in stages}
+    stage_order = tuple(stage for stage in (1, 2, 3, 4) if stage in eligible_stages)
     try:
         while True:
+            # A host drains one local stage before it admits the next.  This
+            # keeps the best-effort Stage 4 wave out of worker slots until
+            # this machine's Stage 3 allocation has reached a terminal state.
+            active_stage = next(
+                (
+                    stage
+                    for stage in stage_order
+                    if ledger.next_condition(eligible_stages={stage}) is not None
+                ),
+                None,
+            )
+            if active_stage is None:
+                break
             batch: list[tuple[dict[str, Any], RunSpec, float]] = []
             while len(batch) < int(machine.max_workers):
-                cond = ledger.next_condition(eligible_stages=eligible_stages)
+                cond = ledger.next_condition(eligible_stages={active_stage})
                 if cond is None:
                     break
                 spec = build_run_spec_from_condition(cond, manifest=manifest, machine=machine, repo_root=REPO_ROOT)
                 object.__setattr__(spec, "runtime_root", runs_dir / cond["run_id"])
                 ledger.start_condition(str(cond["condition_key"]))
                 batch.append((cond, spec, time.perf_counter()))
-            if not batch:
-                break
             ledger.save(ledger_path)
-            print(f"[sensitivity] launching {len(batch)} independent conditions (worker budget={machine.max_workers})")
+            print(
+                f"[sensitivity] launching stage {active_stage}: {len(batch)} independent conditions "
+                f"(worker budget={machine.max_workers})"
+            )
             completed_by_run: dict[str, dict[str, Any]] = {}
             try:
                 completed = run_specs(

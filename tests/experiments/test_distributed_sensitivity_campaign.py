@@ -107,6 +107,10 @@ def test_new_campaign_files_write_host_assignments_not_shards(tmp_path, monkeypa
     assert "shards" not in written
     assert set(written["host_assignments"]) == {row["machine_id"] for row in manifest["machines"]}
     assert not (root / "shards").exists()
+    for launcher in (root / "launchers").iterdir():
+        content = launcher.read_text(encoding="utf-8")
+        assert "--execute-host --resume --progress" in content
+        assert "--stage" not in content
 
 
 def test_campaign_id_ignores_allocation_and_local_machine_details():
