@@ -17,6 +17,13 @@ import traceback
 from src.rmfs.orchestration.input_snapshot import create_input_snapshot
 from src.rmfs.orchestration.run_manifest import write_run_manifest
 from src.rmfs.orchestration.run_spec import RunSpec
+from src.rmfs.orchestration.kpi_schema import (
+    FULL_KPI_V3_SCHEMA_VERSION,
+    FULL_KPI_V3_FIELDS,
+    FULL_KPI_V3_ALL_FIELDS,
+    derive_v3_fields,
+    empty_v3_kpi_payload,
+)
 from src.rmfs.decisions.pps.modes import normalize_pps_mode
 from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
 from src.rmfs.runtime_io.timing import configure_timing, timed, write_timing_summary
@@ -598,6 +605,350 @@ def derive_sensitivity_kpi_payload(
     return payload
 
 
+def derive_sensitivity_kpi_v3_payload(
+    spec: RunSpec,
+    warehouse,
+    finalization: dict | None,
+    generated_order_contract: dict | None = None,
+) -> dict[str, object]:
+    finalization = dict(finalization or {})
+    generated_order_contract = dict(generated_order_contract or {})
+
+    payload = empty_v3_kpi_payload()
+
+    if warehouse is None:
+        payload["kpi_complete"] = False
+        return payload
+
+    robots = _robot_objects(warehouse)
+    orders = list(getattr(getattr(warehouse, "order_manager", None), "orders", []) or [])
+    completed_orders = _completed_orders(warehouse)
+
+    # 1. Order-flow primitives
+    generated_orders = generated_order_contract.get("generated_unique_orders")
+    if generated_orders is None:
+        generated_orders = len(orders)
+    payload["orders_available_in_source"] = int(generated_orders or 0)
+    payload["orders_released"] = len(orders)
+
+    orders_started = 0
+    orders_completed_count = 0
+    orders_unfinished = 0
+    sum_cycle_time = 0.0
+    completed_cycle_time_count = 0
+    max_cycle_time = 0.0
+    oldest_unfinished_age = 0.0
+    sim_time = _safe_float(spec.simulated_horizon_seconds)
+
+    for o in orders:
+        started = False
+        p_start = getattr(o, "process_start_time", -1.0)
+        if p_start >= 0:
+            orders_started += 1
+            started = True
+
+        if o.is_order_completed():
+            orders_completed_count += 1
+            o_comp = getattr(o, "order_complete_time", -1.0)
+            if o_comp >= 0 and p_start >= 0:
+                dt = o_comp - p_start
+                sum_cycle_time += dt
+                completed_cycle_time_count += 1
+                if dt > max_cycle_time:
+                    max_cycle_time = dt
+        else:
+            orders_unfinished += 1
+            if started and p_start >= 0:
+                age = sim_time - p_start
+                if age > oldest_unfinished_age:
+                    oldest_unfinished_age = age
+
+    payload["orders_started"] = orders_started
+    payload["orders_completed"] = orders_completed_count
+    payload["orders_unfinished_end"] = orders_unfinished
+    payload["sum_completed_order_cycle_time_s"] = sum_cycle_time
+    payload["completed_order_cycle_time_count"] = completed_cycle_time_count
+    payload["max_completed_order_cycle_time_s"] = max_cycle_time
+    payload["oldest_unfinished_order_age_s"] = oldest_unfinished_age
+
+    # Order lines
+    lines_released = 0
+    lines_picked = 0
+    lines_completed = 0
+    lines_unfinished = 0
+    lines_blocked_stockout = 0
+
+    for o in orders:
+        skus_dict = getattr(o, "skus", {}) or {}
+        for details in skus_dict.values():
+            qty_needed = _safe_float(details.get("total_quantity", 0.0))
+            qty_delivered = _safe_float(details.get("quantity_delivered", 0.0))
+            lines_released += 1
+            if qty_delivered > 0:
+                lines_picked += 1
+            if qty_delivered >= qty_needed:
+                lines_completed += 1
+            else:
+                lines_unfinished += 1
+                if details.get("stockout_blocked") or details.get("blocked_stockout"):
+                    lines_blocked_stockout += 1
+
+    payload["order_lines_released"] = lines_released
+    payload["order_lines_picked"] = lines_picked
+    payload["order_lines_completed"] = lines_completed
+    payload["order_lines_unfinished_end"] = lines_unfinished
+    payload["order_lines_blocked_stockout"] = lines_blocked_stockout
+
+    # 2. Picking and PPS primitives
+    payload["pps_decision_rounds"] = getattr(warehouse, "pps_decision_rounds", None)
+    payload["pps_candidates_evaluated"] = getattr(warehouse, "pps_candidates_evaluated", None)
+    payload["pps_actions_zero"] = getattr(warehouse, "pps_actions_zero", None)
+    payload["pps_actions_invalid"] = getattr(warehouse, "pps_actions_invalid", None)
+    payload["pps_rejected_station_full"] = getattr(warehouse, "pps_rejected_station_full", None)
+    payload["pps_rejected_station_no_orders"] = getattr(warehouse, "pps_rejected_station_no_orders", None)
+    payload["pps_rejected_sku_mismatch"] = getattr(warehouse, "pps_rejected_sku_mismatch", None)
+    payload["pps_rejected_pod_ineligible"] = getattr(warehouse, "pps_rejected_pod_ineligible", None)
+    payload["pps_rejected_pod_reserved"] = getattr(warehouse, "pps_rejected_pod_reserved", None)
+
+    payload["pps_assignments_accepted"] = getattr(warehouse, "pps_assignments_accepted", None)
+    payload["picking_jobs_created"] = getattr(warehouse, "picking_jobs_created", None)
+    payload["picking_jobs_completed"] = getattr(warehouse, "picking_jobs_completed", None)
+    payload["picking_pod_visits"] = int(getattr(warehouse, "pps_pod_visits", getattr(warehouse, "pps_rl_pod_visits", 0)) or 0)
+    payload["picked_items_count"] = int(getattr(warehouse, "pps_picked_quantity", getattr(warehouse, "pps_rl_picked_quantity", 0)) or 0)
+
+    # 3. Robot-job lifecycle primitives
+    for task_type in ("picking", "replenishment", "return_to_storage"):
+        for suffix in ("_jobs_created", "_jobs_assigned", "_jobs_started", "_jobs_completed", "_jobs_cancelled", "_jobs_requeued", "_jobs_blocked", "_jobs_pending_end", "_max_job_age_s"):
+            payload[f"{task_type}{suffix}"] = getattr(warehouse, f"{task_type}{suffix}", None)
+
+    payload["job_queue_time_integral"] = _safe_float(getattr(warehouse, "job_queue_cumulative_sum", 0.0))
+    payload["job_queue_max"] = int(getattr(warehouse, "peak_job_queue", len(getattr(warehouse, "job_queue", []) or [])) or 0)
+    payload["job_queue_observation_time_s"] = _safe_float(getattr(warehouse, "job_queue_sample_count", 0.0))
+
+    # 4. Robot-cycle and movement primitives
+    payload["robot_cycles_completed"] = sum(int(getattr(robot, "completed_cycle_count", 0) or 0) for robot in robots)
+    payload["sum_robot_cycle_time_s"] = sum(_safe_float(getattr(robot, "completed_cycle_duration_sum", 0.0)) for robot in robots)
+    payload["max_robot_cycle_time_s"] = max([_safe_float(getattr(robot, "max_cycle_time", 0.0)) for robot in robots] or [0.0])
+    payload["loaded_robot_distance"] = sum(_safe_float(getattr(robot, "loaded_travel_distance", 0.0)) for robot in robots)
+    payload["empty_robot_distance"] = sum(_safe_float(getattr(robot, "empty_travel_distance", 0.0)) for robot in robots)
+    payload["stop_and_go_count"] = int(getattr(warehouse, "stop_and_go", 0) or 0)
+    payload["turning_count"] = int(getattr(warehouse, "total_turning", 0) or 0)
+
+    # 5. Robot-state utilization primitives
+    for state_field in ("robot_seconds_available", "robot_seconds_working", "robot_seconds_idle", "robot_seconds_going_to_charge", "robot_seconds_waiting_for_charger", "robot_seconds_physically_charging", "robot_seconds_dead"):
+        payload[state_field] = getattr(warehouse, state_field, None)
+
+    if payload["robot_seconds_idle"] is None:
+        payload["robot_seconds_idle"] = _safe_float(getattr(warehouse, "total_robot_idle", 0.0))
+
+    # 6. Charging primitives
+    for chg_field in ("charging_requests", "charging_sessions_started", "charging_sessions_completed", "charging_sessions_interrupted", "drive_by_charging_events", "charger_route_failures", "charger_unavailable_events", "charger_claims_created", "charger_claims_released", "stale_charger_claims_detected", "robots_died_from_battery", "first_low_soc_time_s", "first_robot_death_time_s"):
+        payload[chg_field] = getattr(warehouse, chg_field, None)
+
+    payload["initial_battery_energy_j"] = getattr(warehouse, "initial_battery_energy_j", None)
+    payload["final_battery_energy_j"] = getattr(warehouse, "final_battery_energy_j", None)
+    payload["minimum_final_robot_soc"] = min([getattr(r, "soc", 1.0) for r in robots] or [1.0])
+    payload["mean_final_robot_soc"] = sum([getattr(r, "soc", 1.0) for r in robots]) / len(robots) if robots else 1.0
+    payload["charging_energy_added_kj"] = getattr(warehouse, "charging_energy_added_kj", None)
+
+    # 7. Replenishment primitives
+    for rep_field in ("proactive_replenishment_requests", "post_pick_replenishment_requests", "rts_replenish_store_selected", "rts_replenish_store_masked", "replenishment_jobs_created", "replenishment_jobs_started", "replenishment_jobs_completed", "replenishment_units_restored", "replenishment_pending_end", "replenishment_queued_end", "replenishment_active_end", "replenishment_cap_blocks_proactive", "replenishment_cap_blocks_post_pick", "replenishment_cap_blocks_rts", "replenishment_station_busy_seconds", "replenishment_station_idle_seconds", "pods_awaiting_replenishment_end", "max_replenishment_request_age_s"):
+        payload[rep_field] = getattr(warehouse, rep_field, None)
+
+    payload["replenishment_trips_completed"] = int(getattr(warehouse, "replenishment_trips", 0) or 0)
+
+    # 8. Committed-next and ownership primitives
+    for cn_field in ("committed_next_reservations_created", "committed_next_reservations_activated", "committed_next_reservations_cancelled_charging", "committed_next_reservations_cancelled_other", "committed_next_reservations_stale_end", "committed_next_jobs_restored", "committed_next_jobs_lost", "committed_next_duplicate_restorations", "max_committed_next_reservation_age_s", "stale_rts_ownership_markers_end", "stale_replenishment_markers_end", "max_ownership_marker_age_s"):
+        payload[cn_field] = getattr(warehouse, cn_field, None)
+
+    # 9. Station detail sidecar and derived metrics
+    station_detail = {}
+    p_stations = getattr(warehouse, "picking_stations", []) or []
+    for ps in p_stations:
+        ps_id = str(getattr(ps, "station_id", getattr(ps, "id", ps)))
+        station_detail[ps_id] = {
+            "assignments_received": getattr(ps, "assignments_received", None),
+            "pod_visits": getattr(ps, "pod_visits", None),
+            "picked_items": getattr(ps, "picked_items", None),
+            "completed_orders": getattr(ps, "completed_orders", None),
+            "busy_seconds": getattr(ps, "busy_seconds", None),
+            "idle_seconds": getattr(ps, "idle_seconds", None),
+            "queue_time_integral": getattr(ps, "queue_time_integral", None),
+            "maximum_queue": getattr(ps, "maximum_queue", None),
+            "rejected_pps_assignments": getattr(ps, "rejected_pps_assignments", None),
+        }
+    payload["station_detail"] = station_detail
+
+    utils = []
+    for detail in station_detail.values():
+        busy = detail.get("busy_seconds")
+        idle = detail.get("idle_seconds")
+        if busy is not None and idle is not None and (busy + idle) > 0:
+            utils.append(busy / (busy + idle))
+    if utils:
+        payload["mean_station_utilization"] = sum(utils) / len(utils)
+        payload["max_station_utilization"] = max(utils)
+        payload["min_station_utilization"] = min(utils)
+    else:
+        payload["mean_station_utilization"] = None
+        payload["max_station_utilization"] = None
+        payload["min_station_utilization"] = None
+
+    station_counts = {}
+    for order in completed_orders:
+        station_id = getattr(order, "station_id", None)
+        if station_id is not None:
+            station_counts[str(station_id)] = station_counts.get(str(station_id), 0) + 1
+    station_total = sum(station_counts.values())
+    if station_total > 0:
+        max_station = max(station_counts.values())
+        min_station = min(station_counts.values())
+        payload["max_station_assignment_share"] = max_station / station_total
+        payload["station_assignment_imbalance_ratio"] = max_station / min_station if min_station > 0 else 0.0
+    else:
+        payload["max_station_assignment_share"] = None
+        payload["station_assignment_imbalance_ratio"] = None
+
+    # 10. Energy primitives
+    payload["movement_energy_kj"] = _safe_float(getattr(warehouse, "movement_energy", 0.0)) / 1000.0
+    payload["fixed_load_energy_kj"] = sum(_safe_float(getattr(robot, "fixed_load_energy_consumption", 0.0)) for robot in robots) / 1000.0
+    payload["lifting_energy_kj"] = getattr(warehouse, "lifting_energy_kj", None)
+    payload["rotation_energy_kj"] = getattr(warehouse, "rotation_energy_kj", None)
+
+    # 11. Operational health primitives
+    for health_field in ("longest_no_order_completion_interval_s", "longest_no_picking_job_created_interval_s", "longest_no_robot_job_completed_interval_s", "first_starvation_time_s", "first_busy_unproductive_time_s", "first_congestion_time_s", "starvation_detected", "busy_unproductive_detected"):
+        payload[health_field] = getattr(warehouse, health_field, None)
+
+    reason = finalization.get("reason")
+    runtime_invariants = finalization.get("runtime_invariants", {}) or {}
+    payload["congestion_detected"] = bool(reason == "congestion" or runtime_invariants.get("hard_violation_count", 0))
+    payload["simulation_termination_reason"] = reason
+    payload["simulation_completed_full_horizon"] = bool(reason == "completed" or (reason is None and _safe_float(getattr(warehouse, "time", 0.0)) >= sim_time))
+
+    payload["robot_count"] = len(robots)
+    payload["simulated_seconds"] = sim_time
+
+    derived = derive_v3_fields(payload)
+    payload.update(derived)
+
+    payload["kpi_complete"] = all(payload.get(f) is not None for f in FULL_KPI_V3_FIELDS)
+    return payload
+
+
+def write_kpi_interval_snapshot(
+    runtime_root: Path,
+    kpi_schema_version: str | None,
+    warehouse,
+    threshold: str | float,
+    current_sim_seconds: float,
+) -> None:
+    if kpi_schema_version != FULL_KPI_V3_SCHEMA_VERSION:
+        return
+    if warehouse is None:
+        return
+
+    robots = [
+        obj
+        for obj in getattr(warehouse, "_objects", []) or []
+        if getattr(obj, "object_type", None) == "robot"
+    ]
+    orders = list(getattr(getattr(warehouse, "order_manager", None), "orders", []) or [])
+
+    orders_released = len(orders)
+    orders_completed = sum(1 for o in orders if o.is_order_completed())
+
+    order_lines_completed = 0
+    for o in orders:
+        skus_dict = getattr(o, "skus", {}) or {}
+        for details in skus_dict.values():
+            qty_needed = _safe_float(details.get("total_quantity", 0.0))
+            qty_delivered = _safe_float(details.get("quantity_delivered", 0.0))
+            if qty_delivered >= qty_needed:
+                order_lines_completed += 1
+
+    pps_assignments_accepted = getattr(warehouse, "pps_assignments_accepted", None)
+    picking_jobs_created = getattr(warehouse, "picking_jobs_created", None)
+    picking_jobs_completed = getattr(warehouse, "picking_jobs_completed", None)
+    picking_pod_visits = int(getattr(warehouse, "pps_pod_visits", getattr(warehouse, "pps_rl_pod_visits", 0)) or 0)
+
+    job_queue_len = len(getattr(warehouse, "job_queue", []) or [])
+
+    replenishment_jobs_completed = getattr(warehouse, "replenishment_jobs_completed", None)
+    replenishment_trips_completed = int(getattr(warehouse, "replenishment_trips", 0) or 0)
+    replenishment_pending_end = getattr(warehouse, "replenishment_pending_end", None)
+    replenishment_queued_end = getattr(warehouse, "replenishment_queued_end", None)
+    replenishment_active_end = getattr(warehouse, "replenishment_active_end", None)
+
+    available_cnt = 0
+    working_cnt = 0
+    idle_cnt = 0
+    waiting_cnt = 0
+    charging_cnt = 0
+    dead_cnt = 0
+
+    for r in robots:
+        state = getattr(r, "state", "").lower()
+        if "charging" in state or "charge" in state:
+            charging_cnt += 1
+        elif "waiting" in state:
+            waiting_cnt += 1
+        elif "idle" in state:
+            idle_cnt += 1
+        elif "working" in state:
+            working_cnt += 1
+        elif "dead" in state:
+            dead_cnt += 1
+        else:
+            available_cnt += 1
+
+    charger_claims_created = getattr(warehouse, "charger_claims_created", None)
+    stale_charger_claims_detected = getattr(warehouse, "stale_charger_claims_detected", None)
+
+    station_assignments = sum(
+        getattr(ps, "assignments_received", 0) or 0
+        for ps in getattr(getattr(warehouse, "station_manager", None), "picking_stations", []) or []
+    )
+
+    loaded_robot_distance = sum(_safe_float(getattr(robot, "loaded_travel_distance", 0.0)) for robot in robots)
+    empty_robot_distance = sum(_safe_float(getattr(robot, "empty_travel_distance", 0.0)) for robot in robots)
+    cumulative_distance = loaded_robot_distance + empty_robot_distance
+
+    cumulative_energy_kj = _safe_float(getattr(warehouse, "total_energy", 0.0)) / 1000.0
+
+    snapshot = {
+        "threshold": threshold,
+        "snapshot_simulated_seconds": current_sim_seconds,
+        "orders_released": orders_released,
+        "orders_completed": orders_completed,
+        "order_lines_completed": order_lines_completed,
+        "pps_assignments_accepted": pps_assignments_accepted,
+        "picking_jobs_created": picking_jobs_created,
+        "picking_jobs_completed": picking_jobs_completed,
+        "job_queue_len": job_queue_len,
+        "picking_pod_visits": picking_pod_visits,
+        "replenishment_jobs_completed": replenishment_jobs_completed,
+        "replenishment_trips_completed": replenishment_trips_completed,
+        "replenishment_pending_end": replenishment_pending_end,
+        "replenishment_queued_end": replenishment_queued_end,
+        "replenishment_active_end": replenishment_active_end,
+        "robots_available": available_cnt,
+        "robots_working": working_cnt,
+        "robots_idle": idle_cnt,
+        "robots_waiting_for_charger": waiting_cnt,
+        "robots_charging": charging_cnt,
+        "robots_dead": dead_cnt,
+        "charger_claims_created": charger_claims_created,
+        "stale_charger_claims_detected": stale_charger_claims_detected,
+        "station_assignments": station_assignments,
+        "cumulative_distance": cumulative_distance,
+        "cumulative_energy_kj": cumulative_energy_kj,
+    }
+
+    log_path = runtime_root / "kpi_snapshots.jsonl"
+    with log_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(snapshot, default=str) + "\n")
+
+
 def git_value(repo_root: Path, *args):
     try:
         return subprocess.check_output(["git", *args], cwd=repo_root, text=True).strip()
@@ -923,6 +1274,11 @@ def run_worker(spec: RunSpec):
             "order_arrival_unit": "simulated_seconds",
         }
 
+        cadence_seconds = getattr(spec, "kpi_snapshot_cadence_seconds", None)
+        if cadence_seconds is None:
+            cadence_seconds = [1000.0, 2500.0, 5000.0, 10000.0]
+        written_snapshots = set()
+
         first_result = None
         final_result = None
         for index in range(spec.ticks):
@@ -934,6 +1290,12 @@ def run_worker(spec: RunSpec):
 
             ticks_done += step_result.steps_executed
             write_worker_status("running")
+
+            current_sim_seconds = ticks_done * tick_to_second
+            for thresh in cadence_seconds:
+                if current_sim_seconds >= thresh and thresh not in written_snapshots:
+                    write_kpi_interval_snapshot(spec.runtime_root, spec.kpi_schema_version, warehouse, thresh, current_sim_seconds)
+                    written_snapshots.add(thresh)
 
             is_first = index == 0
             is_final = index == spec.ticks - 1
@@ -993,6 +1355,9 @@ def run_worker(spec: RunSpec):
                     "warehouse_average_order_cycle_time_available": False,
                 }
 
+        if warehouse is not None:
+            write_kpi_interval_snapshot(spec.runtime_root, spec.kpi_schema_version, warehouse, "final", ticks_done * tick_to_second)
+
         finalization = session.finalize(
             reason=netlogo.SimulationTermination.MAXIMUM_HORIZON,
             success=True,
@@ -1051,6 +1416,23 @@ def run_worker(spec: RunSpec):
                     if field != "kpi_complete" and kpi_payload.get(field) is None
                 ]
                 raise RuntimeError(f"sensitivity KPI schema incomplete: missing {missing}")
+        elif spec.kpi_schema_version == FULL_KPI_V3_SCHEMA_VERSION:
+            kpi_payload = derive_sensitivity_kpi_v3_payload(
+                spec,
+                final_warehouse,
+                summary.get("finalization", {}),
+                summary.get("generated_order_contract", {}),
+            )
+            summary["kpi"] = kpi_payload
+            summary.update(kpi_payload)
+            if not kpi_payload.get("kpi_complete"):
+                missing = [
+                    field
+                    for field in FULL_KPI_V3_FIELDS
+                    if kpi_payload.get(field) is None
+                ]
+                # Print warning, but do not raise RuntimeError
+                print(f"[sensitivity] Warning: KPI v3 schema incomplete: missing {len(missing)} fields.")
 
         summary["status"] = "success"
 

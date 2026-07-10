@@ -176,6 +176,13 @@ class Inventory(Universe):
             os.environ.get("RMFS_PROACTIVE_REPLENISHMENT", "1").strip().lower()
             not in {"0", "false", "no", "off"}
         )
+        # Task 3 Part E: bounded age after which a still-undispatched pending
+        # replenishment request is considered stale and released from the cap.
+        # Cap VALUE is unchanged; this only prunes entries that can never dispatch.
+        self.replenishment_pending_stale_ticks = int(
+            os.environ.get("RMFS_REPLENISHMENT_PENDING_STALE_TICKS", "3000")
+        )
+        self.replenishment_counters: dict = {}   # nonsemantic Part E/G accounting
 
         self.priority_order = False
         self.robot_task_allocator = DEFAULT_ROBOT_TASK_ALLOCATOR
@@ -515,6 +522,87 @@ class Inventory(Universe):
     def total_replenishment_load(self) -> int:
         return len(self.replenishment_commitments_by_pod())
 
+    def _bump_repl_counter(self, name: str, n: int = 1) -> None:
+        """Task 3 Part E/G nonsemantic accounting."""
+        self.replenishment_counters[name] = self.replenishment_counters.get(name, 0) + n
+
+    def replenishment_cap_composition(self) -> dict:
+        """Task 3 Part E1: hard-cap load broken down by stage (unique pods, priority
+        active > queued > pending). Sums to total_replenishment_load()."""
+        seen: dict[int, str] = {}
+        active = queued = pending = rts_cont = 0
+        for robot in self._iter_robots():
+            job = getattr(robot, "job", None)
+            if job is None or getattr(robot, "current_state", None) == "idle":
+                continue
+            if not self._is_replenishment_commitment_job(job):
+                continue
+            pod = getattr(job, "pod", None)
+            if pod is None:
+                continue
+            pid = int(pod.pod_id)
+            if pid in seen:
+                continue
+            seen[pid] = "active"
+            active += 1
+            if getattr(job, "rts_continuation_active", False):
+                rts_cont += 1
+        for job in self.job_queue:
+            if not getattr(job, "is_replenishment_job", False):
+                continue
+            pod = getattr(job, "pod", None)
+            if pod is None:
+                continue
+            pid = int(pod.pod_id)
+            if pid in seen:
+                continue
+            seen[pid] = "queued"
+            queued += 1
+        for req in self.pending_replenishment_dispatches:
+            pid = int(req["pod_id"])
+            if pid in seen:
+                continue
+            seen[pid] = "pending"
+            pending += 1
+        return {
+            "active": active, "queued": queued, "pending": pending,
+            "rts_continuation": rts_cont, "total": len(seen),
+            "hard_cap": self.replenishment_hard_cap,
+        }
+
+    def prune_stale_pending_replenishment(self) -> int:
+        """Task 3 Part E2/E3: drop pending replenishment requests that can no longer
+        validly consume the cap (missing/ineligible pod, no valid SKU, or exceeded
+        bounded age), releasing each entry's cap contribution exactly once. The hard
+        cap VALUE is unchanged; this only removes entries that can never dispatch."""
+        if not self.pending_replenishment_dispatches:
+            return 0
+        now = int(self._tick)
+        kept = []
+        removed = 0
+        for req in self.pending_replenishment_dispatches:
+            pod = self.pod_manager.get_pod_by_id(int(req["pod_id"]))
+            skus = req.get("skus_to_replenish") or []
+            age = now - int(req.get("created_tick", now))
+            invalid = (
+                pod is None
+                or getattr(pod, "is_awaiting_replenishment", False)
+                or getattr(pod, "rts_return_in_progress", False)
+                or getattr(pod, "committed_next_owner_robot_id", None)
+                or not skus
+                or age > self.replenishment_pending_stale_ticks
+            )
+            if invalid:
+                removed += 1
+                if pod is not None:
+                    pod.has_pending_replenishment_dispatch = False
+                    pod.must_replenish_before_pick = False
+                self._bump_repl_counter("replenishment_pending_pruned")
+            else:
+                kept.append(req)
+        self.pending_replenishment_dispatches = kept
+        return removed
+
     def proactive_replenishment_load(self) -> int:
         return self.proactive_replenishment_robot_load()
 
@@ -556,6 +644,14 @@ class Inventory(Universe):
         commitments = self.replenishment_commitments_by_pod()
         total = len(commitments)
         if total >= self.replenishment_hard_cap:
+            # Task 3 Part E/G: nonsemantic count of which source the cap blocked.
+            src = str(source)
+            if src == "proactive":
+                self._bump_repl_counter("replenishment_cap_blocks_proactive")
+            elif src == "rts":
+                self._bump_repl_counter("replenishment_cap_blocks_rts")
+            else:
+                self._bump_repl_counter("replenishment_cap_blocks_post_pick")
             return False
         if source == "proactive" and consume_robot_slot and not idle_bypass:
             proactive = self.proactive_replenishment_robot_load()
@@ -761,6 +857,9 @@ class Inventory(Universe):
             yield pod, skus_to_replenish, plan
 
     def refresh_mandatory_replenishment_pods(self):
+        # Task 3 Part E2/E3: release stale/invalid pending cap entries each cycle,
+        # before mandatory-flag refresh and any new admission decisions.
+        self.prune_stale_pending_replenishment()
         current_tick = int(self._tick)
         for pod in self.pod_manager.get_all_pods():
             if pod is None or getattr(pod, "is_awaiting_replenishment", False):

@@ -30,6 +30,7 @@ from src.rmfs.orchestration.local_executor import (  # noqa: E402
     run_specs,
 )
 from src.rmfs.orchestration.run_spec import RunSpec  # noqa: E402
+from src.rmfs.orchestration.kpi_schema import FULL_KPI_V3_FIELDS  # noqa: E402
 
 ORIGINAL_CAMPAIGN_ID = "sensitivity_full_kpi_v2_217d072b72e4"
 ORIGINAL_ALLOCATION_PATCH_ID = "allocation_patch_0001_a333e5c09773"
@@ -202,7 +203,9 @@ def read_zip_json(zip_path: Path, name: str) -> Any | None:
 def iter_snapshot_zip_paths(snapshot_root: Path) -> list[Path]:
     if not snapshot_root.exists():
         return []
-    return sorted(snapshot_root.glob("*_snapshot_*.zip"))
+    zips = list(sorted(snapshot_root.glob("*_snapshot_*.zip")))
+    zips.extend(list(sorted(snapshot_root.glob("host_export_*.zip"))))
+    return zips
 
 
 def machine_from_run_path(path: str) -> str | None:
@@ -234,6 +237,14 @@ def zip_entries_by_run(snapshot_root: Path) -> dict[str, list[dict[str, Any]]]:
             by_run.setdefault(run_id, {})["status_name"] = name
         for run_id, row in by_run.items():
             machine = machine_from_run_path(row.get("spec_name") or row.get("summary_name") or row.get("status_name") or "")
+            if not machine and "host_export_" in zip_path.name:
+                name_without_ext = zip_path.name[:-4]
+                rem = name_without_ext[len("host_export_"):]
+                subparts = rem.split("_")
+                if len(subparts) >= 3:
+                    machine = "_".join(subparts[:-2])
+                else:
+                    machine = subparts[0]
             entries.setdefault(run_id, []).append({
                 "source": f"zip:{zip_path.name}",
                 "zip_path": zip_path,
@@ -334,9 +345,12 @@ def strict_json_complete(
 
 def strict_summary_fingerprint(summary: dict[str, Any]) -> str:
     ignore_fields = set(base.RELAXED_COMPLETION_IDENTITY_FIELDS) | {"repo_commit"}
+    kpi_fields_set = base.SENSITIVITY_KPI_FIELDS
+    if summary.get("kpi_schema_version") == "full_kpi_v3":
+        kpi_fields_set = FULL_KPI_V3_FIELDS
     payload = {
         field: summary.get(field, summary.get("kpi", {}).get(field))
-        for field in base.SENSITIVITY_KPI_FIELDS
+        for field in kpi_fields_set
         if field not in ignore_fields
     }
     payload["finalization"] = summary.get("finalization", {})
@@ -1227,10 +1241,14 @@ def rebuild_plan_outcomes(manifest: dict[str, Any], machine: base.Machine, items
             "rts_feature_schema_canonical_sha256": condition["identity"].get("rts_feature_schema_canonical_sha256", ""),
             "charging_config_canonical_sha256": condition["identity"].get("charging_config_canonical_sha256", ""),
         })
-        for field in base.SENSITIVITY_KPI_FIELDS:
-            value = summary.get(field, summary.get("kpi", {}).get(field, ""))
-            if value not in ("", None) or row.get(field, "") == "":
-                row[field] = value
+        kpi_fields_set = base.SENSITIVITY_KPI_FIELDS
+        if manifest.get("kpi_schema_version") == "full_kpi_v3":
+            kpi_fields_set = FULL_KPI_V3_FIELDS
+        for field in kpi_fields_set:
+            if field in base.RUN_OUTCOME_FIELDS:
+                value = summary.get(field, summary.get("kpi", {}).get(field, ""))
+                if value not in ("", None) or row.get(field, "") == "":
+                    row[field] = value
         rows.append(row)
     path = root / "run_outcomes.csv"
     write_csv(path, rows, list(base.RUN_OUTCOME_FIELDS))
@@ -1347,10 +1365,14 @@ def strict_completed_rows(manifest: dict[str, Any], snapshot_root: Path) -> list
             "scenario_hash": condition.get("scenario_hash", ""),
             "layout_hash": condition.get("layout_hash", ""),
         })
-        for field in base.SENSITIVITY_KPI_FIELDS:
-            value = summary.get(field, summary.get("kpi", {}).get(field, ""))
-            if value not in ("", None) or row.get(field, "") == "":
-                row[field] = value
+        kpi_fields_set = base.SENSITIVITY_KPI_FIELDS
+        if manifest.get("kpi_schema_version") == "full_kpi_v3":
+            kpi_fields_set = FULL_KPI_V3_FIELDS
+        for field in kpi_fields_set:
+            if field in base.RUN_OUTCOME_FIELDS:
+                value = summary.get(field, summary.get("kpi", {}).get(field, ""))
+                if value not in ("", None) or row.get(field, "") == "":
+                    row[field] = value
         rows.append(row)
     return rows
 

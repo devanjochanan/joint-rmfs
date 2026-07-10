@@ -80,6 +80,10 @@ class Robot(Object):
     BATTERY_CHARGED_PCT = 90.0           # stop charging above this %
     BATTERY_INTERRUPT_PCT = 50.0         # interrupt threshold %
     CORRECTED_ENERGY_MODEL = False
+    # Integration-owned (NOT a Salsa threshold): bounded no-progress claim cleanup.
+    # A robot holding a charger claim while not physically charging and making no
+    # route progress for this many ticks releases the claim and re-enters waiting.
+    STALE_CLAIM_MAX_TICKS = 600
     
     
     
@@ -111,6 +115,11 @@ class Robot(Object):
         self.is_charging = False
         self._claimed_charger = None
         self.charge_after_current_task = False
+        # ── Integration lifecycle state (Task 3 Part C) ──
+        self._waiting_for_charger = False       # unresolved: needs charge, none obtainable
+        self._claim_created_tick = None         # tick a claim was created (for no-progress check)
+        self._claim_progress_pos = None         # last position while holding a claim
+        self._drive_by_charged_last = False     # incidental drive-by transferred energy last tick
         self.return_fix = False
         self.return_nearest = True 
         # self.zone_boundary =[]
@@ -136,11 +145,32 @@ class Robot(Object):
             return False
         if self.battery_pct >= self.BATTERY_CHARGED_PCT:
             return False
+        # Task 3 Part C5: unavailability requires a *deliberate* charging commitment
+        # (an active trip, a live claim, or a pending deferred request). Incidental
+        # drive-by energy transfer (is_charging while merely passing over a charger
+        # overlay cell, with no claim/trip) no longer removes the robot from work.
         return bool(
-            getattr(self, "is_charging", False)
+            self.current_state == "going_to_charge"
             or getattr(self, "is_charging_pending", False)
             or getattr(self, "_claimed_charger", None) is not None
         )
+
+    def _incr_charging_counter(self, name, n=1):
+        """Nonsemantic integration telemetry (Task 3 Part C/G). Aggregated by KPI wiring."""
+        wh = getattr(self, "universe", None)
+        if wh is None:
+            return
+        ctr = getattr(wh, "charging_counters", None)
+        if ctr is None:
+            ctr = wh.charging_counters = {}
+        ctr[name] = ctr.get(name, 0) + n
+
+    def _enter_waiting_for_charger(self, reason):
+        """Task 3 Part C2/C6: explicit unresolved state; visible; no false claim."""
+        if not self._waiting_for_charger:
+            self._incr_charging_counter("charger_unavailable_events")
+        self._waiting_for_charger = True
+        self._waiting_reason = str(reason)
 
     def _apply_drive_by_charging(self):
         charger_cells = getattr(self.universe, 'charger_cells', set())
@@ -150,34 +180,57 @@ class Robot(Object):
             self.battery_level_j = min(self.BATTERY_CAPACITY_J,
                                        self.battery_level_j + charge_j)
             self.is_charging = True
+            # Task 3 Part C5: count an incidental drive-by event only on entry
+            # (robot was not charging last tick and is not on a deliberate trip).
+            if not self._drive_by_charged_last and self._claimed_charger is None \
+                    and self.current_state != "going_to_charge":
+                self._incr_charging_counter("drive_by_charging_events")
+            self._drive_by_charged_last = True
         else:
             self.is_charging = False
+            self._drive_by_charged_last = False
 
     def _start_charging_trip(self):
-        active = getattr(self.universe, 'active_charger_cells', None) or set()
-        charger_cells = active if active else getattr(self.universe, 'charger_cells', set())
+        """Task 3 Part C2/C3/C4: try validated chargers in distance order; skip
+        known-unroutable cells; claim only on a successful route; otherwise enter
+        an explicit waiting-for-charger state (no false claim)."""
+        wh = self.universe
+        self._incr_charging_counter("charging_requests")
+        active = getattr(wh, 'active_charger_cells', None) or set()
+        charger_cells = active if active else getattr(wh, 'charger_cells', set())
         if not charger_cells:
+            self._enter_waiting_for_charger("no_chargers_configured")
             return False
-        occupied = getattr(self.universe, 'occupied_chargers', {})
-        available = charger_cells - set(occupied.keys())
+        occupied = getattr(wh, 'occupied_chargers', {})
+        invalid = getattr(wh, '_unroutable_charger_cells', None)
+        if invalid is None:
+            invalid = wh._unroutable_charger_cells = set()
+        available = [c for c in charger_cells if c not in occupied and c not in invalid]
         if not available:
+            self._enter_waiting_for_charger("no_available_charger")
             return False
-        min_dist = float('inf'); nearest = None
-        for (cx, cy) in available:
-            d = (cx - self.pos_x) ** 2 + (cy - self.pos_y) ** 2   # squared dist (no math import needed)
-            if d < min_dist:
-                min_dist = d; nearest = (cx, cy)
-        if nearest is None:
-            return False
-        dest = NetLogoCoordinate(nearest[0], nearest[1])
-        try:
-            self.set_move(dest, graph=self.universe.graph)
+        available.sort(key=lambda c: (c[0] - self.pos_x) ** 2 + (c[1] - self.pos_y) ** 2)
+        for nearest in available:
+            dest = NetLogoCoordinate(nearest[0], nearest[1])
+            try:
+                self.set_move(dest, graph=wh.graph)
+            except Exception:
+                invalid.add(nearest)                       # C3: don't retry known-invalid
+                self._incr_charging_counter("charger_route_failures")
+                continue
             self.current_state = "going_to_charge"
-            occupied[nearest] = self.id            # claim the charger
+            occupied[nearest] = self.id                     # claim only after a valid route
             self._claimed_charger = nearest
+            self._claim_created_tick = int(getattr(wh, "_tick", 0))
+            self._claim_progress_pos = (self.pos_x, self.pos_y)
+            self._waiting_for_charger = False
+            self._incr_charging_counter("charger_claims_created")
+            self._incr_charging_counter("charger_assignment_successes")
             return True
-        except Exception:
-            return False
+        # every candidate route failed
+        self._incr_charging_counter("charger_assignment_failures")
+        self._enter_waiting_for_charger("all_routes_failed")
+        return False
 
     def _should_interrupt_charging(self):
         if self.battery_pct <= self.BATTERY_INTERRUPT_PCT:
@@ -199,6 +252,9 @@ class Robot(Object):
         if occupied.get(cell) == self.id:
             del occupied[cell]
         self._claimed_charger = None
+        self._claim_created_tick = None
+        self._claim_progress_pos = None
+        self._incr_charging_counter("charger_claims_released")
 
     @staticmethod
     def _checkMovementDirection(p1, p2):
@@ -958,6 +1014,21 @@ class Robot(Object):
         # Dead-robot handling: battery fully drained -> park in place.
         if self.battery_level_j <= 0.0 and self.current_state != "dead":
             self._release_charger()
+            # Task 3 Part D2/D3: a dying robot must not strand its committed-next
+            # job/pod (which would block re-allocation forever) or leave a
+            # fabricated RTS outcome. Cancel the reservation (restores the job to
+            # the queue exactly once, clears all markers) and censor any pending
+            # RTS transition with an explicit reason (no fabricated completion).
+            registry = getattr(self.universe, "committed_next_registry", None)
+            if registry is not None:
+                registry.cancel_for_robot(self, "reservation_cancelled_robot_death")
+            runtime = getattr(self.universe, "rts_rollout_runtime", None)
+            if runtime is not None:
+                runtime.censor_pending_for_robot(
+                    robot=self,
+                    status="censored_robot_death",
+                    reason="robot_battery_death",
+                )
             self.velocity = 0; self.acceleration = 0
             self.route_stop_points = []
             self.current_state = "dead"
@@ -968,6 +1039,22 @@ class Robot(Object):
             return True
         if self.current_state == "dead":
             return True
+        # Task 3 Part C4: bounded stale-claim / no-progress cleanup. A robot holding
+        # a claim on a charging trip but not physically charging and not moving for
+        # STALE_CLAIM_MAX_TICKS releases the claim and re-enters waiting (retryable).
+        if self._claimed_charger is not None and self.current_state == "going_to_charge" \
+                and not self.is_charging:
+            pos = (self.pos_x, self.pos_y)
+            now = int(getattr(self.universe, "_tick", 0))
+            if self._claim_progress_pos is not None and pos != self._claim_progress_pos:
+                self._claim_progress_pos = pos
+                self._claim_created_tick = now          # made progress; reset the clock
+            elif self._claim_created_tick is not None and \
+                    (now - int(self._claim_created_tick)) >= self.STALE_CLAIM_MAX_TICKS:
+                self._incr_charging_counter("stale_charger_claims_detected")
+                self._release_charger()
+                self.current_state = "idle"
+                self._enter_waiting_for_charger("stale_claim_no_progress")
         # Base operational drain (skipped while plugged in / charging).
         if not self.is_charging:
             fixed_load_energy = self.BASE_DRAIN_RATE_PER_S * self.universe.tick_to_second
@@ -978,9 +1065,14 @@ class Robot(Object):
         if is_busy and self.battery_pct < self.BATTERY_LOW_PCT and not getattr(self.universe, "disable_active_charging", False):
             self.charge_after_current_task = True
 
-        # Trigger: idle + (low battery or deferred charging queued) -> go to nearest charger.
+        # Task 3 Part C6: a recovered robot must not stay hidden in waiting.
+        if self._waiting_for_charger and self.battery_pct >= self.BATTERY_LOW_PCT \
+                and not getattr(self, "charge_after_current_task", False):
+            self._waiting_for_charger = False
+        # Trigger: idle + (low battery or deferred charging queued) -> go to a charger.
         is_idle = (self.current_state == "idle") and (self.job is None or getattr(self.job, "is_finished", True))
         if is_idle and (self.battery_pct < self.BATTERY_LOW_PCT or getattr(self, "charge_after_current_task", False)) and not getattr(self.universe, "disable_active_charging", False):
+            # Retrying here each idle tick also reconsiders chargers freed by releases.
             if self._start_charging_trip():
                 self.charge_after_current_task = False
         return False

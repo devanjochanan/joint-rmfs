@@ -57,6 +57,7 @@ from src.rmfs.orchestration.run_spec import RunSpec  # noqa: E402
 from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id  # noqa: E402
 from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint  # noqa: E402
 from src.rmfs.runtime_io.run_profiles import TICK_TO_SECOND  # noqa: E402
+from src.rmfs.orchestration.kpi_schema import FULL_KPI_V3_FIELDS  # noqa: E402
 
 CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v2"
 SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v1"
@@ -1579,7 +1580,7 @@ RUN_OUTCOME_HASH_FIELDS = (
     "pps_model_sha256",
     "charging_config_canonical_sha256",
 )
-RUN_OUTCOME_FIELDS = tuple(dict.fromkeys((*RUN_OUTCOME_BASE_FIELDS, *SENSITIVITY_KPI_FIELDS, *RUN_OUTCOME_HASH_FIELDS)))
+RUN_OUTCOME_FIELDS = tuple(dict.fromkeys((*RUN_OUTCOME_BASE_FIELDS, *SENSITIVITY_KPI_FIELDS, *FULL_KPI_V3_FIELDS, *RUN_OUTCOME_HASH_FIELDS)))
 
 
 def rebuild_run_outcomes_csv(*, manifest: dict[str, Any], machine: Machine, repo_root: Path) -> Path:
@@ -1623,10 +1624,14 @@ def rebuild_run_outcomes_csv(*, manifest: dict[str, Any], machine: Machine, repo
             "rts_feature_schema_canonical_sha256": condition["identity"].get("rts_feature_schema_canonical_sha256", ""),
             "charging_config_canonical_sha256": condition["identity"].get("charging_config_canonical_sha256", ""),
         })
-        for field in SENSITIVITY_KPI_FIELDS:
-            value = summary.get(field, summary.get("kpi", {}).get(field, ""))
-            if value not in ("", None) or row.get(field, "") == "":
-                row[field] = value
+        kpi_fields_set = SENSITIVITY_KPI_FIELDS
+        if manifest.get("kpi_schema_version") == "full_kpi_v3":
+            kpi_fields_set = FULL_KPI_V3_FIELDS
+        for field in kpi_fields_set:
+            if field in RUN_OUTCOME_FIELDS:
+                value = summary.get(field, summary.get("kpi", {}).get(field, ""))
+                if value not in ("", None) or row.get(field, "") == "":
+                    row[field] = value
         for field in RUN_OUTCOME_HASH_FIELDS:
             if row.get(field, "") == "":
                 row[field] = summary.get(field, "")
@@ -1857,6 +1862,314 @@ def rebalance_future_stages(manifest_path: Path) -> Path:
     return path
 
 
+def execute_host(
+    *,
+    manifest_path: Path,
+    machine_id: str,
+    stages: list[int],
+    resume: bool,
+    progress: bool,
+    max_retries: int = 2,
+    host_data_root: Path | None = None,
+    keep_run_artifacts: bool = False,
+) -> int:
+    from src.rmfs.orchestration.host_ledger import HostLedger
+    from src.rmfs.orchestration.source_identity import SourceIdentity
+
+    try:
+        ensure_clean_tracked_scientific_files(REPO_ROOT)
+    except Exception as exc:
+        print(f"\n[CRITICAL ERROR] Dirty tracked scientific files detected: {exc}\n", file=sys.stderr)
+        raise SystemExit(f"campaign stopped: scientific files dirty: {exc}")
+
+    all_dirty = dirty_tracked_files(REPO_ROOT)
+    non_scientific_dirty = [p for p in all_dirty if p not in SCIENTIFIC_TRACKED_PATHS]
+    if non_scientific_dirty:
+        print("\n" + "=" * 80)
+        print("[WARNING] DIRTY LOCAL SOURCE STATE DETECTED:")
+        for p in non_scientific_dirty:
+            print(f"  - {p}")
+        print("This does not stop execution because it does not affect protected scientific semantics.")
+        print("=" * 80 + "\n")
+
+    manifest = read_json(manifest_path)
+    machines = machine_map(manifest)
+    if machine_id not in machines:
+        raise SystemExit(f"unknown machine id {machine_id}; expected one of {sorted(machines)}")
+    machine = machines[machine_id]
+
+    try:
+        validate_local_assets(manifest, REPO_ROOT, strict=True)
+    except Exception as exc:
+        print(f"\n[CRITICAL ERROR] Campaign-wide stop: asset or base input validation failed: {exc}\n", file=sys.stderr)
+        raise SystemExit(f"campaign stopped: validation failed: {exc}")
+
+    if host_data_root is None:
+        campaign_id = manifest["campaign_id"]
+        host_data_root = REPO_ROOT / "data" / "runtime" / "distributed_sensitivity" / campaign_id / machine_id
+    
+    host_data_root.mkdir(parents=True, exist_ok=True)
+    ledger_path = host_data_root / "host_ledger.json"
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+    if ledger_path.exists():
+        print(f"[sensitivity] Loading existing HostLedger from {ledger_path}")
+        ledger = HostLedger.load(ledger_path)
+        if ledger.campaign_id != manifest["campaign_id"]:
+            raise RuntimeError(f"Ledger campaign_id {ledger.campaign_id} does not match manifest {manifest['campaign_id']}")
+    else:
+        print(f"[sensitivity] Creating new HostLedger under {host_data_root}")
+        assigned = [
+            run for run in manifest["runs"]
+            if run["machine_id"] == machine_id
+        ]
+        source_ident = SourceIdentity.compute(REPO_ROOT)
+        ledger = HostLedger.create(
+            host_id=machine_id,
+            campaign_id=manifest["campaign_id"],
+            manifest_sha256=manifest_sha,
+            assigned_conditions=assigned,
+            kpi_schema_version=manifest.get("kpi_schema_version"),
+            source_tree_hash=source_ident.source_tree_hash,
+        )
+        ledger.save(ledger_path)
+
+    runs_dir = host_data_root / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    
+    def validate_identity(condition, spec_dict, summary):
+        if not spec_dict:
+            return False
+        for key in ("policy_configuration", "robot_count", "order_rate_per_hour", "replication", "seed"):
+            spec_val = spec_dict.get(key)
+            cond_key = "order_rate" if key == "order_rate_per_hour" else key
+            cond_val = condition.get(cond_key)
+            if spec_val != cond_val:
+                return False
+        return True
+
+    print("[sensitivity] Reconciling ledger with local results directory...")
+    rec_result = ledger.reconcile_with_outputs(runs_dir, validate_fn=validate_identity)
+    if rec_result["reconciled"]:
+        print(f"[sensitivity] Reconciled {len(rec_result['reconciled'])} already completed conditions.")
+        ledger.save(ledger_path)
+
+    cleanup_stats: dict[str, Any] = {"bytes": 0, "by_filename": {}}
+    min_free = min_free_disk_bytes_from_env()
+
+    def rebuild_outcomes_for_host():
+        conditions = {run["run_id"]: run for run in ledger.assigned_conditions}
+        rows = []
+        for run_id, condition in sorted(conditions.items(), key=lambda item: condition_sort_key(item[1])):
+            summary_path = runs_dir / run_id / "worker_summary.json"
+            if not summary_path.exists():
+                continue
+            try:
+                summary = read_json(summary_path)
+            except Exception:
+                continue
+            row = {field: "" for field in RUN_OUTCOME_FIELDS}
+            row.update({
+                "campaign_id": manifest["campaign_id"],
+                "allocation_patch_id": manifest["allocation_patch_id"],
+                "simulation_semantics_id": manifest["simulation_semantics_id"],
+                "run_id": run_id,
+                "condition_key": condition["condition_key"],
+                "policy_configuration": condition["policy_configuration"],
+                "robot_count": condition["robot_count"],
+                "order_rate": condition["order_rate"],
+                "replication": condition["replication"],
+                "seed": condition["seed"],
+                "stage_first_requested": condition["stage_first_requested"],
+                "status": summary.get("status", ""),
+                "termination_reason": summary.get("termination_reason", summary.get("finalization", {}).get("reason", "")),
+                "source_machine_id": machine_id,
+                "repo_commit": summary.get("repo_commit", manifest.get("commit", "")),
+                "error_type": summary.get("error_type", ""),
+                "error_message": summary.get("error_message", ""),
+                "scenario_hash": condition.get("scenario_hash", ""),
+                "layout_hash": condition.get("layout_hash", ""),
+                "rts_metadata_canonical_sha256": condition["identity"].get("rts_metadata_canonical_sha256", ""),
+                "rts_feature_schema_canonical_sha256": condition["identity"].get("rts_feature_schema_canonical_sha256", ""),
+                "charging_config_canonical_sha256": condition["identity"].get("charging_config_canonical_sha256", ""),
+            })
+            kpi_fields_set = SENSITIVITY_KPI_FIELDS
+            if manifest.get("kpi_schema_version") == "full_kpi_v3":
+                kpi_fields_set = FULL_KPI_V3_FIELDS
+            
+            for field in kpi_fields_set:
+                if field in RUN_OUTCOME_FIELDS:
+                    value = summary.get(field, summary.get("kpi", {}).get(field, ""))
+                    if value not in ("", None) or row.get(field, "") == "":
+                        row[field] = value
+            for field in RUN_OUTCOME_HASH_FIELDS:
+                if row.get(field, "") == "":
+                    row[field] = summary.get(field, "")
+            rows.append(row)
+
+        path = host_data_root / "run_outcomes.csv"
+        tmp_path = path.with_name(f".{path.name}.tmp")
+        with tmp_path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(RUN_OUTCOME_FIELDS), extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        replace_with_retry(tmp_path, path)
+
+    def _before_launch(spec: RunSpec, active_count: int) -> bool:
+        available = free_disk_bytes(host_data_root)
+        if available >= min_free:
+            return True
+        if active_count > 0:
+            print(f"[sensitivity] free disk below floor; pausing: free={available} required={min_free}")
+            return False
+        raise RuntimeError(f"insufficient free disk: free={available} required={min_free}")
+
+    def _reclaim_on_complete(spec: RunSpec, return_code: int) -> None:
+        if not keep_run_artifacts:
+            summary = load_worker_summary(spec.runtime_root)
+            if int(return_code) == 0 and summary.get("status") == "success":
+                stats = reclaim_completed_run_artifacts_with_stats(spec.runtime_root)
+            else:
+                stats = reclaim_failed_run_artifacts_with_stats(spec.runtime_root)
+            merge_reclaim_stats(cleanup_stats, stats)
+        rebuild_outcomes_for_host()
+
+    previous_log_cap = os.environ.get("RMFS_WORKER_LOG_CAP_MB")
+    os.environ["RMFS_WORKER_LOG_CAP_MB"] = "5"
+
+    try:
+        while True:
+            cond = ledger.next_condition()
+            if cond is None:
+                print("[sensitivity] All assigned conditions finished successfully!")
+                break
+            
+            if int(cond["stage_first_requested"]) not in {int(stage) for stage in stages}:
+                print(f"[sensitivity] Skipping condition {cond['condition_key']} (stage {cond['stage_first_requested']})")
+                continue
+
+            spec = build_run_spec_from_condition(cond, manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+            object.__setattr__(spec, "runtime_root", runs_dir / cond["run_id"])
+            
+            print(f"\n[sensitivity] Starting condition: {cond['condition_key']} (run_id: {cond['run_id']})")
+            ledger.mark_started(cond["condition_key"])
+            ledger.save(ledger_path)
+
+            start_t = time.perf_counter()
+            completed = []
+            try:
+                completed = run_specs(
+                    [spec],
+                    max_workers=1,
+                    progress=progress,
+                    on_run_complete=_reclaim_on_complete,
+                    before_launch=_before_launch,
+                )
+            except Exception as exc:
+                print(f"[sensitivity] Worker exception for {cond['run_id']}: {exc}", file=sys.stderr)
+            
+            elapsed = time.perf_counter() - start_t
+            
+            success = False
+            return_code = -1
+            if completed:
+                return_code = completed[0]["return_code"]
+                if return_code == 0:
+                    summary = load_worker_summary(spec.runtime_root)
+                    if summary.get("status") == "success" and (
+                        summary.get("kpi_complete") or manifest.get("kpi_schema_version") == "full_kpi_v3"
+                    ):
+                        success = True
+            
+            if success:
+                print(f"[sensitivity] Condition completed successfully in {elapsed:.1f}s")
+                ledger.mark_completed(cond["condition_key"], {
+                    "return_code": return_code,
+                    "elapsed_seconds": elapsed,
+                    "status": "success",
+                })
+            else:
+                summary = load_worker_summary(spec.runtime_root)
+                error_msg = summary.get("error_message", "unknown error")
+                error_type = summary.get("error_type", "SimulationError")
+                print(f"[sensitivity] Condition failed (attempt {ledger.retry_counts.get(cond['condition_key'], 0) + 1}): {error_type}: {error_msg}")
+                ledger.mark_failed(cond["condition_key"], {
+                    "return_code": return_code,
+                    "elapsed_seconds": elapsed,
+                    "status": "failed",
+                    "error_type": error_type,
+                    "error_message": error_msg,
+                }, max_retries=max_retries)
+            
+            ledger.save(ledger_path)
+            rebuild_outcomes_for_host()
+
+    finally:
+        if previous_log_cap is None:
+            os.environ.pop("RMFS_WORKER_LOG_CAP_MB", None)
+        else:
+            os.environ["RMFS_WORKER_LOG_CAP_MB"] = previous_log_cap
+
+    write_machine_summary(
+        manifest=manifest,
+        machine=machine,
+        repo_root=REPO_ROOT,
+        stage=None if stages == [1, 2, 3, 4] else min(stages) if len(stages) == 1 else None,
+        launched=[cond["run_id"] for cond in ledger.assigned_conditions],
+        skipped=[],
+        elapsed_seconds=0.0,
+    )
+    
+    machine_summary_path = host_data_root / "machine_summary.json"
+    if machine_summary_path.exists():
+        msum = read_json(machine_summary_path)
+        msum.update({
+            "ledger_summary": ledger.summary(),
+            "updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        })
+        write_json(machine_summary_path, msum)
+
+    return 0
+
+
+def prepare_host_assignment(
+    *,
+    manifest_path: Path,
+    machine_id: str,
+    output_dir: Path,
+) -> Path:
+    from src.rmfs.orchestration.host_ledger import HostLedger
+    from src.rmfs.orchestration.source_identity import SourceIdentity
+
+    manifest = read_json(manifest_path)
+    machines = machine_map(manifest)
+    if machine_id not in machines:
+        raise SystemExit(f"unknown machine id {machine_id}; expected one of {sorted(machines)}")
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    shard_runs = [
+        run for run in manifest["runs"]
+        if run["machine_id"] == machine_id
+    ]
+    
+    write_json(output_dir / "manifest.json", manifest)
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    source_ident = SourceIdentity.compute(REPO_ROOT)
+    
+    ledger = HostLedger.create(
+        host_id=machine_id,
+        campaign_id=manifest["campaign_id"],
+        manifest_sha256=manifest_sha,
+        assigned_conditions=shard_runs,
+        kpi_schema_version=manifest.get("kpi_schema_version"),
+        source_tree_hash=source_ident.source_tree_hash,
+    )
+    ledger.save(output_dir / "host_ledger.json")
+    
+    print(f"[sensitivity] Prepared host assignment folder under: {output_dir}")
+    return output_dir
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare or run the distributed RMFS sensitivity campaign.")
     parser.add_argument("--prepare-campaign", action="store_true", default=False)
@@ -1882,13 +2195,51 @@ def build_parser() -> argparse.ArgumentParser:
         "reproducible from their pinned seed; result JSON summaries are always kept.",
     )
     parser.add_argument("--validate-only", action="store_true", default=False)
+    parser.add_argument("--execute-host", action="store_true", default=False)
+    parser.add_argument("--prepare-host-assignment", action="store_true", default=False)
+    parser.add_argument("--host-id", help="Override host machine ID")
+    parser.add_argument("--max-retries", type=int, default=2, help="Retry budget per condition")
+    parser.add_argument("--host-data-root", default=None, help="Root folder for local run results & ledger")
+    parser.add_argument("--output-dir", default=None, help="Output folder for prepared host assignment")
     return parser
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.prepare_campaign or args.validate_only or args.run_continuously or args.stage:
+    if args.prepare_campaign or args.validate_only or args.run_continuously or args.stage or args.execute_host or args.prepare_host_assignment:
         ensure_clean_tracked_scientific_files(REPO_ROOT)
+
+    if args.prepare_host_assignment:
+        if not args.manifest:
+            raise SystemExit("--prepare-host-assignment requires --manifest")
+        if not args.machine_id:
+            raise SystemExit("--prepare-host-assignment requires --machine-id")
+        if not args.output_dir:
+            raise SystemExit("--prepare-host-assignment requires --output-dir")
+        prepare_host_assignment(
+            manifest_path=manifest_path_from_arg(args.manifest),
+            machine_id=args.machine_id,
+            output_dir=Path(args.output_dir),
+        )
+        return 0
+
+    if args.execute_host:
+        if not args.manifest:
+            raise SystemExit("--execute-host requires --manifest")
+        if not args.machine_id:
+            raise SystemExit("--execute-host requires --machine-id")
+        stages = args.stage or [1, 2, 3, 4]
+        return execute_host(
+            manifest_path=manifest_path_from_arg(args.manifest),
+            machine_id=args.machine_id,
+            stages=stages,
+            resume=bool(args.resume),
+            progress=bool(args.progress),
+            max_retries=int(args.max_retries),
+            host_data_root=Path(args.host_data_root) if args.host_data_root else None,
+            keep_run_artifacts=bool(args.keep_run_artifacts),
+        )
+
     if args.rebalance_future_stages:
         if not args.manifest:
             raise SystemExit("--rebalance-future-stages requires --manifest")

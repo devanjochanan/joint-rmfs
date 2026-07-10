@@ -77,9 +77,9 @@ class RunSpec:
     kpi_schema_version: str | None = None
     policy_configuration: str | None = None
     replication: int | None = None
-    campaign_seed: int | None = None
     rts_checkpoint_sha256: str | None = None
     pps_model_sha256: str | None = None
+    kpi_snapshot_cadence_seconds: list[float] | None = None
 
     @property
     def netlogo_steps_requested(self) -> int:

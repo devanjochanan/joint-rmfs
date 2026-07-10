@@ -144,6 +144,11 @@ class CommittedNextRegistry:
         self._last_action_proposal_diagnostics_by_robot: dict[str, dict[str, Any]] = {}
         self._last_selected_refresh_diagnostics_by_robot: dict[str, dict[str, Any]] = {}
         self._counter = 0
+        # Task 3 Part D/G: nonsemantic exact-once lifecycle accounting.
+        self.lifecycle_counters: dict[str, int] = {}
+
+    def _bump(self, name: str, n: int = 1) -> None:
+        self.lifecycle_counters[name] = self.lifecycle_counters.get(name, 0) + n
 
     def rebuild_indexes(self) -> None:
         self.robot_id_to_reservation = {}
@@ -458,6 +463,7 @@ class CommittedNextRegistry:
         )
         self._set_markers(reservation)
         self.reservations_by_id[reservation.reservation_id] = reservation
+        self._bump("committed_next_reservations_created")
         self.robot_id_to_reservation[reservation.owner_robot_id] = reservation.reservation_id
         self.pod_id_to_reservation[reservation.pod_id] = reservation.reservation_id
         self.job_id_to_reservation[reservation.job_id] = reservation.reservation_id
@@ -489,6 +495,7 @@ class CommittedNextRegistry:
         )
         self._set_markers(reservation)
         self.reservations_by_id[reservation.reservation_id] = reservation
+        self._bump("committed_next_reservations_created")
         self.robot_id_to_reservation[reservation.owner_robot_id] = reservation.reservation_id
         self.pod_id_to_reservation[reservation.pod_id] = reservation.reservation_id
         self.job_id_to_reservation[reservation.job_id] = reservation.reservation_id
@@ -746,6 +753,14 @@ class CommittedNextRegistry:
         reservation.status = STATUS_CANCELLED
         reservation.cancellation_reason = str(reason)
         self._drop_indexes(reservation)
+        # Task 3 Part D1: a committed reservation keeps its job in the queue the
+        # whole time, so cancellation restores exactly one ordinary queue job
+        # (markers cleared above). Count restoration + reason bucket.
+        self._bump("committed_next_jobs_restored")
+        if "charging" in str(reason):
+            self._bump("committed_next_reservations_cancelled_charging")
+        elif "death" in str(reason):
+            self._bump("committed_next_reservations_cancelled_death")
         return reservation
 
     def activate_for_robot(self, inventory: Any, robot: Any) -> CommittedNextReservation | None:
@@ -773,6 +788,7 @@ class CommittedNextRegistry:
             setattr(job, "committed_next_reservation_id", None)
             setattr(job, "committed_next_owner_robot_id", None)
             robot.assign_job_and_set_move_to_take_pod(job)
+            self._bump("committed_next_reservations_activated")
         except Exception:
             insert_at = max(0, min(int(reservation.original_queue_index), len(inventory.job_queue)))
             if job not in inventory.job_queue:
