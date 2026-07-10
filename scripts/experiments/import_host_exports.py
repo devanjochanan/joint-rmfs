@@ -28,8 +28,12 @@ def _validate_hashes(zf: zipfile.ZipFile) -> None:
 
 
 def _condition_key(spec: dict[str, Any]) -> tuple[Any, ...]:
-    return (spec.get("policy_configuration"), spec.get("robot_count"),
-            spec.get("order_rate_per_hour"), spec.get("replication"), spec.get("campaign_seed", spec.get("rts_random_seed")))
+    return tuple(spec.get(key) for key in (
+        "policy_configuration", "rts_policy_mode", "pps_mode", "charging_placement_source",
+        "charging_config_sha256", "charging_realized_layout_sha256", "rts_checkpoint_sha256",
+        "pps_model_sha256", "campaign_id", "robot_count", "order_rate_per_hour", "replication",
+        "campaign_seed",
+    )) + (spec.get("source_tree_hash"),)
 
 
 def import_exports(archives: list[Path], output_dir: Path) -> dict[str, Any]:
@@ -37,7 +41,6 @@ def import_exports(archives: list[Path], output_dir: Path) -> dict[str, Any]:
     outcomes: dict[tuple[Any, ...], dict[str, Any]] = {}
     failures: list[dict[str, Any]] = []
     quarantined: list[dict[str, Any]] = []
-    accepted = 0
     for archive in archives:
         with zipfile.ZipFile(archive) as zf:
             _validate_hashes(zf)
@@ -68,7 +71,6 @@ def import_exports(archives: list[Path], output_dir: Path) -> dict[str, Any]:
                 prior = outcomes.get(scientific_key)
                 if prior is None:
                     outcomes[scientific_key] = record
-                    accepted += 1
                 elif prior["summary"].get("kpi", prior["summary"]) == record["summary"].get("kpi", record["summary"]):
                     continue
                 else:
@@ -84,7 +86,7 @@ def import_exports(archives: list[Path], output_dir: Path) -> dict[str, Any]:
     with (output_dir / "imported_outcomes.csv").open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader(); writer.writerows(rows)
-    report = {"accepted": accepted, "strict_or_warning_results": len(rows), "failures": failures, "quarantined": quarantined}
+    report = {"accepted": len(rows), "strict_or_warning_results": len(rows), "failures": failures, "quarantined": quarantined}
     (output_dir / "import_report.json").write_text(json.dumps(report, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     return report
 

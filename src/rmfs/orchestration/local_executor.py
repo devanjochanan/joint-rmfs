@@ -1118,6 +1118,19 @@ def run_worker(spec: RunSpec):
     status_path = spec.runtime_root / "worker_status.json"
     ticks_done = 0
     last_status_tick = -1
+    if spec.charging_placement_source == "salsa_adaptive_on":
+        config_path = Path(spec.charging_config_path or "")
+        if not config_path.is_file():
+            raise RuntimeError("salsa_adaptive_on requires a condition-local charging config")
+        actual = hashlib.sha256(config_path.read_bytes()).hexdigest()
+        if spec.charging_config_sha256 and actual != spec.charging_config_sha256:
+            raise RuntimeError("condition-local charging config hash mismatch")
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        positions = config.get("charger_positions", [])
+        if int(config.get("num_chargers", -1)) != len(positions):
+            raise RuntimeError("condition-local charging config declared count mismatch")
+        if any(not isinstance(pos, list) or len(pos) != 2 or min(int(pos[0]), int(pos[1])) < 0 for pos in positions):
+            raise RuntimeError("condition-local charging config has invalid coordinates")
 
     def write_worker_status(status: str, force: bool = False) -> None:
         nonlocal last_status_tick
@@ -1555,6 +1568,8 @@ def run_worker(spec: RunSpec):
             "effective_charger_coordinate_hash": getattr(final_warehouse, "effective_charger_coordinate_hash", None) if final_warehouse is not None else None,
             "persist_final_state": bool(spec.persist_final_state),
             "campaign_id": spec.campaign_id,
+            "source_tree_hash": spec.source_tree_hash,
+            "manifest_sha256": spec.manifest_sha256,
             "allocation_patch_id": spec.allocation_patch_id,
             "simulation_semantics_id": spec.simulation_semantics_id,
             "machine_id": spec.machine_id,

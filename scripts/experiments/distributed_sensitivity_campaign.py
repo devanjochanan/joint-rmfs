@@ -54,16 +54,23 @@ from src.rmfs.orchestration.local_executor import (  # noqa: E402
     run_specs,
 )
 from src.rmfs.orchestration.run_spec import RunSpec  # noqa: E402
+from src.rmfs.orchestration.source_identity import SourceIdentity  # noqa: E402
 from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id  # noqa: E402
 from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint  # noqa: E402
 from src.rmfs.runtime_io.run_profiles import TICK_TO_SECOND  # noqa: E402
-from src.rmfs.orchestration.kpi_schema import FULL_KPI_V3_FIELDS, FULL_KPI_V3_REQUIRED_FIELDS  # noqa: E402
+from src.rmfs.orchestration.kpi_schema import FULL_KPI_V3_FIELDS, FULL_KPI_V3_REQUIRED_FIELDS, FULL_KPI_V3_SCHEMA_VERSION  # noqa: E402
+from scripts.data.build_adaptive_hybrid import build as build_salsa_adaptive_config, load_grid as load_salsa_grid  # noqa: E402
 
-CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v2"
+CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v3"
 SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v1"
 ALLOCATION_PATCH_LABEL = "allocation_patch_0001"
 CANONICAL_RTS_CHECKPOINT_ID = "batch_000014"
-POLICY_CONFIGURATIONS = ("all_off", "all_on_rl")
+POLICY_CONFIGURATIONS = (
+    "reference_rts__charging_off",
+    "rts_rl__charging_off",
+    "reference_rts__salsa_charging",
+    "rts_rl__salsa_charging",
+)
 SIMULATED_SECONDS = 87_000.0
 BACKEND_STEPS_PER_RUN = 580_000
 SEED_BASE_MINUS_ONE = 41
@@ -76,12 +83,7 @@ ARCHIVED_ROOTS_IGNORED = (
     "data/runtime/capacity_study_order_rate_packB",
     "data/runtime/capacity_study_order_rate_packC",
 )
-STAGE_NAMES = {
-    1: "full_matrix_replication_1",
-    2: "central_all_on_rl_replications_2_to_20",
-    3: "central_all_off_replications_2_to_20",
-    4: "remaining_full_matrix_to_20_replications",
-}
+STAGE_NAMES = {1: "primary_rts_by_charging_factorial"}
 CENTRAL_ROBOT_COUNT = 20
 CENTRAL_ORDER_RATE = 500
 DEFAULT_LOCAL_PYTHON = Path("/home/dewan/torch-gpu/bin/python")
@@ -105,6 +107,7 @@ SCIENTIFIC_TRACKED_PATHS = (
     "data/models/rts/batch_000014/checkpoint/metadata.json",
     "data/models/rts/batch_000014/checkpoint/feature_schema.json",
 )
+_SALSA_CONFIG_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
 
 
 @dataclass(frozen=True)
@@ -698,31 +701,35 @@ def condition_key(policy: str, robot_count: int, order_rate: int, replication: i
     return f"{policy}|robots={robot_count}|order_rate={order_rate}|rep={replication}"
 
 
+def condition_charging_identity(policy: str, robot_count: int, layout_path: Path) -> dict[str, Any]:
+    """Return deterministic treatment-local charging metadata without mutating inputs."""
+    if policy.endswith("__charging_off"):
+        return {"charging_placement_source": "reference_off", "charging_enabled": False,
+                "config": None, "config_sha256": None, "declared_count": 0,
+                "realized_layout_sha256": sha256_file(layout_path)}
+    cache_key = (str(Path(layout_path).resolve()), int(robot_count))
+    cached = _SALSA_CONFIG_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+    grid = load_salsa_grid(layout_path)
+    config, _picker, _depot = build_salsa_adaptive_config(grid, int(robot_count), rho=0.6)
+    canonical = (json.dumps(config, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    value = {"charging_placement_source": "salsa_adaptive_on", "charging_enabled": True,
+            "config": config, "config_sha256": hashlib.sha256(canonical).hexdigest(),
+            "declared_count": int(config["num_chargers"]), "realized_layout_sha256": sha256_file(layout_path),
+            "generator": "scripts/data/build_adaptive_hybrid.py", "generator_parameters": {"rho": 0.6, "robot_count": int(robot_count)}}
+    _SALSA_CONFIG_CACHE[cache_key] = dict(value)
+    return value
+
+
 def base_condition_rows(stage: int, already_requested: set[str]) -> list[dict[str, Any]]:
     if stage == 1:
         candidates = [
-            (policy, robot_count, order_rate, 1)
-            for policy in POLICY_CONFIGURATIONS
-            for robot_count in ROBOT_COUNTS
-            for order_rate in ORDER_RATES
-        ]
-    elif stage == 2:
-        candidates = [
-            ("all_on_rl", CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, replication)
-            for replication in range(1, 21)
-        ]
-    elif stage == 3:
-        candidates = [
-            ("all_off", CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, replication)
-            for replication in range(1, 21)
-        ]
-    elif stage == 4:
-        candidates = [
             (policy, robot_count, order_rate, replication)
-            for replication in range(1, 21)
             for policy in POLICY_CONFIGURATIONS
             for robot_count in ROBOT_COUNTS
             for order_rate in ORDER_RATES
+            for replication in range(1, 21)
         ]
     else:
         raise ValueError(f"unknown stage: {stage}")
@@ -742,13 +749,16 @@ def base_condition_rows(stage: int, already_requested: set[str]) -> list[dict[st
             "replication": int(replication),
             "seed": seed_for_replication(replication),
             "stage_first_requested": int(stage),
+            "charging": condition_charging_identity(
+                policy, int(robot_count), REPO_ROOT / INPUT_ROOT_RELATIVE / "generated_pod.csv"
+            ),
         })
     return rows
 
 
 def estimate_condition_steps(row: dict[str, Any], *, rl_overhead_multiplier: float) -> float:
     multiplier = 1.0
-    if row["policy_configuration"] == "all_on_rl":
+    if row["policy_configuration"].startswith("rts_rl__"):
         multiplier *= float(rl_overhead_multiplier)
     multiplier *= 1.0 + 0.015 * ((int(row["robot_count"]) - CENTRAL_ROBOT_COUNT) / 5.0)
     multiplier *= 1.0 + 0.02 * ((int(row["order_rate"]) - CENTRAL_ORDER_RATE) / 100.0)
@@ -784,7 +794,9 @@ def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, An
         "task_allocator_scope": "active_job_queue",
         "worker_status_cadence": 1000,
     }
-    if policy == "all_on_rl":
+    is_rl = policy.startswith("rts_rl__")
+    is_salsa = policy.endswith("__salsa_charging")
+    if is_rl:
         return {
             **common,
             "rts_policy_mode": "rts_rl_explicit",
@@ -797,13 +809,13 @@ def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, An
             "rts_policy_device": "cpu",
             "rts_feature_ablation": "full",
             "rts_state_capture_mode": "full",
-            "pps_mode": "ppo",
-            "pps_model_mode": "canonical_ppo",
-            "charging_enabled": True,
-            "charging_config_mode": "canonical",
+            "pps_mode": "heuristic",
+            "pps_policy": "heuristic",
+            "charging_enabled": is_salsa,
+            "charging_placement_source": "salsa_adaptive_on" if is_salsa else "reference_off",
             "committed_next_reservations_enabled": True,
         }
-    if policy == "all_off":
+    if not is_rl:
         return {
             **common,
             "rts_policy_mode": "current",
@@ -816,11 +828,11 @@ def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, An
             "rts_state_capture_mode": "auto",
             "pps_mode": "heuristic",
             "pps_model_mode": "heuristic",
-            "charging_enabled": False,
-            "charging_config_mode": "disabled",
+            "charging_enabled": is_salsa,
+            "charging_placement_source": "salsa_adaptive_on" if is_salsa else "reference_off",
             "committed_next_reservations_enabled": False,
         }
-    raise ValueError(f"unknown policy configuration: {policy}")
+    raise ValueError(f"unknown primary treatment: {policy}")
 
 
 def treatment_execution_contracts(assets: AssetBundle | dict[str, Any]) -> dict[str, Any]:
@@ -840,7 +852,7 @@ def build_scientific_identity(
     return {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
         "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
-        "kpi_schema_version": SENSITIVITY_KPI_SCHEMA_VERSION,
+        "kpi_schema_version": FULL_KPI_V3_SCHEMA_VERSION,
         "policy_configurations": list(POLICY_CONFIGURATIONS),
         "robot_counts": list(ROBOT_COUNTS),
         "order_rates": list(ORDER_RATES),
@@ -878,7 +890,7 @@ def build_scientific_identity(
             "task_allocator_scope": "active_job_queue",
             "detail_db": False,
             "persist_final_state": False,
-            "charging_semantics": "canonical_config_for_all_on_rl_disabled_for_all_off",
+            "charging_semantics": "reference_off_or_condition_local_salsa_adaptive_on",
         },
         "treatment_execution_contracts": treatment_execution_contracts(assets),
     }
@@ -997,13 +1009,15 @@ def add_run_identity(
         "tick_to_second": TICK_TO_SECOND,
         "scenario_hash": scenario_hash,
         "layout_hash": layout_hash,
-        "kpi_schema_version": SENSITIVITY_KPI_SCHEMA_VERSION,
+        "kpi_schema_version": FULL_KPI_V3_SCHEMA_VERSION,
         "rts_checkpoint_id": assets.rts_checkpoint_id,
         "rts_checkpoint_sha256": assets.rts_model_sha256,
         "rts_metadata_canonical_sha256": scientific_identity["assets"]["rts_metadata_canonical_sha256"],
         "rts_feature_schema_canonical_sha256": scientific_identity["assets"]["rts_feature_schema_canonical_sha256"],
         "pps_model_sha256": assets.pps_model_sha256,
-        "charging_config_canonical_sha256": scientific_identity["assets"]["charging_config_canonical_sha256"],
+        "charging_placement_source": row["charging"]["charging_placement_source"],
+        "charging_config_sha256": row["charging"]["config_sha256"],
+        "realized_layout_sha256": row["charging"]["realized_layout_sha256"],
     }
     run_prefix = (
         f"{row['policy_configuration']}__r{row['robot_count']}__arr{row['order_rate']}"
@@ -1028,7 +1042,7 @@ def add_run_identity(
             "run_id": run_id,
             "campaign_id": campaign_id,
             "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
-            "kpi_schema_version": SENSITIVITY_KPI_SCHEMA_VERSION,
+            "kpi_schema_version": FULL_KPI_V3_SCHEMA_VERSION,
             "policy_configuration": row["policy_configuration"],
             "robot_count": row["robot_count"],
             "order_rate_per_hour": row["order_rate"],
@@ -1079,7 +1093,7 @@ def build_campaign_plan(
     already_requested: set[str] = set()
     runs: list[dict[str, Any]] = []
     stage_summaries: dict[str, Any] = {}
-    for stage in (1, 2, 3, 4):
+    for stage in (1,):
         rows = base_condition_rows(stage, already_requested)
         allocated, summary = allocate_stage(
             rows,
@@ -1119,6 +1133,7 @@ def build_campaign_plan(
             "effective_steps_per_second_semantics": "aggregate_machine_throughput_at_configured_worker_count",
         },
         "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "source_tree_hash": SourceIdentity.compute(REPO_ROOT).source_tree_hash,
         "repo_root_at_prepare": str(REPO_ROOT),
         "branch": branch,
         "commit": commit,
@@ -1137,7 +1152,7 @@ def build_campaign_plan(
         "order_rates": list(ORDER_RATES),
         "picking_stations": PICKER_COUNT,
         "replenishment_stations": REPLENISHMENT_COUNT,
-        "kpi_schema_version": SENSITIVITY_KPI_SCHEMA_VERSION,
+        "kpi_schema_version": FULL_KPI_V3_SCHEMA_VERSION,
         "machines": [asdict(machine) for machine in machines],
         "machine_config_hash": hash_machine_config(machines),
         "machine_rates_used": {
@@ -1162,15 +1177,15 @@ def dry_run_assertions(
     stage_summaries: dict[str, Any],
 ) -> dict[str, Any]:
     machine_ids = [machine.machine_id for machine in machines]
-    by_stage = {stage: [run for run in runs if run["stage_first_requested"] == int(stage)] for stage in (1, 2, 3, 4)}
+    by_stage = {1: [run for run in runs if run["stage_first_requested"] == 1]}
     by_machine_total = {
         machine_id: sum(1 for run in runs if run["machine_id"] == machine_id)
         for machine_id in machine_ids
     }
-    all_on_hashes = {
+    rl_hashes = {
         (run["identity"]["rts_checkpoint_sha256"], run["identity"]["pps_model_sha256"])
         for run in runs
-        if run["policy_configuration"] == "all_on_rl"
+        if run["policy_configuration"].startswith("rts_rl__")
     }
     assertions = {
         "machine_count": len(machines),
@@ -1197,35 +1212,30 @@ def dry_run_assertions(
         "duplicate_run_ids": len(runs) - len({run["run_id"] for run in runs}),
         "duplicate_condition_keys": len(runs) - len({run["condition_key"] for run in runs}),
         "old_capacity_study_roots_contribute_completions": 0,
-        "all_on_rl_unique_asset_hash_pairs": len(all_on_hashes),
-        "all_on_rl_stage1_machines": sorted({
+        "rts_rl_unique_asset_hash_pairs": len(rl_hashes),
+        "primary_treatments": sorted({run["policy_configuration"] for run in runs}),
+        "rts_rl_stage1_machines": sorted({
             run["machine_id"]
             for run in by_stage[1]
-            if run["policy_configuration"] == "all_on_rl"
+            if run["policy_configuration"].startswith("rts_rl__")
         }),
-        "macbook_stage4_count": sum(
-            1
-            for run in by_stage[4]
-            if run["machine_id"] == "dewa_macbook"
-        ),
         "stage_projected_finish_seconds": {
-            str(stage): stage_summaries[str(stage)]["projected_finish_seconds"]
-            for stage in (1, 2, 3, 4)
+            "1": stage_summaries["1"]["projected_finish_seconds"]
         },
     }
-    expected_stage_counts = {"1": 30, "2": 19, "3": 19, "4": 532}
+    expected_stage_counts = {"1": 1200}
     if assertions["stage_new_runs"] != expected_stage_counts:
         raise AssertionError(assertions["stage_new_runs"])
-    if assertions["total_unique_fresh_runs"] != 600:
+    if assertions["total_unique_fresh_runs"] != 1200:
         raise AssertionError(assertions["total_unique_fresh_runs"])
     if assertions["replication_seeds"] != {"1": 42, "20": 61}:
         raise AssertionError(assertions["replication_seeds"])
     if assertions["duplicate_run_ids"] or assertions["duplicate_condition_keys"]:
         raise AssertionError("duplicate campaign identities detected")
-    if assertions["all_on_rl_unique_asset_hash_pairs"] != 1:
-        raise AssertionError("all_on_rl runs must pin one RTS/PPS hash pair")
-    if assertions["macbook_stage4_count"] != 0:
-        raise AssertionError("MacBook received Stage 4 assignments")
+    if assertions["rts_rl_unique_asset_hash_pairs"] != 1:
+        raise AssertionError("RTS RL runs must pin one RTS/PPS hash pair")
+    if assertions["primary_treatments"] != sorted(POLICY_CONFIGURATIONS):
+        raise AssertionError(assertions["primary_treatments"])
     return assertions
 
 
@@ -1355,6 +1365,11 @@ def build_run_spec_from_condition(
 ) -> RunSpec:
     assets = manifest["assets"]
     seed = int(condition["seed"])
+    charging = dict(condition.get("charging", {}))
+    generated_charging_path = None
+    if charging.get("charging_enabled"):
+        generated_charging_path = condition_runtime_root(repo_root, manifest, machine.machine_id, condition["run_id"]) / "input_snapshot" / "salsa_adaptive_charging.json"
+        write_json(generated_charging_path, charging["config"])
     contract = treatment_execution_contract(condition["policy_configuration"], assets)
     common = {
         "run_id": condition["run_id"],
@@ -1404,10 +1419,15 @@ def build_run_spec_from_condition(
         "policy_configuration": condition["policy_configuration"],
         "replication": int(condition["replication"]),
         "campaign_seed": seed,
+        "source_tree_hash": manifest.get("source_tree_hash"),
+        "charging_placement_source": str(contract["charging_placement_source"]),
+        "charging_config_sha256": charging.get("config_sha256"),
+        "charging_realized_layout_sha256": charging.get("realized_layout_sha256"),
+        "charging_declared_count": charging.get("declared_count"),
         "rts_checkpoint_sha256": assets["rts_model_sha256"],
         "pps_model_sha256": assets["pps_model_sha256"],
     }
-    if condition["policy_configuration"] == "all_on_rl":
+    if str(contract["rts_policy_mode"]) == "rts_rl_explicit":
         return RunSpec(
             **common,
             rts_policy_mode=str(contract["rts_policy_mode"]),
@@ -1421,9 +1441,9 @@ def build_run_spec_from_condition(
             rts_feature_ablation=str(contract["rts_feature_ablation"]),
             rts_state_capture_mode=str(contract["rts_state_capture_mode"]),
             pps_mode=str(contract["pps_mode"]),
-            pps_model_path=str(local_asset_path(repo_root, assets["pps_model_relative_path"])),
+            pps_model_path=None,
             charging_enabled=bool(contract["charging_enabled"]),
-            charging_config_path=str(local_asset_path(repo_root, assets["charging_config_relative_path"])),
+            charging_config_path=str(generated_charging_path) if generated_charging_path else None,
             committed_next_reservations_enabled=bool(contract["committed_next_reservations_enabled"]),
         )
     return RunSpec(
@@ -1435,6 +1455,7 @@ def build_run_spec_from_condition(
         rts_state_capture_mode=str(contract["rts_state_capture_mode"]),
         pps_mode=str(contract["pps_mode"]),
         charging_enabled=bool(contract["charging_enabled"]),
+        charging_config_path=str(generated_charging_path) if generated_charging_path else None,
         committed_next_reservations_enabled=bool(contract["committed_next_reservations_enabled"]),
     )
 
@@ -2356,25 +2377,23 @@ def main(argv: Iterable[str] | None = None) -> int:
         # 1. strictly load canonical assets
         validate_local_assets(manifest, REPO_ROOT)
         
-        # 2. Check all 600 unique identities
+        # 2. Check all primary factorial identities
         runs = manifest["runs"]
-        if len(runs) != 600:
-            raise AssertionError(f"Expected 600 runs, got {len(runs)}")
+        if len(runs) != 1200:
+            raise AssertionError(f"Expected 1200 runs, got {len(runs)}")
             
         run_ids = [run["run_id"] for run in runs]
         condition_keys = [run["condition_key"] for run in runs]
-        if len(set(run_ids)) != 600:
+        if len(set(run_ids)) != 1200:
             raise AssertionError(f"Duplicate run IDs found, unique count: {len(set(run_ids))}")
-        if len(set(condition_keys)) != 600:
+        if len(set(condition_keys)) != 1200:
             raise AssertionError(f"Duplicate condition keys found, unique count: {len(set(condition_keys))}")
             
-        # 3. Check stage counts and seeds
-        expected_stage_counts = {"1": 30, "2": 19, "3": 19, "4": 532}
+        # 3. Check primary factorial count and seeds
+        expected_stage_counts = {"1": 1200}
         actual_stage_counts = manifest["assertions"]["stage_new_runs"]
         if actual_stage_counts != expected_stage_counts:
             raise AssertionError(f"Stage new runs count mismatch: expected {expected_stage_counts}, got {actual_stage_counts}")
-        if manifest["assertions"].get("macbook_stage4_count") != 0:
-            raise AssertionError("MacBook received Stage 4 assignments")
             
         # Verify seeds
         for replication in (1, 20):
@@ -2400,7 +2419,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     raise AssertionError(f"RunSpec {run['run_id']} has key '{key}' referencing runtime training: {val}")
             if spec.persist_final_state is not False:
                 raise AssertionError(f"RunSpec {run['run_id']} unexpectedly persists final state")
-            if spec.rts_policy_checkpoint_id != ("not_applicable" if run["policy_configuration"] == "all_off" else manifest["assets"]["rts_checkpoint_id"]):
+            if spec.rts_policy_checkpoint_id != (manifest["assets"]["rts_checkpoint_id"] if run["policy_configuration"].startswith("rts_rl__") else "not_applicable"):
                 raise AssertionError(f"RunSpec {run['run_id']} has wrong RTS checkpoint ID")
         print(json.dumps({
             "campaign_id": manifest["campaign_id"],
@@ -2409,7 +2428,6 @@ def main(argv: Iterable[str] | None = None) -> int:
             "stage_counts": actual_stage_counts,
             "per_machine_stage_counts": manifest["assertions"]["stage_allocations"],
             "total_runs": len(runs),
-            "macbook_stage4_count": manifest["assertions"]["macbook_stage4_count"],
             "clean_tracked_scientific_inputs": True,
             "strict_completion_required": True,
             "completion_callbacks_fail_closed": True,

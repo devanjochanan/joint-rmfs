@@ -86,6 +86,8 @@ class RunSpec:
     # Kept for campaign manifests produced before the host-ledger migration.
     # This is the campaign-level replication seed, not an additional RNG stream.
     campaign_seed: int | None = None
+    source_tree_hash: str | None = None
+    manifest_sha256: str | None = None
     rts_checkpoint_sha256: str | None = None
     pps_model_sha256: str | None = None
     kpi_snapshot_cadence_seconds: list[float] | None = None
