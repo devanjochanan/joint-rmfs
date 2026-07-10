@@ -424,18 +424,14 @@ def test_resume_identity_accepts_cleaned_success_summary(tmp_path):
     assert run_complete_for_campaign(condition, spec, manifest) is True
 
 
-def test_clean_scientific_inputs_reject_dirty_tracked_input(monkeypatch):
+def test_clean_scientific_inputs_warn_for_dirty_tracked_input(monkeypatch, capsys):
     monkeypatch.setattr(
         "scripts.experiments.distributed_sensitivity_campaign.dirty_tracked_files",
         lambda _repo_root: ["data/input/base/raw_order.csv"],
     )
 
-    try:
-        ensure_clean_tracked_scientific_files(Path.cwd())
-    except RuntimeError as exc:
-        assert "data/input/base/raw_order.csv" in str(exc)
-    else:
-        raise AssertionError("dirty scientific input was accepted")
+    ensure_clean_tracked_scientific_files(Path.cwd())
+    assert "data/input/base/raw_order.csv" in capsys.readouterr().out
 
 
 def test_clean_scientific_inputs_ignore_runtime_outputs(monkeypatch):
@@ -454,29 +450,28 @@ def test_portable_snapshot_accepts_matching_source_hash(tmp_path):
     assert validate_source_identity({"source_tree_hash": identity}, tmp_path).source_tree_hash == identity
 
 
-def test_portable_snapshot_rejects_source_hash_mismatch(tmp_path):
+def test_portable_snapshot_warns_for_source_hash_mismatch(tmp_path, capsys):
     (tmp_path / "worker.py").write_text("VALUE = 1\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="source-tree hash differs"):
-        validate_source_identity({"source_tree_hash": "0" * 64}, tmp_path)
+    assert validate_source_identity({"source_tree_hash": "0" * 64}, tmp_path).source_tree_hash
+    assert "source-tree hash differs" in capsys.readouterr().out
 
 
-def test_dirty_scientific_inputs_stop_prepare_validate_and_execution(monkeypatch):
-    def fail_clean(*_args, **_kwargs):
-        raise RuntimeError("dirty scientific input")
-
-    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.ensure_clean_tracked_scientific_files", fail_clean)
-
-    for argv in (
-        ["--prepare-campaign", "--dry-run"],
-        ["--validate-only"],
-        ["--manifest", "data/runtime/distributed_sensitivity/x/manifest.json", "--machine-id", "win_lukman", "--stage", "1"],
-    ):
-        try:
-            main(argv)
-        except RuntimeError as exc:
-            assert "dirty scientific input" in str(exc)
-        else:
-            raise AssertionError(f"dirty scientific input did not stop {argv}")
+def test_launch_host_materializes_and_executes_without_a_manifest(monkeypatch, tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, {"campaign_id": "local", "runs": []})
+    called = {}
+    monkeypatch.setattr(
+        "scripts.experiments.distributed_sensitivity_campaign.materialize_local_campaign_plan",
+        lambda _args: (manifest_path, {"campaign_id": "local"}),
+    )
+    monkeypatch.setattr(
+        "scripts.experiments.distributed_sensitivity_campaign.execute_host",
+        lambda **kwargs: called.update(kwargs) or 0,
+    )
+    assert main(["--launch-host", "--machine-id", "win_lukman", "--progress"]) == 0
+    assert called["manifest_path"] == manifest_path
+    assert called["stages"] == [1, 2, 3, 4]
+    assert called["resume"] is False
 
 
 def test_input_identity_uses_git_blob_for_layout_not_raw_sha(monkeypatch):

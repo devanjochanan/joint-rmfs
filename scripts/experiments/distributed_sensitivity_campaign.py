@@ -270,9 +270,9 @@ def ensure_clean_tracked_scientific_files(repo_root: Path = REPO_ROOT) -> None:
     if dirty:
         preview = "\n".join(f" - {path}" for path in dirty[:20])
         suffix = "" if len(dirty) <= 20 else f"\n - ... {len(dirty) - 20} more"
-        raise RuntimeError(
-            "tracked files differ from HEAD; refusing distributed sensitivity operation "
-            "because scientific identity is derived from tracked content:\n"
+        validation_warning(
+            "tracked scientific files differ from HEAD; running with local files and recording "
+            "their identities in the local manifest:\n"
             f"{preview}{suffix}"
         )
 
@@ -282,12 +282,13 @@ def validate_source_identity(manifest: dict[str, Any], repo_root: Path = REPO_RO
     source = SourceIdentity.compute(repo_root)
     expected = manifest.get("source_tree_hash")
     if expected and source.source_tree_hash != expected:
-        raise RuntimeError(
-            "source-tree hash differs from the assigned campaign identity: "
-            f"got {source.source_tree_hash}, expected {expected}"
+        validation_warning(
+            "source-tree hash differs from the local manifest; continuing with the current "
+            f"host source tree (got {source.source_tree_hash}, manifest {expected})"
         )
-    # Git is advisory for portable operation; protected dirty inputs remain a
-    # hard error when Git metadata is available.
+    # Git is advisory for portable operation.  The host records local source
+    # and immutable-file identities but does not refuse an otherwise runnable
+    # campaign for provenance-only differences.
     ensure_clean_tracked_scientific_files(repo_root)
     return source
 
@@ -724,11 +725,13 @@ def resolve_assets(args: argparse.Namespace) -> AssetBundle:
         training_artifact=args.rts_training_artifact,
     )
 
-    # Perform strict validation of canonical or overridden assets
+    # Verify that required assets are readable and loadable.  Provenance hash
+    # differences are reported by the validator but do not block a host.
     validate_assets_strict(
         repo_root=REPO_ROOT,
         pps_relative_path=relative_to_repo(pps_path),
         rts_checkpoint_relative_dir=relative_to_repo(checkpoint_dir),
+        strict=False,
     )
 
     # Re-read metadata to get lineage (in case it was resolved directly or verified via trace)
@@ -2180,7 +2183,9 @@ def execute_host(
     machine = machines[machine_id]
 
     try:
-        validate_local_assets(manifest, REPO_ROOT, strict=True)
+        # Missing or unloadable canonical assets still stop this host.  Hash,
+        # metadata, and checkpoint provenance mismatches are diagnostics only.
+        validate_local_assets(manifest, REPO_ROOT, strict=False)
     except Exception as exc:
         print(f"\n[CRITICAL ERROR] Campaign-wide stop: asset or base input validation failed: {exc}\n", file=sys.stderr)
         raise SystemExit(f"campaign stopped: validation failed: {exc}")
@@ -2495,6 +2500,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--validate-only", action="store_true", default=False)
     parser.add_argument("--execute-host", action="store_true", default=False)
+    parser.add_argument(
+        "--launch-host",
+        action="store_true",
+        default=False,
+        help="Materialize or reuse this host's ignored local plan, then run stages 1-4 in order.",
+    )
     parser.add_argument("--prepare-host-assignment", action="store_true", default=False)
     parser.add_argument("--host-id", help="Override host machine ID")
     parser.add_argument("--max-retries", type=int, default=2, help="Retry budget per condition")
@@ -2503,9 +2514,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def materialize_local_campaign_plan(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
+    """Create a local ignored plan once, or reuse the one this host created.
+
+    This deliberately does not compare local plan provenance with another
+    machine's checkout.  Every host pulls the same code, then materializes its
+    own plan from the files it will actually execute.
+    """
+    machines = default_machines(REPO_ROOT)
+    assets = resolve_assets(args)
+    campaign_id = generate_campaign_id(machines, assets, float(args.rl_overhead_multiplier))
+    manifest = build_campaign_plan(
+        campaign_id=campaign_id,
+        machines=machines,
+        assets=assets,
+        rl_overhead_multiplier=float(args.rl_overhead_multiplier),
+    )
+    root = campaign_root(REPO_ROOT, manifest)
+    manifest_path = root / "manifest.json"
+    if manifest_path.exists():
+        validation_warning(f"reusing local campaign plan: {manifest_path}")
+        return manifest_path, read_json(manifest_path)
+    if root.exists():
+        raise RuntimeError(
+            f"local campaign directory exists without a manifest: {root}; "
+            "preserve it for inspection and choose a clean runtime root before launching"
+        )
+    print(f"[sensitivity] Materializing local campaign plan under: {root}")
+    write_campaign_files(manifest, dry_run=False)
+    return manifest_path, manifest
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.prepare_campaign or args.validate_only or args.run_continuously or args.stage or args.execute_host or args.prepare_host_assignment:
+    if args.prepare_campaign or args.validate_only or args.run_continuously or args.stage or args.execute_host or args.launch_host or args.prepare_host_assignment:
         ensure_clean_tracked_scientific_files(REPO_ROOT)
 
     if args.prepare_host_assignment:
@@ -2533,6 +2575,21 @@ def main(argv: Iterable[str] | None = None) -> int:
             machine_id=args.machine_id,
             stages=stages,
             resume=bool(args.resume),
+            progress=bool(args.progress),
+            max_retries=int(args.max_retries),
+            host_data_root=Path(args.host_data_root) if args.host_data_root else None,
+            keep_run_artifacts=bool(args.keep_run_artifacts),
+        )
+
+    if args.launch_host:
+        if not args.machine_id:
+            raise SystemExit("--launch-host requires --machine-id")
+        manifest_path, _manifest = materialize_local_campaign_plan(args)
+        return execute_host(
+            manifest_path=manifest_path,
+            machine_id=args.machine_id,
+            stages=[1, 2, 3, 4],
+            resume=False,
             progress=bool(args.progress),
             max_retries=int(args.max_retries),
             host_data_root=Path(args.host_data_root) if args.host_data_root else None,
@@ -2702,16 +2759,21 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 0
 
     if args.prepare_campaign:
-        machines = default_machines(REPO_ROOT)
-        assets = resolve_assets(args)
-        campaign_id = generate_campaign_id(machines, assets, float(args.rl_overhead_multiplier))
-        manifest = build_campaign_plan(
-            campaign_id=campaign_id,
-            machines=machines,
-            assets=assets,
-            rl_overhead_multiplier=float(args.rl_overhead_multiplier),
-        )
-        root = write_campaign_files(manifest, dry_run=bool(args.dry_run))
+        if args.dry_run:
+            machines = default_machines(REPO_ROOT)
+            assets = resolve_assets(args)
+            campaign_id = generate_campaign_id(machines, assets, float(args.rl_overhead_multiplier))
+            manifest = build_campaign_plan(
+                campaign_id=campaign_id,
+                machines=machines,
+                assets=assets,
+                rl_overhead_multiplier=float(args.rl_overhead_multiplier),
+            )
+            root = campaign_root(REPO_ROOT, manifest)
+        else:
+            manifest_path, manifest = materialize_local_campaign_plan(args)
+            campaign_id = manifest["campaign_id"]
+            root = manifest_path.parent
         print(json.dumps({
             "campaign_id": campaign_id,
             "allocation_patch_id": manifest["allocation_patch_id"],
