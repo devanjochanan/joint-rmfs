@@ -188,6 +188,14 @@ def load_pps_rl_model():
         return None
 
     try:
+        # Policy-only inference artifact (campaign default): load via the explicit
+        # inference loader — no optimizer/rollout state, exact-parity verified.
+        if "policy_inference" in os.path.basename(str(model_path)):
+            model = load_pps_rl_inference_policy(model_path)
+            _PPS_RL_MODEL = model
+            _PPS_RL_MODEL_SOURCE = str(model_path)
+            print(f"[PPS_RL] Loaded compact policy-only inference artifact from {model_path}")
+            return _PPS_RL_MODEL
         from stable_baselines3 import PPO
         _ensure_numpy_pickle_compat()
         model = PPO.load(model_path, device="cpu", custom_objects=_pps_rl_load_custom_objects())
@@ -246,6 +254,71 @@ def load_pps_rl_model_strict(
         )
 
     return model
+
+
+class _PPSInferencePolicy:
+    """Inference-only wrapper around a policy-only SB3 artifact.
+
+    Exposes the same deterministic ``predict`` surface the runtime uses, but
+    carries no optimizer/rollout state. Actions are byte-for-byte identical to
+    the full PPO archive (verified by pps_compact_inference_parity.py)."""
+
+    def __init__(self, policy, source_path: str):
+        self.policy = policy
+        self._source = str(source_path)
+
+    def predict(self, observation, deterministic: bool = True):
+        return self.policy.predict(observation, deterministic=deterministic)
+
+    @property
+    def observation_space(self):
+        return self.policy.observation_space
+
+    @property
+    def action_space(self):
+        return self.policy.action_space
+
+
+def load_pps_rl_inference_policy(
+    artifact_path: str | os.PathLike[str],
+    expected_sha256: Optional[str] = None,
+) -> _PPSInferencePolicy:
+    """Load the compact policy-only PPS artifact for campaign inference.
+
+    Zero silent fallback: raises on missing file, SHA-256 mismatch, or
+    observation/action-space mismatch. Never loads optimizer/training state.
+    """
+    from stable_baselines3.common.policies import MultiInputActorCriticPolicy
+
+    path = Path(artifact_path)
+    if not path.exists():
+        raise FileNotFoundError(f"PPS inference artifact not found: {path}")
+    if expected_sha256 is not None:
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(8192), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != expected_sha256:
+            raise ValueError(f"SHA-256 mismatch for {path}")
+
+    _ensure_numpy_pickle_compat()
+    policy = MultiInputActorCriticPolicy.load(str(path), device="cpu")
+    policy.set_training_mode(False)
+
+    spaces = getattr(getattr(policy, "observation_space", None), "spaces", {}) or {}
+    ok = (
+        "pod_features" in spaces
+        and tuple(spaces["pod_features"].shape) == (PPS_RL_MAX_PODS, PPS_RL_POD_FEATURE_DIM)
+        and "station_features" in spaces
+        and tuple(spaces["station_features"].shape) == (PPS_RL_NUM_STATIONS, PPS_RL_TOP_K_SKUS)
+        and "zone_robot_counts" in spaces
+        and tuple(spaces["zone_robot_counts"].shape) == (PPS_RL_NUM_TRAFFIC_ZONES,)
+    )
+    if not ok:
+        raise ValueError(
+            f"PPS inference artifact {path} observation space does not match current constants"
+        )
+    return _PPSInferencePolicy(policy, str(path))
 
 
 def build_pps_rl_sku_index(

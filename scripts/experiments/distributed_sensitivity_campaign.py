@@ -27,18 +27,19 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.experiments.capacity_study_order_rate import (  # noqa: E402
     DEFAULT_CHARGING_CONFIG_PATH,
-    DEFAULT_PPS_MODEL_PATH,
     DEFAULT_RTS_CHECKPOINT_DIR,
-    ORDER_RATES,
     PICKER_COUNT,
     REPLENISHMENT_COUNT,
-    ROBOT_COUNTS,
-    feature_flags_for_treatment,
     sha256_file,
     ticks_from_seconds,
     validate_input_root,
 )
-from src.rmfs.decisions.pps.runtime import PPS_RL_NUM_STATIONS, load_pps_rl_model_strict  # noqa: E402
+# Reference (all_off) charging generator — campaign-local, layout-adaptive.
+from scripts.data.build_baseline_random import build as build_reference_config  # noqa: E402
+from src.rmfs.decisions.pps.runtime import (  # noqa: E402
+    PPS_RL_NUM_STATIONS,
+    load_pps_rl_inference_policy,
+)
 from src.rmfs.experiments.identity import short_hash  # noqa: E402
 from src.rmfs.orchestration.local_executor import (  # noqa: E402
     FAILED_RECLAIMABLE_RUN_ARTIFACTS,
@@ -65,12 +66,16 @@ CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v3"
 SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v1"
 ALLOCATION_PATCH_LABEL = "allocation_patch_0001"
 CANONICAL_RTS_CHECKPOINT_ID = "batch_000014"
-POLICY_CONFIGURATIONS = (
-    "reference_rts__charging_off",
-    "rts_rl__charging_off",
-    "reference_rts__salsa_charging",
-    "rts_rl__salsa_charging",
-)
+# Campaign PPS asset: compact policy-only inference artifact (NOT the full PPO
+# training archive). Exact deterministic parity is verified separately.
+DEFAULT_PPS_INFERENCE_ARTIFACT = REPO_ROOT / "data/models/pps/pps_rl_policy_inference.zip"
+# Bundled two-treatment comparison (charging enabled in BOTH; different packages).
+TREATMENTS = ("all_off", "all_on_rl")
+POLICY_CONFIGURATIONS = TREATMENTS          # `policy_configuration` field == treatment name
+# Campaign-local factor grid — do NOT import from another experiment.
+ROBOT_COUNTS = (15, 20, 25)
+ORDER_RATES = (400, 500, 600)
+REPLICATIONS = range(1, 41)                 # 40 paired replications
 SIMULATED_SECONDS = 87_000.0
 BACKEND_STEPS_PER_RUN = 580_000
 SEED_BASE_MINUS_ONE = 41
@@ -83,7 +88,12 @@ ARCHIVED_ROOTS_IGNORED = (
     "data/runtime/capacity_study_order_rate_packB",
     "data/runtime/capacity_study_order_rate_packC",
 )
-STAGE_NAMES = {1: "primary_rts_by_charging_factorial"}
+STAGE_NAMES = {
+    1: "one_rep_sensitivity",
+    2: "central_all_off_to_40",
+    3: "central_all_on_rl_to_40",
+    4: "full_sensitivity_to_40",
+}
 CENTRAL_ROBOT_COUNT = 20
 CENTRAL_ORDER_RATE = 500
 DEFAULT_LOCAL_PYTHON = Path("/home/dewan/torch-gpu/bin/python")
@@ -101,8 +111,8 @@ SCIENTIFIC_TRACKED_PATHS = (
     "data/input/base/items.csv",
     "data/input/base/pods.csv",
     "data/input/base/raw_order.csv",
-    "data/input/charging/salsa_charging_config.json",
-    "data/models/pps/pps_rl_best.zip",
+    "data/models/pps/pps_rl_policy_inference.zip",
+    "data/models/pps/pps_rl_policy_inference.metadata.json",
     "data/models/rts/batch_000014/checkpoint/model.pt",
     "data/models/rts/batch_000014/checkpoint/metadata.json",
     "data/models/rts/batch_000014/checkpoint/feature_schema.json",
@@ -547,7 +557,7 @@ def validate_assets_strict(
     expected_rts_checkpoint_id: str | None = None,
     strict: bool = True,
 ) -> None:
-    canonical_pps = relative_to_repo(DEFAULT_PPS_MODEL_PATH)
+    canonical_pps = relative_to_repo(DEFAULT_PPS_INFERENCE_ARTIFACT)
     canonical_rts = relative_to_repo(DEFAULT_RTS_CHECKPOINT_DIR)
     if Path(pps_relative_path).as_posix() != canonical_pps:
         raise RuntimeError(f"distributed sensitivity requires canonical PPS model {canonical_pps}, got {pps_relative_path}")
@@ -565,8 +575,8 @@ def validate_assets_strict(
             raise RuntimeError(message)
         validation_warning(message)
     
-    # Strictly load and verify PPS
-    load_pps_rl_model_strict(pps_path, expected_sha256=pps_sha)
+    # Strictly load and verify the compact PPS inference policy (no fallback).
+    load_pps_rl_inference_policy(pps_path, expected_sha256=pps_sha)
     if PPS_RL_NUM_STATIONS != PICKER_COUNT:
         raise RuntimeError(f"PPS model expects {PPS_RL_NUM_STATIONS} picking stations, campaign uses {PICKER_COUNT}")
 
@@ -642,7 +652,7 @@ def validate_assets_strict(
 
 
 def resolve_assets(args: argparse.Namespace) -> AssetBundle:
-    pps_path = Path(args.pps_model_path or DEFAULT_PPS_MODEL_PATH)
+    pps_path = Path(args.pps_model_path or DEFAULT_PPS_INFERENCE_ARTIFACT)
     if not pps_path.is_absolute():
         pps_path = REPO_ROOT / pps_path
     
@@ -677,7 +687,7 @@ def resolve_assets(args: argparse.Namespace) -> AssetBundle:
     return AssetBundle(
         pps_model_relative_path=relative_to_repo(pps_path),
         pps_model_sha256=sha256_file(pps_path),
-        pps_observation_schema=pps_observation_schema(load_pps_rl_model_strict(pps_path)),
+        pps_observation_schema=pps_observation_schema(load_pps_rl_inference_policy(pps_path)),
         rts_checkpoint_relative_dir=relative_to_repo(checkpoint_dir),
         rts_checkpoint_id=resolve_policy_checkpoint_id(checkpoint_dir),
         rts_model_sha256=sha256_file(checkpoint_dir / "model.pt"),
@@ -701,39 +711,106 @@ def condition_key(policy: str, robot_count: int, order_rate: int, replication: i
     return f"{policy}|robots={robot_count}|order_rate={order_rate}|rep={replication}"
 
 
-def condition_charging_identity(policy: str, robot_count: int, layout_path: Path) -> dict[str, Any]:
-    """Return deterministic treatment-local charging metadata without mutating inputs."""
-    if policy.endswith("__charging_off"):
-        return {"charging_placement_source": "reference_off", "charging_enabled": False,
-                "config": None, "config_sha256": None, "declared_count": 0,
-                "realized_layout_sha256": sha256_file(layout_path)}
-    cache_key = (str(Path(layout_path).resolve()), int(robot_count))
-    cached = _SALSA_CONFIG_CACHE.get(cache_key)
-    if cached is not None:
-        return dict(cached)
-    grid = load_salsa_grid(layout_path)
-    config, _picker, _depot = build_salsa_adaptive_config(grid, int(robot_count), rho=0.6)
-    canonical = (json.dumps(config, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    value = {"charging_placement_source": "salsa_adaptive_on", "charging_enabled": True,
+def paired_group_id(robot_count: int, order_rate: int, replication: int) -> str:
+    """Treatment-independent identity shared by an all_off/all_on_rl pair.
+
+    Seed is a pure function of replication (see seed_for_replication), so both
+    members of a pair carry the same seed; the pair id encodes it explicitly.
+    """
+    return (
+        f"robots={int(robot_count)}|rate={int(order_rate)}"
+        f"|rep={int(replication)}|seed={seed_for_replication(int(replication))}"
+    )
+
+
+def _stage_candidate_tuples(stage: int) -> list[tuple[str, int, int, int]]:
+    """Full candidate set targeted by a stage (before cumulative subtraction)."""
+    if stage == 1:
+        return [
+            (t, rc, orr, 1)
+            for t in TREATMENTS for rc in ROBOT_COUNTS for orr in ORDER_RATES
+        ]
+    if stage == 2:
+        return [
+            ("all_off", CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, rep)
+            for rep in REPLICATIONS
+        ]
+    if stage == 3:
+        return [
+            ("all_on_rl", CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, rep)
+            for rep in REPLICATIONS
+        ]
+    if stage == 4:
+        return [
+            (t, rc, orr, rep)
+            for t in TREATMENTS for rc in ROBOT_COUNTS
+            for orr in ORDER_RATES for rep in REPLICATIONS
+        ]
+    raise ValueError(f"unknown stage: {stage}")
+
+
+def condition_charging_identity(
+    policy: str, robot_count: int, seed: int, layout_path: Path
+) -> dict[str, Any]:
+    """Deterministic treatment-local charging metadata (both treatments enabled).
+
+    all_off  -> reference package (build_baseline_random, 10 chargers, 20/90/100).
+    all_on_rl -> Salsa adaptive package (build_adaptive_hybrid, rho=0.6, 18/60/50).
+    Config is computed in-memory here only for identity/hashing; the actual
+    JSON is generated into the temporary run workspace at execution time and
+    deleted after the KPI row is durably stored (never unioned with grid/static).
+    """
+    layout_sha = sha256_file(layout_path)
+
+    def _thresholds(cfg):
+        return {"low": cfg.get("battery_low_pct"), "charged": cfg.get("battery_charged_pct"),
+                "interrupt": cfg.get("battery_interrupt_pct")}
+
+    if policy == "all_off":
+        cache_key = ("reference", str(Path(layout_path).resolve()), int(seed))
+        cached = _SALSA_CONFIG_CACHE.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+        grid = load_salsa_grid(layout_path)
+        config = build_reference_config(grid, num_chargers=10, seed=int(seed))
+        canonical = (json.dumps(config, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        value = {
+            "charging_placement_source": "generated_reference", "charging_enabled": True,
             "config": config, "config_sha256": hashlib.sha256(canonical).hexdigest(),
-            "declared_count": int(config["num_chargers"]), "realized_layout_sha256": sha256_file(layout_path),
-            "generator": "scripts/data/build_adaptive_hybrid.py", "generator_parameters": {"rho": 0.6, "robot_count": int(robot_count)}}
-    _SALSA_CONFIG_CACHE[cache_key] = dict(value)
-    return value
+            "declared_count": int(config["num_chargers"]), "realized_layout_sha256": layout_sha,
+            "generator": "scripts/data/build_baseline_random.py",
+            "generator_parameters": {"num_chargers": 10, "seed": int(seed)},
+            "thresholds": _thresholds(config),
+        }
+        _SALSA_CONFIG_CACHE[cache_key] = dict(value)
+        return dict(value)
+
+    if policy == "all_on_rl":
+        cache_key = ("salsa", str(Path(layout_path).resolve()), int(robot_count))
+        cached = _SALSA_CONFIG_CACHE.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+        grid = load_salsa_grid(layout_path)
+        config, _picker, _depot = build_salsa_adaptive_config(grid, int(robot_count), rho=0.6)
+        canonical = (json.dumps(config, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        value = {
+            "charging_placement_source": "generated_salsa_adaptive", "charging_enabled": True,
+            "config": config, "config_sha256": hashlib.sha256(canonical).hexdigest(),
+            "declared_count": int(config["num_chargers"]), "realized_layout_sha256": layout_sha,
+            "generator": "scripts/data/build_adaptive_hybrid.py",
+            "generator_parameters": {"rho": 0.6, "robot_count": int(robot_count)},
+            "thresholds": _thresholds(config),
+        }
+        _SALSA_CONFIG_CACHE[cache_key] = dict(value)
+        return dict(value)
+
+    raise ValueError(f"unknown primary treatment: {policy!r}")
 
 
 def base_condition_rows(stage: int, already_requested: set[str]) -> list[dict[str, Any]]:
-    if stage == 1:
-        candidates = [
-            (policy, robot_count, order_rate, replication)
-            for policy in POLICY_CONFIGURATIONS
-            for robot_count in ROBOT_COUNTS
-            for order_rate in ORDER_RATES
-            for replication in range(1, 21)
-        ]
-    else:
-        raise ValueError(f"unknown stage: {stage}")
-
+    """Cumulative-stage condition generation: emit only NEW conditions this stage
+    (those not already requested/completed in an earlier stage)."""
+    candidates = _stage_candidate_tuples(stage)
     rows = []
     for policy, robot_count, order_rate, replication in candidates:
         key = condition_key(policy, robot_count, order_rate, replication)
@@ -748,9 +825,11 @@ def base_condition_rows(stage: int, already_requested: set[str]) -> list[dict[st
             "replenishment_count": REPLENISHMENT_COUNT,
             "replication": int(replication),
             "seed": seed_for_replication(replication),
+            "paired_group_id": paired_group_id(robot_count, order_rate, replication),
             "stage_first_requested": int(stage),
             "charging": condition_charging_identity(
-                policy, int(robot_count), REPO_ROOT / INPUT_ROOT_RELATIVE / "generated_pod.csv"
+                policy, int(robot_count), int(seed_for_replication(replication)),
+                REPO_ROOT / INPUT_ROOT_RELATIVE / "generated_pod.csv"
             ),
         })
     return rows
@@ -758,7 +837,7 @@ def base_condition_rows(stage: int, already_requested: set[str]) -> list[dict[st
 
 def estimate_condition_steps(row: dict[str, Any], *, rl_overhead_multiplier: float) -> float:
     multiplier = 1.0
-    if row["policy_configuration"].startswith("rts_rl__"):
+    if row["policy_configuration"] == "all_on_rl":
         multiplier *= float(rl_overhead_multiplier)
     multiplier *= 1.0 + 0.015 * ((int(row["robot_count"]) - CENTRAL_ROBOT_COUNT) / 5.0)
     multiplier *= 1.0 + 0.02 * ((int(row["order_rate"]) - CENTRAL_ORDER_RATE) / 100.0)
@@ -794,9 +873,8 @@ def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, An
         "task_allocator_scope": "active_job_queue",
         "worker_status_cadence": 1000,
     }
-    is_rl = policy.startswith("rts_rl__")
-    is_salsa = policy.endswith("__salsa_charging")
-    if is_rl:
+    if policy == "all_on_rl":
+        # Integrated proposed treatment: RTS RL + PPO PPS + Salsa adaptive charging.
         return {
             **common,
             "rts_policy_mode": "rts_rl_explicit",
@@ -809,13 +887,18 @@ def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, An
             "rts_policy_device": "cpu",
             "rts_feature_ablation": "full",
             "rts_state_capture_mode": "full",
-            "pps_mode": "heuristic",
-            "pps_policy": "heuristic",
-            "charging_enabled": is_salsa,
-            "charging_placement_source": "salsa_adaptive_on" if is_salsa else "reference_off",
+            "pps_mode": "ppo",
+            "pps_policy": "ppo",
+            "charging_enabled": True,
+            "charging_package": "salsa_adaptive",
+            "charging_generator": "scripts/data/build_adaptive_hybrid.py",
+            "charging_placement_source": "generated_salsa_adaptive",
+            "active_charging_enabled": True,
+            "drive_by_charging_enabled": True,
             "committed_next_reservations_enabled": True,
         }
-    if not is_rl:
+    if policy == "all_off":
+        # Reference bundled treatment: heuristic RTS + heuristic PPS + reference charging.
         return {
             **common,
             "rts_policy_mode": "current",
@@ -827,9 +910,13 @@ def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, An
             "rts_feature_ablation": None,
             "rts_state_capture_mode": "auto",
             "pps_mode": "heuristic",
-            "pps_model_mode": "heuristic",
-            "charging_enabled": is_salsa,
-            "charging_placement_source": "salsa_adaptive_on" if is_salsa else "reference_off",
+            "pps_policy": "heuristic",
+            "charging_enabled": True,
+            "charging_package": "reference_baseline",
+            "charging_generator": "scripts/data/build_baseline_random.py",
+            "charging_placement_source": "generated_reference",
+            "active_charging_enabled": True,
+            "drive_by_charging_enabled": True,
             "committed_next_reservations_enabled": False,
         }
     raise ValueError(f"unknown primary treatment: {policy}")
@@ -890,7 +977,7 @@ def build_scientific_identity(
             "task_allocator_scope": "active_job_queue",
             "detail_db": False,
             "persist_final_state": False,
-            "charging_semantics": "reference_off_or_condition_local_salsa_adaptive_on",
+            "charging_semantics": "both_enabled__all_off_reference__all_on_rl_salsa_adaptive",
         },
         "treatment_execution_contracts": treatment_execution_contracts(assets),
     }
@@ -1093,7 +1180,7 @@ def build_campaign_plan(
     already_requested: set[str] = set()
     runs: list[dict[str, Any]] = []
     stage_summaries: dict[str, Any] = {}
-    for stage in (1,):
+    for stage in (1, 2, 3, 4):
         rows = base_condition_rows(stage, already_requested)
         allocated, summary = allocate_stage(
             rows,
@@ -1160,8 +1247,8 @@ def build_campaign_plan(
             for machine in machines
         },
         "assets": asdict(assets),
-        "feature_flags": {
-            policy: feature_flags_for_treatment(policy)
+        "treatment_contracts": {
+            policy: treatment_execution_contract(policy, assets)
             for policy in POLICY_CONFIGURATIONS
         },
         "input_meta": input_meta,
@@ -1177,7 +1264,8 @@ def dry_run_assertions(
     stage_summaries: dict[str, Any],
 ) -> dict[str, Any]:
     machine_ids = [machine.machine_id for machine in machines]
-    by_stage = {1: [run for run in runs if run["stage_first_requested"] == 1]}
+    stages = (1, 2, 3, 4)
+    by_stage = {s: [run for run in runs if run["stage_first_requested"] == s] for s in stages}
     by_machine_total = {
         machine_id: sum(1 for run in runs if run["machine_id"] == machine_id)
         for machine_id in machine_ids
@@ -1185,28 +1273,36 @@ def dry_run_assertions(
     rl_hashes = {
         (run["identity"]["rts_checkpoint_sha256"], run["identity"]["pps_model_sha256"])
         for run in runs
-        if run["policy_configuration"].startswith("rts_rl__")
+        if run["policy_configuration"] == "all_on_rl"
     }
+
+    # ── Pairing validation (Section 5): group by paired_group_id ──
+    pairs: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for run in runs:
+        pid = run["paired_group_id"]
+        pairs.setdefault(pid, {"all_off": [], "all_on_rl": []})[run["policy_configuration"]].append(run)
+    pair_defects = []
+    seed_mismatch = layout_mismatch = duplicate_member = 0
+    for pid, members in pairs.items():
+        off, on = members["all_off"], members["all_on_rl"]
+        if len(off) != 1 or len(on) != 1:
+            # incomplete/duplicate pair (allowed to exist mid-run, but flagged)
+            if len(off) > 1 or len(on) > 1:
+                duplicate_member += 1
+            pair_defects.append(pid)
+            continue
+        if off[0]["seed"] != on[0]["seed"]:
+            seed_mismatch += 1
+        if off[0]["identity"]["layout_hash"] != on[0]["identity"]["layout_hash"]:
+            layout_mismatch += 1
+    complete_pairs = [p for p, m in pairs.items() if len(m["all_off"]) == 1 and len(m["all_on_rl"]) == 1]
+
     assertions = {
         "machine_count": len(machines),
-        "stage_new_runs": {str(stage): len(rows) for stage, rows in by_stage.items()},
+        "stage_new_runs": {str(s): len(by_stage[s]) for s in stages},
         "total_unique_fresh_runs": len({run["condition_key"] for run in runs}),
-        "stage_allocations": {
-            str(stage): {
-                machine_id: sum(1 for run in rows if run["machine_id"] == machine_id)
-                for machine_id in machine_ids
-            }
-            for stage, rows in by_stage.items()
-        },
         "total_fresh_runs_by_machine": by_machine_total,
-        "replication_seeds": {
-            "1": seed_for_replication(1),
-            "20": seed_for_replication(20),
-        },
-        "replication_seed_uniformity": {
-            str(replication): len({run["seed"] for run in runs if run["replication"] == replication})
-            for replication in (1, 20)
-        },
+        "replication_seeds": {"1": seed_for_replication(1), "40": seed_for_replication(40)},
         "unique_run_ids": len({run["run_id"] for run in runs}),
         "unique_condition_keys": len({run["condition_key"] for run in runs}),
         "duplicate_run_ids": len(runs) - len({run["run_id"] for run in runs}),
@@ -1214,28 +1310,32 @@ def dry_run_assertions(
         "old_capacity_study_roots_contribute_completions": 0,
         "rts_rl_unique_asset_hash_pairs": len(rl_hashes),
         "primary_treatments": sorted({run["policy_configuration"] for run in runs}),
-        "rts_rl_stage1_machines": sorted({
-            run["machine_id"]
-            for run in by_stage[1]
-            if run["policy_configuration"].startswith("rts_rl__")
-        }),
-        "stage_projected_finish_seconds": {
-            "1": stage_summaries["1"]["projected_finish_seconds"]
-        },
+        "pair_count": len(pairs),
+        "complete_pair_count": len(complete_pairs),
+        "pair_seed_mismatches": seed_mismatch,
+        "pair_layout_mismatches": layout_mismatch,
+        "pair_duplicate_members": duplicate_member,
     }
-    expected_stage_counts = {"1": 1200}
-    if assertions["stage_new_runs"] != expected_stage_counts:
-        raise AssertionError(assertions["stage_new_runs"])
-    if assertions["total_unique_fresh_runs"] != 1200:
-        raise AssertionError(assertions["total_unique_fresh_runs"])
-    if assertions["replication_seeds"] != {"1": 42, "20": 61}:
+    # ── Hard assertions (Sections 3, 4, 5) ──
+    if assertions["stage_new_runs"] != {"1": 18, "2": 39, "3": 39, "4": 624}:
+        raise AssertionError(f"stage counts: {assertions['stage_new_runs']}")
+    if assertions["total_unique_fresh_runs"] != 720:
+        raise AssertionError(f"total unique conditions must be 720, got {assertions['total_unique_fresh_runs']}")
+    if assertions["replication_seeds"] != {"1": 42, "40": 81}:
         raise AssertionError(assertions["replication_seeds"])
     if assertions["duplicate_run_ids"] or assertions["duplicate_condition_keys"]:
         raise AssertionError("duplicate campaign identities detected")
     if assertions["rts_rl_unique_asset_hash_pairs"] != 1:
-        raise AssertionError("RTS RL runs must pin one RTS/PPS hash pair")
-    if assertions["primary_treatments"] != sorted(POLICY_CONFIGURATIONS):
+        raise AssertionError("all_on_rl runs must pin exactly one RTS/PPS hash pair")
+    if assertions["primary_treatments"] != ["all_off", "all_on_rl"]:
         raise AssertionError(assertions["primary_treatments"])
+    # Every condition belongs to a pair; a full 720 matrix has 360 complete pairs.
+    if assertions["pair_count"] != 360:
+        raise AssertionError(f"expected 360 paired groups, got {assertions['pair_count']}")
+    if assertions["complete_pair_count"] != 360:
+        raise AssertionError(f"expected 360 complete pairs, got {assertions['complete_pair_count']}")
+    if assertions["pair_seed_mismatches"] or assertions["pair_layout_mismatches"] or assertions["pair_duplicate_members"]:
+        raise AssertionError("paired seed/layout/member invariant violated")
     return assertions
 
 
@@ -1265,7 +1365,7 @@ def write_launchers(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
                 (
                     f"& \"{machine.python}\" \"scripts\\experiments\\distributed_sensitivity_campaign.py\" "
                     f"--manifest \"{rel_manifest}\" --machine-id \"{machine.machine_id}\" "
-                    "--run-continuously --resume --progress"
+                    "--execute-host --resume --progress"
                 ),
                 "",
             ])
@@ -1278,7 +1378,7 @@ def write_launchers(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
                 (
                     f"exec {json.dumps(machine.python)} scripts/experiments/distributed_sensitivity_campaign.py "
                     f"--manifest {json.dumps(rel_manifest_posix.as_posix())} --machine-id {json.dumps(machine.machine_id)} "
-                    "--run-continuously --resume --progress"
+                    "--execute-host --resume --progress"
                 ),
                 "",
             ])
@@ -1441,7 +1541,9 @@ def build_run_spec_from_condition(
             rts_feature_ablation=str(contract["rts_feature_ablation"]),
             rts_state_capture_mode=str(contract["rts_state_capture_mode"]),
             pps_mode=str(contract["pps_mode"]),
-            pps_model_path=None,
+            # all_on_rl loads the compact policy-only inference artifact (routed to
+            # the inference loader by basename); all_off passes no PPS model.
+            pps_model_path=str(local_asset_path(repo_root, assets["pps_model_relative_path"])),
             charging_enabled=bool(contract["charging_enabled"]),
             charging_config_path=str(generated_charging_path) if generated_charging_path else None,
             committed_next_reservations_enabled=bool(contract["committed_next_reservations_enabled"]),
@@ -1619,7 +1721,20 @@ def rebuild_run_outcomes_csv(*, manifest: dict[str, Any], machine: Machine, repo
         for run in manifest["runs"]
         if run["machine_id"] == machine.machine_id
     }
-    rows = []
+    outcomes_path = machine_root / "run_outcomes.csv"
+    # Section 8: preserve rows already durably written for runs whose per-run
+    # workspace was deleted after finalization (append-persist, not rebuild-only).
+    preserved: dict[str, dict[str, str]] = {}
+    if outcomes_path.exists():
+        try:
+            with outcomes_path.open(newline="", encoding="utf-8") as fh:
+                for existing in csv.DictReader(fh):
+                    rid = existing.get("run_id")
+                    if rid:
+                        preserved[rid] = existing
+        except Exception:
+            preserved = {}
+    fresh: dict[str, dict[str, Any]] = {}
     for run_id, condition in sorted(conditions.items(), key=lambda item: condition_sort_key(item[1])):
         summary_path = machine_root / "runs" / run_id / "worker_summary.json"
         if not summary_path.exists():
@@ -1664,9 +1779,16 @@ def rebuild_run_outcomes_csv(*, manifest: dict[str, Any], machine: Machine, repo
         for field in RUN_OUTCOME_HASH_FIELDS:
             if row.get(field, "") == "":
                 row[field] = summary.get(field, "")
-        rows.append(row)
+        fresh[run_id] = row
 
-    path = machine_root / "run_outcomes.csv"
+    # Merge: a freshly-scanned dir wins; otherwise keep the durably-preserved row.
+    merged = dict(preserved)
+    merged.update(fresh)
+    ordered_ids = [rid for rid in conditions if rid in merged]
+    ordered_ids += [rid for rid in merged if rid not in conditions]  # any extras last
+    rows = [merged[rid] for rid in ordered_ids]
+
+    path = outcomes_path
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp")
     with tmp_path.open("w", newline="", encoding="utf-8") as fh:
@@ -1675,6 +1797,18 @@ def rebuild_run_outcomes_csv(*, manifest: dict[str, Any], machine: Machine, repo
         writer.writerows(rows)
     replace_with_retry(tmp_path, path)
     return path
+
+
+def run_outcomes_contains(machine_root: Path, run_id: str) -> bool:
+    """Section 8: confirm a run's KPI row is durably present before deleting its workspace."""
+    path = machine_root / "run_outcomes.csv"
+    if not path.exists():
+        return False
+    try:
+        with path.open(newline="", encoding="utf-8") as fh:
+            return any(r.get("run_id") == run_id for r in csv.DictReader(fh))
+    except Exception:
+        return False
 
 
 def condition_sort_key(run: dict[str, Any]) -> tuple[Any, ...]:
@@ -1722,6 +1856,14 @@ def execute_machine(
     progress: bool,
     keep_run_artifacts: bool = False,
 ) -> int:
+    # Section 10: the shard/execute_machine workflow is DEPRECATED in favour of
+    # the single host-ledger execution path (execute_host). It kept per-run
+    # summaries and used committed shards; it must not be used for the finalized
+    # campaign. Retained only so historical manifests remain inspectable.
+    raise SystemExit(
+        "execute_machine (--run-continuously / --stage shard workflow) is deprecated; "
+        "use the host-ledger path: --execute-host --manifest <m> --machine-id <id> --resume"
+    )
     ensure_clean_tracked_scientific_files(REPO_ROOT)
     manifest = read_json(manifest_path)
     machines = machine_map(manifest)
@@ -2018,7 +2160,20 @@ def execute_host(
 
     def rebuild_outcomes_for_host():
         conditions = {run["run_id"]: run for run in ledger.assigned_conditions}
-        rows = []
+        host_outcomes_path = host_data_root / "run_outcomes.csv"
+        # Section 8: preserve rows already durably written for runs whose per-run
+        # workspace was deleted after finalization.
+        preserved: dict[str, dict[str, str]] = {}
+        if host_outcomes_path.exists():
+            try:
+                with host_outcomes_path.open(newline="", encoding="utf-8") as fh:
+                    for existing in csv.DictReader(fh):
+                        rid = existing.get("run_id")
+                        if rid:
+                            preserved[rid] = existing
+            except Exception:
+                preserved = {}
+        fresh: dict[str, dict[str, Any]] = {}
         for run_id, condition in sorted(conditions.items(), key=lambda item: condition_sort_key(item[1])):
             summary_path = runs_dir / run_id / "worker_summary.json"
             if not summary_path.exists():
@@ -2064,9 +2219,15 @@ def execute_host(
             for field in RUN_OUTCOME_HASH_FIELDS:
                 if row.get(field, "") == "":
                     row[field] = summary.get(field, "")
-            rows.append(row)
+            fresh[run_id] = row
 
-        path = host_data_root / "run_outcomes.csv"
+        merged = dict(preserved)
+        merged.update(fresh)                          # a freshly-scanned dir wins
+        ordered_ids = [rid for rid in conditions if rid in merged]
+        ordered_ids += [rid for rid in merged if rid not in conditions]
+        rows = [merged[rid] for rid in ordered_ids]
+
+        path = host_outcomes_path
         tmp_path = path.with_name(f".{path.name}.tmp")
         with tmp_path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=list(RUN_OUTCOME_FIELDS), extrasaction="ignore")
@@ -2084,14 +2245,28 @@ def execute_host(
         raise RuntimeError(f"insufficient free disk: free={available} required={min_free}")
 
     def _reclaim_on_complete(spec: RunSpec, return_code: int) -> None:
+        succeeded = False
         if not keep_run_artifacts:
             summary = load_worker_summary(spec.runtime_root)
-            if int(return_code) == 0 and summary.get("status") == "success":
+            succeeded = int(return_code) == 0 and summary.get("status") == "success"
+            if succeeded:
                 stats = reclaim_completed_run_artifacts_with_stats(spec.runtime_root)
             else:
                 stats = reclaim_failed_run_artifacts_with_stats(spec.runtime_root)
             merge_reclaim_stats(cleanup_stats, stats)
+        # Durably persist the KPI row first.
         rebuild_outcomes_for_host()
+        # Section 8: on success, once the compact KPI row is durably present in the
+        # host run_outcomes.csv, the entire per-run workspace is deleted (leaving no
+        # run_spec.json / worker_summary.json / run directory). Debug retention
+        # (keep_run_artifacts) preserves it. Failed finals keep their compact
+        # diagnostics until the retry budget is exhausted (handled by the ledger).
+        if succeeded and not keep_run_artifacts:
+            run_id = Path(spec.runtime_root).name
+            if run_outcomes_contains(host_data_root, run_id):
+                shutil.rmtree(spec.runtime_root, ignore_errors=True)
+            else:
+                print(f"[sensitivity] warning: KPI row for {run_id} not durably present; keeping workspace")
 
     previous_log_cap = os.environ.get("RMFS_WORKER_LOG_CAP_MB")
     os.environ["RMFS_WORKER_LOG_CAP_MB"] = "5"
@@ -2232,7 +2407,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", default=False)
     parser.add_argument("--rts-checkpoint-dir", default=None)
     parser.add_argument("--rts-training-artifact", default=None)
-    parser.add_argument("--pps-model-path", default=str(DEFAULT_PPS_MODEL_PATH))
+    parser.add_argument("--pps-model-path", default=str(DEFAULT_PPS_INFERENCE_ARTIFACT))
     parser.add_argument("--charging-config-path", default=str(DEFAULT_CHARGING_CONFIG_PATH))
     parser.add_argument("--rl-overhead-multiplier", type=float, default=DEFAULT_RL_OVERHEAD_MULTIPLIER)
     parser.add_argument(
@@ -2377,26 +2552,26 @@ def main(argv: Iterable[str] | None = None) -> int:
         # 1. strictly load canonical assets
         validate_local_assets(manifest, REPO_ROOT)
         
-        # 2. Check all primary factorial identities
+        # 2. Check bundled two-treatment identities (720 unique paired runs)
         runs = manifest["runs"]
-        if len(runs) != 1200:
-            raise AssertionError(f"Expected 1200 runs, got {len(runs)}")
-            
+        if len(runs) != 720:
+            raise AssertionError(f"Expected 720 runs, got {len(runs)}")
+
         run_ids = [run["run_id"] for run in runs]
         condition_keys = [run["condition_key"] for run in runs]
-        if len(set(run_ids)) != 1200:
+        if len(set(run_ids)) != 720:
             raise AssertionError(f"Duplicate run IDs found, unique count: {len(set(run_ids))}")
-        if len(set(condition_keys)) != 1200:
+        if len(set(condition_keys)) != 720:
             raise AssertionError(f"Duplicate condition keys found, unique count: {len(set(condition_keys))}")
-            
-        # 3. Check primary factorial count and seeds
-        expected_stage_counts = {"1": 1200}
+
+        # 3. Check cumulative stage counts and seeds
+        expected_stage_counts = {"1": 18, "2": 39, "3": 39, "4": 624}
         actual_stage_counts = manifest["assertions"]["stage_new_runs"]
         if actual_stage_counts != expected_stage_counts:
             raise AssertionError(f"Stage new runs count mismatch: expected {expected_stage_counts}, got {actual_stage_counts}")
-            
+
         # Verify seeds
-        for replication in (1, 20):
+        for replication in (1, 40):
             expected_seed = seed_for_replication(replication)
             for run in runs:
                 if run["replication"] == replication:
@@ -2419,15 +2594,15 @@ def main(argv: Iterable[str] | None = None) -> int:
                     raise AssertionError(f"RunSpec {run['run_id']} has key '{key}' referencing runtime training: {val}")
             if spec.persist_final_state is not False:
                 raise AssertionError(f"RunSpec {run['run_id']} unexpectedly persists final state")
-            if spec.rts_policy_checkpoint_id != (manifest["assets"]["rts_checkpoint_id"] if run["policy_configuration"].startswith("rts_rl__") else "not_applicable"):
+            if spec.rts_policy_checkpoint_id != (manifest["assets"]["rts_checkpoint_id"] if run["policy_configuration"] == "all_on_rl" else "not_applicable"):
                 raise AssertionError(f"RunSpec {run['run_id']} has wrong RTS checkpoint ID")
         print(json.dumps({
             "campaign_id": manifest["campaign_id"],
             "allocation_patch_id": manifest["allocation_patch_id"],
             "simulation_semantics_id": manifest["simulation_semantics_id"],
             "stage_counts": actual_stage_counts,
-            "per_machine_stage_counts": manifest["assertions"]["stage_allocations"],
             "total_runs": len(runs),
+            "complete_pairs": manifest["assertions"]["complete_pair_count"],
             "clean_tracked_scientific_inputs": True,
             "strict_completion_required": True,
             "completion_callbacks_fail_closed": True,

@@ -2,6 +2,8 @@ import csv
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from scripts.experiments.distributed_sensitivity_campaign import (
     ALLOCATION_PATCH_LABEL,
     POLICY_CONFIGURATIONS,
@@ -66,13 +68,12 @@ def test_campaign_plan_counts_allocations_and_seed_design():
     assert manifest["simulation_semantics_id"] == SIMULATION_SEMANTICS_ID
     assert manifest["allocation_patch_id"].startswith(f"{ALLOCATION_PATCH_LABEL}_")
     assert manifest["assertions"]["machine_count"] == 7
-    assert manifest["assertions"]["stage_new_runs"] == {"1": 1200}
-    assert manifest["assertions"]["total_unique_fresh_runs"] == 1200
-    assert len(manifest["runs"]) == 1200
-    assert manifest["old_capacity_study_completions_used"] == 0
+    assert manifest["assertions"]["stage_new_runs"] == {"1": 18, "2": 39, "3": 39, "4": 624}
+    assert manifest["assertions"]["total_unique_fresh_runs"] == 720
+    assert len(manifest["runs"]) == 720
     assert manifest["assertions"]["old_capacity_study_roots_contribute_completions"] == 0
 
-    for replication, expected_seed in ((1, 42), (20, 61)):
+    for replication, expected_seed in ((1, 42), (40, 81)):
         assert seed_for_replication(replication) == expected_seed
         assert {run["seed"] for run in manifest["runs"] if run["replication"] == replication} == {expected_seed}
 
@@ -82,11 +83,11 @@ def test_campaign_plan_has_no_duplicate_identities_or_shard_overlap():
 
     run_ids = [run["run_id"] for run in manifest["runs"]]
     condition_keys = [run["condition_key"] for run in manifest["runs"]]
-    assert len(run_ids) == len(set(run_ids)) == 1200
-    assert len(condition_keys) == len(set(condition_keys)) == 1200
+    assert len(run_ids) == len(set(run_ids)) == 720
+    assert len(condition_keys) == len(set(condition_keys)) == 720
     assert all(count == 1 for count in Counter(run_ids).values())
     assert all(count == 1 for count in Counter(condition_keys).values())
-    assert sum(manifest["assertions"]["total_fresh_runs_by_machine"].values()) == 1200
+    assert sum(manifest["assertions"]["total_fresh_runs_by_machine"].values()) == 720
 
     assert {run["policy_configuration"] for run in manifest["runs"]} == set(POLICY_CONFIGURATIONS)
 
@@ -147,8 +148,8 @@ def test_allocation_patch_id_changes_without_scientific_identity_change():
 def test_primary_run_specs_are_no_state_and_use_explicit_rts_contracts():
     manifest = build_manifest()
     machine_by_id = {m.machine_id: m for m in default_machines()}
-    all_off = next(run for run in manifest["runs"] if run["policy_configuration"] == "reference_rts__charging_off")
-    all_on = next(run for run in manifest["runs"] if run["policy_configuration"] == "rts_rl__salsa_charging")
+    all_off = next(run for run in manifest["runs"] if run["policy_configuration"] == "all_off")
+    all_on = next(run for run in manifest["runs"] if run["policy_configuration"] == "all_on_rl")
 
     all_off_spec = build_run_spec_from_condition(all_off, manifest=manifest, machine=machine_by_id[all_off["machine_id"]], repo_root=Path.cwd())
     all_on_spec = build_run_spec_from_condition(all_on, manifest=manifest, machine=machine_by_id[all_on["machine_id"]], repo_root=Path.cwd())
@@ -212,15 +213,17 @@ def test_continuous_execution_combines_stages_before_calling_run_specs(tmp_path,
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_specs", fake_run_specs)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.rebuild_run_outcomes_csv", lambda **_kwargs: root / machine.machine_id / "run_outcomes.csv")
 
-    execute_machine(
-        manifest_path=root / "manifest.json",
-        machine_id=machine.machine_id,
-        stages=[1],
-        resume=False,
-        progress=False,
-    )
-
-    assert launched["stage_order"] == [1, 1, 1, 1, 1, 1]
+    # Section 10: the shard/execute_machine path is deprecated in favour of the
+    # host-ledger path (execute_host); it must refuse to run.
+    with pytest.raises(SystemExit) as exc:
+        execute_machine(
+            manifest_path=root / "manifest.json",
+            machine_id=machine.machine_id,
+            stages=[1],
+            resume=False,
+            progress=False,
+        )
+    assert "--execute-host" in str(exc.value)
 
 
 def test_execute_machine_returns_nonzero_for_invalid_selected_run(tmp_path, monkeypatch):
@@ -256,13 +259,15 @@ def test_execute_machine_returns_nonzero_for_invalid_selected_run(tmp_path, monk
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.validate_local_assets", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_specs", fake_run_specs)
 
-    assert execute_machine(
-        manifest_path=root / "manifest.json",
-        machine_id=machine.machine_id,
-        stages=[condition["stage_first_requested"]],
-        resume=False,
-        progress=False,
-    ) == 1
+    with pytest.raises(SystemExit) as exc:
+        execute_machine(
+            manifest_path=root / "manifest.json",
+            machine_id=machine.machine_id,
+            stages=[condition["stage_first_requested"]],
+            resume=False,
+            progress=False,
+        )
+    assert "--execute-host" in str(exc.value)
 
 
 def test_execute_machine_returns_zero_only_after_strict_completion(tmp_path, monkeypatch):
@@ -307,13 +312,15 @@ def test_execute_machine_returns_zero_only_after_strict_completion(tmp_path, mon
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.validate_local_assets", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_specs", fake_run_specs)
 
-    assert execute_machine(
-        manifest_path=root / "manifest.json",
-        machine_id=machine.machine_id,
-        stages=[condition["stage_first_requested"]],
-        resume=False,
-        progress=False,
-    ) == 1
+    with pytest.raises(SystemExit) as exc:
+        execute_machine(
+            manifest_path=root / "manifest.json",
+            machine_id=machine.machine_id,
+            stages=[condition["stage_first_requested"]],
+            resume=False,
+            progress=False,
+        )
+    assert "--execute-host" in str(exc.value)
 
 
 def test_run_outcomes_csv_rebuilds_from_retained_worker_summary(tmp_path):
@@ -463,8 +470,8 @@ def test_treatment_contract_changes_campaign_id_but_allocation_does_not():
         **identity,
         "treatment_execution_contracts": {
             **identity["treatment_execution_contracts"],
-            "rts_rl__charging_off": {
-                **identity["treatment_execution_contracts"]["rts_rl__charging_off"],
+            "all_on_rl": {
+                **identity["treatment_execution_contracts"]["all_on_rl"],
                 "rts_policy_action_mode": "sample",
             },
         },
@@ -472,7 +479,7 @@ def test_treatment_contract_changes_campaign_id_but_allocation_does_not():
 
     assert generate_campaign_id_from_identity(changed) != manifest["campaign_id"]
     assert generate_campaign_id(default_machines(), assets, 99.0) == manifest["campaign_id"]
-    assert treatment_execution_contracts(assets)["reference_rts__charging_off"]["persist_final_state"] is False
+    assert treatment_execution_contracts(assets)["all_off"]["persist_final_state"] is False
 
 
 

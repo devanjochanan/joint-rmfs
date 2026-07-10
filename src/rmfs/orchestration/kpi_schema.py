@@ -377,6 +377,46 @@ FULL_KPI_V3_REQUIRED_FIELDS = tuple(
     field for field in FULL_KPI_V3_FIELDS if field not in FULL_KPI_V3_OPTIONAL_FIELDS
 )
 
+# ── Treatment-aware applicability ──────────────────────────────────────────
+# PPO-PPS decision counters are only meaningful when PPO PPS is active
+# (all_on_rl). They are NOT applicable to all_off (heuristic PPS) and their
+# absence must not invalidate an all_off run.
+FULL_KPI_V3_PPS_PPO_FIELDS = (
+    "pps_decision_rounds", "pps_candidates_evaluated", "pps_actions_zero",
+    "pps_actions_invalid", "pps_rejected_station_full", "pps_rejected_station_no_orders",
+    "pps_rejected_sku_mismatch", "pps_rejected_pod_ineligible", "pps_rejected_pod_reserved",
+    "pps_assignments_accepted", "pps_assignment_acceptance_rate",
+    "pps_assignment_to_job_conversion_rate",
+)
+
+
+def required_fields_for_treatment(treatment: str | None) -> tuple[str, ...]:
+    """Scientific required fields whose presence determines ``completed_strict``.
+
+    ``all_off`` (heuristic PPS) drops the PPO-PPS decision counters; all other
+    required fields (order flow, charging, replenishment, committed-next,
+    energy, robot state) apply to both treatments.
+    """
+    drop = set(FULL_KPI_V3_PPS_PPO_FIELDS) if str(treatment) == "all_off" else set()
+    return tuple(f for f in FULL_KPI_V3_REQUIRED_FIELDS if f not in drop)
+
+
+def kpi_completion_status(payload: dict, treatment: str | None) -> tuple[str, list[str]]:
+    """Return (status, missing_fields).
+
+    status is one of ``completed_strict`` (all treatment-required fields present),
+    ``completed_with_warnings`` (required present, some optional diagnostics
+    missing), or ``incomplete`` (a required scientific field is missing).
+    """
+    required = required_fields_for_treatment(treatment)
+    missing_required = [f for f in required if payload.get(f) is None]
+    if missing_required:
+        return "incomplete", missing_required
+    missing_optional = [f for f in FULL_KPI_V3_OPTIONAL_FIELDS if payload.get(f) is None]
+    if missing_optional:
+        return "completed_with_warnings", list(missing_optional)
+    return "completed_strict", []
+
 # Complete field set including sidecars
 FULL_KPI_V3_ALL_FIELDS = (
     *FULL_KPI_V3_FIELDS,

@@ -1,0 +1,137 @@
+{
+  "action_space": {
+    "dtype": "int64",
+    "nvec": [
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4
+    ],
+    "shape": [
+      60
+    ],
+    "type": "MultiDiscrete"
+  },
+  "activation_fn": "Tanh",
+  "artifact_kind": "pps_policy_inference_only",
+  "compact_artifact": {
+    "path_relative": "data/models/pps/pps_rl_policy_inference.zip",
+    "sha256": "b6df5f01a72da2a69d91f6b27909772697b64cb073d3751c414c999f6abdad27",
+    "size_bytes": 16929522
+  },
+  "deterministic_action_parity": "verified exact vs full archive (scripts/validation/pps_compact_inference_parity.py)",
+  "net_arch": {
+    "pi": [
+      64,
+      64
+    ],
+    "vf": [
+      64,
+      64
+    ]
+  },
+  "normalization": "none (observations are pre-normalized in the runtime observation builder)",
+  "observation_space": {
+    "num_candidates": {
+      "dtype": "int32",
+      "nvec": null,
+      "shape": [
+        1
+      ],
+      "type": "Box"
+    },
+    "pod_features": {
+      "dtype": "float32",
+      "nvec": null,
+      "shape": [
+        60,
+        511
+      ],
+      "type": "Box"
+    },
+    "station_features": {
+      "dtype": "float32",
+      "nvec": null,
+      "shape": [
+        3,
+        500
+      ],
+      "type": "Box"
+    },
+    "zone_robot_counts": {
+      "dtype": "float32",
+      "nvec": null,
+      "shape": [
+        5
+      ],
+      "type": "Box"
+    }
+  },
+  "policy_class": "stable_baselines3.common.policies.MultiInputActorCriticPolicy",
+  "sb3_version": "2.8.0",
+  "source_full_checkpoint": {
+    "external_archive_path": "/home/dewan/pps_full_checkpoint_archive/pps_rl_best.zip",
+    "external_archive_sha256": "b4113bb51676ca0f2009cf78ebfd012dd376103cd98b0775f7d8843670773476",
+    "path_relative": "data/models/pps/pps_rl_best.zip",
+    "provenance": "SB3 PPO full training archive (optimizer + rollout state); inference-only policy extracted via policy.save().",
+    "sha256": "b4113bb51676ca0f2009cf78ebfd012dd376103cd98b0775f7d8843670773476",
+    "size_bytes": 50329383
+  },
+  "torch_version": "2.4.1+cu121"
+}

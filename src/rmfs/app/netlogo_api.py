@@ -502,6 +502,22 @@ def _build_pps_rl_observation(universe):
     }
 
 
+_PPS_COUNTER_FIELDS = (
+    "pps_decision_rounds", "pps_candidates_evaluated", "pps_actions_zero",
+    "pps_actions_invalid", "pps_rejected_station_full", "pps_rejected_station_no_orders",
+    "pps_rejected_sku_mismatch", "pps_rejected_pod_ineligible", "pps_rejected_pod_reserved",
+    "pps_assignments_accepted",
+)
+
+
+def _pps_bump(universe, name, n=1):
+    """Nonsemantic PPS decision telemetry (does not affect control flow)."""
+    ctr = getattr(universe, "pps_counters", None)
+    if ctr is None:
+        ctr = universe.pps_counters = {f: 0 for f in _PPS_COUNTER_FIELDS}
+    ctr[name] = ctr.get(name, 0) + n
+
+
 def _execute_pps_rl_actions(universe, actions):
     candidates = _pps_rl_candidate_pods(universe)
     station_ids = sorted(
@@ -511,19 +527,31 @@ def _execute_pps_rl_actions(universe, actions):
     flat_actions = np.asarray(actions).reshape(-1)
     assignments = 0
 
-    for i in range(min(len(candidates), len(flat_actions))):
+    n_slots = min(len(candidates), len(flat_actions))
+    if n_slots > 0:
+        _pps_bump(universe, "pps_decision_rounds")
+        _pps_bump(universe, "pps_candidates_evaluated", n_slots)
+
+    for i in range(n_slots):
         action = int(flat_actions[i])
-        if action == 0 or action < 1 or action > PPS_RL_NUM_STATIONS:
+        if action == 0:
+            _pps_bump(universe, "pps_actions_zero")
+            continue
+        if action < 1 or action > PPS_RL_NUM_STATIONS:
+            _pps_bump(universe, "pps_actions_invalid")
             continue
 
         pod = candidates[i]
         station = universe.station_manager.get_station_by_id(station_ids[action - 1])
 
         if not universe.pod_manager.is_idle(pod.pod_id):
+            _pps_bump(universe, "pps_rejected_pod_ineligible")
             continue
         if len(station.incoming_pod) >= station.max_robots:
+            _pps_bump(universe, "pps_rejected_station_full")
             continue
         if not station.orders:
+            _pps_bump(universe, "pps_rejected_station_no_orders")
             continue
 
         sku_to_quantity = defaultdict(int)
@@ -534,12 +562,14 @@ def _execute_pps_rl_actions(universe, actions):
                 sku_to_order_map[sku].append((order.order_id, qty))
 
         if not sku_to_quantity:
+            _pps_bump(universe, "pps_rejected_sku_mismatch")
             continue
         has_match = any(
             sku in pod.skus and pod.skus[sku]["current_qty"] > 0
             for sku in sku_to_quantity
         )
         if not has_match:
+            _pps_bump(universe, "pps_rejected_sku_mismatch")
             continue
 
         job = universe.add_picking_task_after_pps(
@@ -549,10 +579,12 @@ def _execute_pps_rl_actions(universe, actions):
             sku_to_quantity,
         )
         if len(job.orders) == 0:
+            _pps_bump(universe, "pps_rejected_sku_mismatch")
             continue
 
         universe.job_queue.append(job)
         assignments += 1
+        _pps_bump(universe, "pps_assignments_accepted")
         for order_id, sku, qty in job.orders:
             upsert_job_task(
                 pod_id=str(job.pod.pod_id),

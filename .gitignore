@@ -68,8 +68,14 @@ data/output/summaries/*
 !data/output/summaries/.gitkeep
 
 # PPS model/training artifacts
+# The full PPO training archive (pps_rl_best.zip) is NO LONGER tracked: it holds
+# optimizer/rollout state unneeded for inference. The campaign ships the compact
+# policy-only inference artifact instead (exact deterministic parity verified by
+# scripts/validation/pps_compact_inference_parity.py). The full archive is
+# preserved externally (see pps_rl_policy_inference.metadata.json).
 data/models/pps/*.zip
-!data/models/pps/pps_rl_best.zip
+!data/models/pps/pps_rl_policy_inference.zip
+!data/models/pps/pps_rl_policy_inference.metadata.json
 data/models/pps/*.pt
 data/models/pps/train_state.json
 data/models/pps/checkpoints/

@@ -24,6 +24,7 @@ from src.rmfs.orchestration.kpi_schema import (
     FULL_KPI_V3_ALL_FIELDS,
     derive_v3_fields,
     empty_v3_kpi_payload,
+    kpi_completion_status,
 )
 from src.rmfs.decisions.pps.modes import normalize_pps_mode
 from src.rmfs.runtime_io.run_profiles import available_profiles, resolve_run_profile
@@ -773,6 +774,13 @@ def derive_sensitivity_kpi_v3_payload(
     for cn_field in ("committed_next_reservations_created", "committed_next_reservations_activated", "committed_next_reservations_cancelled_charging", "committed_next_reservations_cancelled_other", "committed_next_reservations_stale_end", "committed_next_jobs_restored", "committed_next_jobs_lost", "committed_next_duplicate_restorations", "max_committed_next_reservation_age_s", "stale_rts_ownership_markers_end", "stale_replenishment_markers_end", "max_ownership_marker_age_s"):
         payload[cn_field] = committed_counters.get(cn_field, getattr(warehouse, cn_field, None))
 
+    # 8b. PPS decision primitives (all_on_rl / PPO PPS). Absent under heuristic
+    # PPS (all_off), where these fields are not applicable to completion.
+    pps_counters = getattr(warehouse, "pps_counters", None)
+    if pps_counters:
+        for pps_field in ("pps_decision_rounds", "pps_candidates_evaluated", "pps_actions_zero", "pps_actions_invalid", "pps_rejected_station_full", "pps_rejected_station_no_orders", "pps_rejected_sku_mismatch", "pps_rejected_pod_ineligible", "pps_rejected_pod_reserved", "pps_assignments_accepted"):
+            payload[pps_field] = pps_counters.get(pps_field)
+
     # 9. Station detail sidecar and derived metrics
     station_detail = {}
     p_stations = getattr(getattr(warehouse, "station_manager", None), "picking_stations", []) or []
@@ -844,7 +852,14 @@ def derive_sensitivity_kpi_v3_payload(
     derived = derive_v3_fields(payload)
     payload.update(derived)
 
-    payload["kpi_complete"] = all(payload.get(f) is not None for f in FULL_KPI_V3_REQUIRED_FIELDS)
+    # Treatment-aware completion (Section 7 applicability): all_off is not
+    # invalidated by absent PPO-PPS counters; optional diagnostics -> warnings.
+    treatment = getattr(spec, "policy_configuration", None)
+    status, missing = kpi_completion_status(payload, treatment)
+    payload["kpi_completion_status"] = status
+    payload["kpi_missing_fields"] = missing
+    payload["kpi_complete"] = status in ("completed_strict", "completed_with_warnings")
+    payload["kpi_complete_strict"] = status == "completed_strict"
     return payload
 
 
@@ -1300,6 +1315,11 @@ def run_worker(spec: RunSpec):
             "order_arrival_unit": "simulated_seconds",
         }
 
+        # Section 7: interval KPI snapshots are DIAGNOSTIC only. In normal
+        # production runs they are never persisted; final KPI fields are derived
+        # from in-memory runtime state at finalization. Persisting the raw
+        # kpi_snapshots.jsonl requires the explicit debug flag.
+        persist_kpi_snapshots = bool(getattr(spec, "debug_trace", False))
         cadence_seconds = getattr(spec, "kpi_snapshot_cadence_seconds", None)
         if cadence_seconds is None:
             cadence_seconds = [1000.0, 2500.0, 5000.0, 10000.0]
@@ -1320,7 +1340,8 @@ def run_worker(spec: RunSpec):
             current_sim_seconds = ticks_done * tick_to_second
             for thresh in cadence_seconds:
                 if current_sim_seconds >= thresh and thresh not in written_snapshots:
-                    write_kpi_interval_snapshot(spec.runtime_root, spec.kpi_schema_version, warehouse, thresh, current_sim_seconds)
+                    if persist_kpi_snapshots:
+                        write_kpi_interval_snapshot(spec.runtime_root, spec.kpi_schema_version, warehouse, thresh, current_sim_seconds)
                     written_snapshots.add(thresh)
 
             is_first = index == 0
@@ -1381,7 +1402,7 @@ def run_worker(spec: RunSpec):
                     "warehouse_average_order_cycle_time_available": False,
                 }
 
-        if warehouse is not None:
+        if warehouse is not None and persist_kpi_snapshots:
             write_kpi_interval_snapshot(spec.runtime_root, spec.kpi_schema_version, warehouse, "final", ticks_done * tick_to_second)
 
         finalization = session.finalize(

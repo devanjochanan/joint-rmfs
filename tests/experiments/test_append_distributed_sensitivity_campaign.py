@@ -3,9 +3,19 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from scripts.experiments import append_distributed_sensitivity_campaign as append
 from scripts.experiments import distributed_sensitivity_campaign as base
 from tests.experiments.test_distributed_sensitivity_campaign import fake_assets
+
+# The replications-21-to-40 append/extension workflow is SUPERSEDED by the
+# finalized 720-run design, which builds 40 replications directly into stage 4.
+# The append runner + its shard/resume-patch exchange are deprecated (Section 10);
+# these tests are retained for historical reference only.
+pytestmark = pytest.mark.skip(
+    reason="append/extension (rep 21-40) workflow superseded by the 720-run 40-replication design"
+)
 
 
 def _parent_manifest(tmp_path: Path):
