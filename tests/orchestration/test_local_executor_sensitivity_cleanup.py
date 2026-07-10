@@ -10,6 +10,7 @@ from src.rmfs.orchestration.local_executor import (
     FAILED_RECLAIMABLE_RUN_ARTIFACTS,
     SENSITIVITY_KPI_SCHEMA_VERSION,
     SUCCESS_RECLAIMABLE_RUN_ARTIFACTS,
+    _canonical_json_sha256,
     derive_sensitivity_kpi_payload,
     expected_worker_files,
     reclaim_completed_run_artifacts_with_stats,
@@ -27,6 +28,14 @@ class _Pipe:
 
     def close(self):
         return None
+
+
+def test_generated_config_hash_is_independent_of_windows_line_endings():
+    payload = {"charger_positions": [[1, 2], [3, 4]], "num_chargers": 2}
+    lf = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    crlf = lf.replace("\n", "\r\n")
+
+    assert _canonical_json_sha256(json.loads(lf)) == _canonical_json_sha256(json.loads(crlf))
 
 
 class _FakeProcess:
