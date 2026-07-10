@@ -480,3 +480,68 @@ def test_treatment_contract_changes_campaign_id_but_allocation_does_not():
     assert generate_campaign_id_from_identity(changed) != manifest["campaign_id"]
     assert generate_campaign_id(default_machines(), assets, 99.0) == manifest["campaign_id"]
     assert treatment_execution_contracts(assets)["all_off"]["persist_final_state"] is False
+
+
+
+def _write_complete_summary(spec, manifest, condition, **overrides):
+    summary = {
+        "run_id": condition["run_id"],
+        "campaign_id": spec.campaign_id,
+        "allocation_patch_id": spec.allocation_patch_id,
+        "machine_id": spec.machine_id,
+        "repo_commit": "different-commit",
+        "simulation_semantics_id": spec.simulation_semantics_id,
+        "kpi_schema_version": manifest["kpi_schema_version"],
+        "policy_configuration": condition["policy_configuration"],
+        "replication": condition["replication"],
+        "seed": condition["seed"],
+        "requested_robot_count": condition["robot_count"],
+        "rts_checkpoint_sha256": "different-rts-hash",
+        "pps_model_sha256": "different-pps-hash",
+        "rts_checkpoint_id": "different-checkpoint-id",
+        "status": "success",
+        "finalization": {"finalized": True},
+        "kpi_complete": True,
+    }
+    summary.update(overrides)
+    write_json(spec.runtime_root / "worker_summary.json", summary)
+
+
+def test_relaxed_completion_ignores_provenance_and_asset_metadata(tmp_path):
+    manifest = {**build_manifest(), "campaign_root_relative": "campaign"}
+    machine = default_machines()[0]
+    condition = next(run for run in manifest["runs"] if run["machine_id"] == machine.machine_id)
+    spec = build_run_spec_from_condition(condition, manifest=manifest, machine=machine, repo_root=tmp_path)
+    spec_payload = spec.to_json_dict()
+    spec_payload.update({
+        "allocation_patch_id": "different-allocation",
+        "machine_id": "different-machine",
+        "repo_commit": "different-commit",
+        "rts_checkpoint_id": "different-checkpoint-id",
+        "rts_checkpoint_sha256": "different-rts-hash",
+        "pps_model_sha256": "different-pps-hash",
+    })
+    write_json(spec.runtime_root / "run_spec.json", spec_payload)
+    _write_complete_summary(spec, manifest, condition)
+
+    assert run_complete_for_campaign(condition, spec, manifest) is False
+    assert run_complete_for_campaign(condition, spec, manifest, relaxed=True) is True
+
+
+def test_relaxed_completion_still_rejects_bad_condition_and_incomplete_kpi(tmp_path):
+    manifest = {**build_manifest(), "campaign_root_relative": "campaign"}
+    machine = default_machines()[0]
+    condition = next(run for run in manifest["runs"] if run["machine_id"] == machine.machine_id)
+    spec = build_run_spec_from_condition(condition, manifest=manifest, machine=machine, repo_root=tmp_path)
+    write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
+    _write_complete_summary(spec, manifest, condition, seed=condition["seed"] + 1)
+    assert run_complete_for_campaign(condition, spec, manifest, relaxed=True) is False
+
+    _write_complete_summary(spec, manifest, condition, seed=condition["seed"], kpi_complete=False)
+    assert run_complete_for_campaign(condition, spec, manifest, relaxed=True) is False
+
+    _write_complete_summary(spec, manifest, condition, kpi_complete=True, finalization={"finalized": False})
+    assert run_complete_for_campaign(condition, spec, manifest, relaxed=True) is False
+
+    _write_complete_summary(spec, manifest, condition, finalization={"finalized": True}, status="failure")
+    assert run_complete_for_campaign(condition, spec, manifest, relaxed=True) is False

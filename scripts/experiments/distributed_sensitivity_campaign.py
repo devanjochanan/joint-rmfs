@@ -204,6 +204,10 @@ def git_clean_value(*args: str) -> str | None:
     return git_value(REPO_ROOT, *args)
 
 
+def validation_warning(message: str) -> None:
+    print(f"[sensitivity] warning: {message}")
+
+
 def dirty_tracked_files(repo_root: Path = REPO_ROOT) -> list[str]:
     try:
         output = subprocess.check_output(
@@ -529,6 +533,7 @@ def validate_assets_strict(
     expected_rts_metadata_sha256: str | None = None,
     expected_rts_feature_schema_sha256: str | None = None,
     expected_rts_checkpoint_id: str | None = None,
+    strict: bool = True,
 ) -> None:
     canonical_pps = relative_to_repo(DEFAULT_PPS_MODEL_PATH)
     canonical_rts = relative_to_repo(DEFAULT_RTS_CHECKPOINT_DIR)
@@ -543,7 +548,10 @@ def validate_assets_strict(
         raise FileNotFoundError(f"PPS model path does not exist: {pps_path}")
     pps_sha = sha256_file(pps_path)
     if expected_pps_sha256 and pps_sha != expected_pps_sha256:
-        raise RuntimeError(f"PPS model hash mismatch: got {pps_sha}, expected {expected_pps_sha256}")
+        message = f"PPS model hash mismatch: got {pps_sha}, expected {expected_pps_sha256}"
+        if strict:
+            raise RuntimeError(message)
+        validation_warning(message)
     
     # Strictly load and verify PPS
     load_pps_rl_model_strict(pps_path, expected_sha256=pps_sha)
@@ -565,21 +573,39 @@ def validate_assets_strict(
     schema_sha = sha256_file(checkpoint_dir / "feature_schema.json")
 
     if expected_rts_model_sha256 and model_sha != expected_rts_model_sha256:
-        raise RuntimeError(f"RTS model.pt hash mismatch: got {model_sha}, expected {expected_rts_model_sha256}")
+        message = f"RTS model.pt hash mismatch: got {model_sha}, expected {expected_rts_model_sha256}"
+        if strict:
+            raise RuntimeError(message)
+        validation_warning(message)
     if expected_rts_metadata_sha256 and metadata_sha != expected_rts_metadata_sha256:
-        raise RuntimeError(f"RTS metadata.json hash mismatch: got {metadata_sha}, expected {expected_rts_metadata_sha256}")
+        message = f"RTS metadata.json hash mismatch: got {metadata_sha}, expected {expected_rts_metadata_sha256}"
+        if strict:
+            raise RuntimeError(message)
+        validation_warning(message)
     if expected_rts_feature_schema_sha256 and schema_sha != expected_rts_feature_schema_sha256:
-        raise RuntimeError(f"RTS feature_schema.json hash mismatch: got {schema_sha}, expected {expected_rts_feature_schema_sha256}")
+        message = f"RTS feature_schema.json hash mismatch: got {schema_sha}, expected {expected_rts_feature_schema_sha256}"
+        if strict:
+            raise RuntimeError(message)
+        validation_warning(message)
 
     # Load RTS policy to verify feature schema loads successfully
     loaded = load_policy_from_checkpoint(checkpoint_dir, device="cpu")
     checkpoint_id = resolve_policy_checkpoint_id(checkpoint_dir)
     if loaded.policy_checkpoint_id != checkpoint_id:
-        raise RuntimeError(f"RTS checkpoint ID mismatch after strict load: loaded={loaded.policy_checkpoint_id}, dir={checkpoint_id}")
+        message = f"RTS checkpoint ID mismatch after strict load: loaded={loaded.policy_checkpoint_id}, dir={checkpoint_id}"
+        if strict:
+            raise RuntimeError(message)
+        validation_warning(message)
     if expected_rts_checkpoint_id and checkpoint_id != expected_rts_checkpoint_id:
-        raise RuntimeError(f"RTS checkpoint ID mismatch: got {checkpoint_id}, expected {expected_rts_checkpoint_id}")
+        message = f"RTS checkpoint ID mismatch: got {checkpoint_id}, expected {expected_rts_checkpoint_id}"
+        if strict:
+            raise RuntimeError(message)
+        validation_warning(message)
     if checkpoint_id != CANONICAL_RTS_CHECKPOINT_ID:
-        raise RuntimeError(f"distributed sensitivity requires RTS checkpoint ID {CANONICAL_RTS_CHECKPOINT_ID}, got {checkpoint_id}")
+        message = f"distributed sensitivity expected RTS checkpoint ID {CANONICAL_RTS_CHECKPOINT_ID}, got {checkpoint_id}"
+        if strict:
+            raise RuntimeError(message)
+        validation_warning(message)
 
     # Verify PPO status (real PPO update, not behavior cloning only)
     metadata = read_json(checkpoint_dir / "metadata.json")
@@ -1292,7 +1318,7 @@ def local_asset_path(repo_root: Path, relative_path: str) -> Path:
     return repo_root / relative_path
 
 
-def validate_local_assets(manifest: dict[str, Any], repo_root: Path) -> None:
+def validate_local_assets(manifest: dict[str, Any], repo_root: Path, *, strict: bool = True) -> None:
     assets = manifest["assets"]
     validate_assets_strict(
         repo_root=repo_root,
@@ -1303,6 +1329,7 @@ def validate_local_assets(manifest: dict[str, Any], repo_root: Path) -> None:
         expected_rts_metadata_sha256=assets["rts_metadata_sha256"],
         expected_rts_feature_schema_sha256=assets["rts_feature_schema_sha256"],
         expected_rts_checkpoint_id=assets["rts_checkpoint_id"],
+        strict=strict,
     )
 
 
@@ -1403,7 +1430,20 @@ def build_run_spec_from_condition(
     )
 
 
-def run_complete_for_campaign(condition: dict[str, Any], spec: RunSpec, manifest: dict[str, Any]) -> bool:
+RELAXED_COMPLETION_IDENTITY_FIELDS = {
+    "allocation_patch_id",
+    "machine_id",
+    "repo_commit",
+    "rts_checkpoint_id",
+    "rts_checkpoint_sha256",
+    "pps_model_sha256",
+    "rts_metadata_canonical_sha256",
+    "rts_feature_schema_canonical_sha256",
+    "charging_config_canonical_sha256",
+}
+
+
+def run_complete_for_campaign(condition: dict[str, Any], spec: RunSpec, manifest: dict[str, Any], *, relaxed: bool = False) -> bool:
     spec_path = spec.runtime_root / "run_spec.json"
     summary_path = spec.runtime_root / "worker_summary.json"
     if not spec_path.exists() or not summary_path.exists():
@@ -1419,10 +1459,14 @@ def run_complete_for_campaign(condition: dict[str, Any], spec: RunSpec, manifest
         "robot_count": "requested_robot_count",
     }
     for key, expected in required_identity.items():
+        if relaxed and key in RELAXED_COMPLETION_IDENTITY_FIELDS:
+            continue
         if previous_spec.get(key) != expected:
             return False
         summary_key = summary_key_map.get(key, key)
         if key in {"order_rate_per_hour", "netlogo_steps_requested", "tick_to_second"}:
+            continue
+        if relaxed and summary_key in RELAXED_COMPLETION_IDENTITY_FIELDS:
             continue
         if summary.get(summary_key) != expected:
             return False

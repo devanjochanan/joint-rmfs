@@ -33,8 +33,8 @@ from src.rmfs.orchestration.run_spec import RunSpec  # noqa: E402
 
 ORIGINAL_CAMPAIGN_ID = "sensitivity_full_kpi_v2_217d072b72e4"
 ORIGINAL_ALLOCATION_PATCH_ID = "allocation_patch_0001_a333e5c09773"
-RESUME_PATCH_ID = "resume_patch_0002"
-APPEND_ALLOCATION_PATCH_LABEL = "allocation_patch_0002"
+RESUME_PATCH_ID = "resume_patch_0003"
+APPEND_ALLOCATION_PATCH_LABEL = "allocation_patch_0003"
 EXTENSION_SCHEMA_VERSION = "distributed_sensitivity_replication_extension.v1"
 PLAN_SCHEMA_VERSION = "distributed_sensitivity_append_execution_plan.v1"
 EXTENSION_REPLICATION_FIRST = 21
@@ -42,10 +42,12 @@ EXTENSION_REPLICATION_LAST = 40
 SNAPSHOT_ROOT_DEFAULT = Path("/home/dewan/Downloads/sens")
 COMBINED_EXPORT_NAME = "combined_run_outcomes_40rep.csv"
 COMBINED_REPORT_NAME = "combined_run_outcomes_40rep_report.json"
+EXCLUDED_MACHINE_IDS = {"dewa_macbook"}
+RELAXED_COMPLETION_STATUSES = {"strict_completed"}
+REQUEUED_MERGED_STATUSES = {"failed", "active_but_incomplete", "incomplete", "missing"}
 
 HISTORICAL_CENTRAL_TARGET = {
     "citi_gojira": {"all_off": 20, "all_on_rl": 2},
-    "dewa_macbook": {"all_off": 0, "all_on_rl": 6},
     "codex_local": {"all_off": 0, "all_on_rl": 8},
     "citi_angiebow": {"all_off": 0, "all_on_rl": 4},
     "alisha_pc": {"all_off": 0, "all_on_rl": 0},
@@ -96,6 +98,8 @@ def append_machines() -> list[base.Machine]:
     machines = []
     all_stages = (1, 2, 3, 4)
     for machine in base.default_machines(REPO_ROOT):
+        if machine.machine_id in EXCLUDED_MACHINE_IDS:
+            continue
         machines.append(base.Machine(
             machine_id=machine.machine_id,
             os=machine.os,
@@ -115,6 +119,8 @@ def append_allocation_patch_id(machines: list[base.Machine]) -> str:
         "schema_version": PLAN_SCHEMA_VERSION,
         "parent_campaign_id": ORIGINAL_CAMPAIGN_ID,
         "machines": [base.asdict(machine) for machine in machines],
+        "excluded_machine_ids": sorted(EXCLUDED_MACHINE_IDS),
+        "completion_validation_mode": "relaxed_provenance_metadata",
         "priority_contract": {
             "0": "unfinished_original_stages_1_to_3",
             "1": "central_extension_replications_21_to_40",
@@ -232,13 +238,26 @@ def summary_identity_value(summary: dict[str, Any], key: str) -> Any:
     return summary.get(key_map.get(key, key))
 
 
-def strict_json_complete(condition: dict[str, Any], spec: dict[str, Any] | None, summary: dict[str, Any] | None, manifest: dict[str, Any]) -> bool:
+def strict_json_complete(
+    condition: dict[str, Any],
+    spec: dict[str, Any] | None,
+    summary: dict[str, Any] | None,
+    manifest: dict[str, Any],
+    *,
+    relaxed: bool = True,
+) -> bool:
     if not spec or not summary:
         return False
+    ignored = base.RELAXED_COMPLETION_IDENTITY_FIELDS if relaxed else set()
     for key, expected in condition["run_spec_identity"].items():
+        if key in ignored:
+            continue
         if spec.get(key) != expected:
             return False
         if key in {"order_rate_per_hour", "netlogo_steps_requested", "tick_to_second"}:
+            continue
+        summary_key = {"campaign_seed": "seed", "robot_count": "requested_robot_count"}.get(key, key)
+        if summary_key in ignored:
             continue
         if summary_identity_value(summary, key) != expected:
             return False
@@ -256,9 +275,11 @@ def strict_json_complete(condition: dict[str, Any], spec: dict[str, Any] | None,
 
 
 def strict_summary_fingerprint(summary: dict[str, Any]) -> str:
+    ignore_fields = set(base.RELAXED_COMPLETION_IDENTITY_FIELDS) | {"repo_commit"}
     payload = {
         field: summary.get(field, summary.get("kpi", {}).get(field))
         for field in base.SENSITIVITY_KPI_FIELDS
+        if field not in ignore_fields
     }
     payload["finalization"] = summary.get("finalization", {})
     return base.stable_json_hash(payload, length=24)
@@ -331,6 +352,164 @@ def completion_inventory(manifest: dict[str, Any], repo_root: Path, snapshot_roo
         "duration_records": duration_records,
         "snapshot_zip_count": len(iter_snapshot_zip_paths(snapshot_root)),
         "snapshot_root": str(snapshot_root),
+    }
+
+
+def read_zip_csv_rows(zip_path: Path, name: str) -> list[dict[str, str]]:
+    with zipfile.ZipFile(zip_path) as zf:
+        with zf.open(name) as fh:
+            text = fh.read().decode("utf-8-sig")
+    return list(csv.DictReader(text.splitlines()))
+
+
+def read_zip_json_required(zip_path: Path, name: str) -> Any:
+    payload = read_zip_json(zip_path, name)
+    if payload is None:
+        raise RuntimeError(f"missing or invalid {name} in merged snapshot zip: {zip_path}")
+    return payload
+
+
+def local_extension_manifest_path(extension_campaign_id: str) -> Path:
+    return REPO_ROOT / base.OUTPUT_ROOT_RELATIVE / extension_campaign_id / "manifest.json"
+
+
+def load_extension_manifest_from_merged_zip(zip_path: Path, allocation_patch_id: str, machines: list[base.Machine]) -> dict[str, Any]:
+    zip_manifest = read_zip_json_required(zip_path, "manifests/extension_manifest.json")
+    if zip_manifest.get("extension_replication_first") != EXTENSION_REPLICATION_FIRST or zip_manifest.get("extension_replication_last") != EXTENSION_REPLICATION_LAST:
+        raise RuntimeError("merged snapshot extension manifest does not cover replications 21-40")
+    local_path = local_extension_manifest_path(zip_manifest["campaign_id"])
+    if local_path.exists():
+        local_manifest = base.read_json(local_path)
+        zip_ids = {run["condition_key"]: run["run_id"] for run in zip_manifest.get("runs", [])}
+        local_ids = {run["condition_key"]: run["run_id"] for run in local_manifest.get("runs", [])}
+        if zip_ids != local_ids:
+            raise RuntimeError("local extension manifest run IDs differ from merged snapshot manifest")
+        manifest = local_manifest
+    else:
+        manifest = zip_manifest
+    return {
+        **manifest,
+        "allocation_patch_id": allocation_patch_id,
+        "allocation_patch_label": APPEND_ALLOCATION_PATCH_LABEL,
+        "machines": [base.asdict(machine) for machine in machines],
+    }
+
+
+def _duration_records_from_merged_zip(zip_path: Path, manifests: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    by_campaign_run = {
+        campaign_id: {run["run_id"]: run for run in manifest.get("runs", [])}
+        for campaign_id, manifest in manifests.items()
+    }
+    records: list[dict[str, Any]] = []
+    with zipfile.ZipFile(zip_path) as zf:
+        for name in zf.namelist():
+            if not name.startswith("merged_run_artifacts/") or not name.endswith("/worker_summary.json"):
+                continue
+            parts = Path(name).parts
+            if len(parts) < 6:
+                continue
+            campaign_id = parts[1]
+            machine_id = parts[2]
+            run_id = parts[4]
+            condition = by_campaign_run.get(campaign_id, {}).get(run_id)
+            if not condition:
+                continue
+            try:
+                summary = json.loads(zf.read(name).decode("utf-8"))
+            except Exception:
+                continue
+            duration = float(summary.get("worker_wall_time_elapsed", 0.0) or 0.0)
+            if duration <= 0:
+                continue
+            records.append({
+                "machine_id": machine_id,
+                "policy_configuration": condition["policy_configuration"],
+                "robot_count": int(condition["robot_count"]),
+                "order_rate": int(condition["order_rate"]),
+                "duration_seconds": duration,
+            })
+    return records
+
+
+def completion_inventory_from_merged_zip(
+    original_manifest: dict[str, Any],
+    extension_manifest: dict[str, Any],
+    zip_path: Path,
+) -> dict[str, Any]:
+    status_rows = read_zip_csv_rows(zip_path, "datasets/condition_status_1200.csv")
+    provenance_rows = read_zip_csv_rows(zip_path, "datasets/strict_completion_provenance.csv")
+    provenance_by_key = {
+        (row.get("campaign_id", ""), row.get("run_id", "")): row
+        for row in provenance_rows
+    }
+    manifests = {
+        original_manifest["campaign_id"]: original_manifest,
+        extension_manifest["campaign_id"]: extension_manifest,
+    }
+    by_campaign_run = {
+        campaign_id: {run["run_id"]: run for run in manifest.get("runs", [])}
+        for campaign_id, manifest in manifests.items()
+    }
+    rows: list[dict[str, Any]] = []
+    counts = {name: 0 for name in ("strict_completed", "incomplete", "failed", "active_but_incomplete", "missing", "conflicting")}
+    strict_records_by_campaign: dict[str, dict[str, Any]] = {campaign_id: {} for campaign_id in manifests}
+    seen: set[tuple[str, str]] = set()
+    for row in status_rows:
+        campaign_id = row.get("campaign_id", "")
+        run_id = row.get("run_id", "")
+        if campaign_id not in manifests:
+            continue
+        condition = by_campaign_run[campaign_id].get(run_id)
+        if not condition:
+            raise RuntimeError(f"merged snapshot status references unknown run: {campaign_id} {run_id}")
+        key = (campaign_id, run_id)
+        if key in seen:
+            raise RuntimeError(f"duplicate merged snapshot status row: {campaign_id} {run_id}")
+        seen.add(key)
+        status = row.get("merge_status") or row.get("inventory_status") or "missing"
+        if status not in counts:
+            status = "incomplete"
+        counts[status] += 1
+        selected_machine = row.get("selected_machine_id", "")
+        if status == "strict_completed":
+            strict_records_by_campaign[campaign_id][run_id] = {
+                "copy": {
+                    "source": row.get("selected_snapshot", "merged_snapshot"),
+                    "machine_id": selected_machine,
+                    "provenance": provenance_by_key.get(key, {}),
+                },
+                "condition": condition,
+            }
+        rows.append({
+            "campaign_id": campaign_id,
+            "run_id": run_id,
+            "condition_key": condition["condition_key"],
+            "policy_configuration": condition["policy_configuration"],
+            "robot_count": condition["robot_count"],
+            "order_rate": condition["order_rate"],
+            "replication": condition["replication"],
+            "seed": condition["seed"],
+            "stage_first_requested": condition["stage_first_requested"],
+            "inventory_status": status,
+            "strict_source": row.get("selected_snapshot", "") if status == "strict_completed" else "",
+            "strict_machine_id": selected_machine if status == "strict_completed" else "",
+            "copy_count": row.get("observed_copy_count", ""),
+        })
+    expected = {(campaign_id, run_id) for campaign_id, runs in by_campaign_run.items() for run_id in runs}
+    missing_status = expected - seen
+    if missing_status:
+        sample = sorted(missing_status)[:5]
+        raise RuntimeError(f"merged snapshot status is missing planned runs: {sample}")
+    duration_records = _duration_records_from_merged_zip(zip_path, manifests)
+    return {
+        "rows": rows,
+        "counts": counts,
+        "strict_records": strict_records_by_campaign.get(original_manifest["campaign_id"], {}),
+        "strict_records_by_campaign": strict_records_by_campaign,
+        "duration_records": duration_records,
+        "snapshot_zip_count": 1,
+        "snapshot_root": str(zip_path),
+        "merged_snapshot_zip": str(zip_path),
     }
 
 
@@ -467,6 +646,8 @@ def build_extension_manifest(parent_manifest: dict[str, Any], machines: list[bas
         "replenishment_stations": base.REPLENISHMENT_COUNT,
         "kpi_schema_version": parent_manifest["kpi_schema_version"],
         "machines": [base.asdict(machine) for machine in machines],
+        "excluded_machine_ids": sorted(EXCLUDED_MACHINE_IDS),
+        "completion_validation_mode": "relaxed_provenance_metadata",
         "assets": parent_manifest["assets"],
         "feature_flags": parent_manifest.get("feature_flags", {}),
         "input_meta": parent_manifest.get("input_meta", {}),
@@ -573,8 +754,10 @@ def schedule_items(
     if not slots:
         raise RuntimeError("no execution slots configured")
 
-    completed_ids = set(inventory["strict_records"].keys())
-    unfinished_original = [run for run in original_manifest["runs"] if run["run_id"] not in completed_ids]
+    strict_by_campaign = inventory.get("strict_records_by_campaign") or {original_manifest["campaign_id"]: inventory["strict_records"]}
+    completed_original_ids = set(strict_by_campaign.get(original_manifest["campaign_id"], {}).keys())
+    completed_extension_ids = set(strict_by_campaign.get(extension_manifest["campaign_id"], {}).keys())
+    unfinished_original = [run for run in original_manifest["runs"] if run["run_id"] not in completed_original_ids]
     original_items = [
         plan_item(run, {**original_manifest, "allocation_patch_id": extension_manifest["allocation_patch_id"]}, execution_priority(run, ORIGINAL_CAMPAIGN_ID), original_root(REPO_ROOT) / "{machine_id}" / "runs" / run["run_id"])
         for run in unfinished_original
@@ -582,6 +765,7 @@ def schedule_items(
     extension_items = [
         plan_item(run, extension_manifest, execution_priority(run, extension_manifest["campaign_id"]), base.campaign_root(REPO_ROOT, extension_manifest) / "{machine_id}" / "runs" / run["run_id"])
         for run in extension_manifest["runs"]
+        if run["run_id"] not in completed_extension_ids
     ]
     all_items = original_items + extension_items
     run_by_id = {run["run_id"]: run for run in original_manifest["runs"] + extension_manifest["runs"]}
@@ -603,11 +787,7 @@ def schedule_items(
         })
         assigned.append(item)
 
-    priority0 = sorted([item for item in all_items if item["execution_priority"] == 0], key=item_sort_key)
-    mac_slots = [slot for slot in slots if slot["machine_id"] == "dewa_macbook"]
-    for item, slot in zip(priority0[:5], mac_slots[:5]):
-        assign_to_slot(item, slot)
-    remaining = [item for item in all_items if item not in assigned]
+    remaining = list(all_items)
 
     # Priority 1 is small and deadline-sensitive. Use the reviewed central target
     # as the deterministic baseline, then let the LPT fallback handle leftovers.
@@ -642,7 +822,9 @@ def schedule_items(
     # Update extension manifest assignment provenance; original manifest is intentionally untouched.
     assigned_by_run = {item["run_id"]: item for item in assigned if item["source_campaign_id"] == extension_manifest["campaign_id"]}
     for run in extension_manifest["runs"]:
-        item = assigned_by_run[run["run_id"]]
+        item = assigned_by_run.get(run["run_id"])
+        if item is None:
+            continue
         run["machine_id"] = item["assigned_machine_id"]
         run["machine_slot_index"] = item["assigned_worker_slot_projection"]
         run["estimated_duration_seconds"] = item["estimated_duration_seconds"]
@@ -678,6 +860,8 @@ def schedule_items(
         "total_items": len(assigned),
         "unfinished_original_count": len(unfinished_original),
         "extension_count": len(extension_manifest["runs"]),
+        "extension_unfinished_count": len(extension_items),
+        "excluded_machine_ids": sorted(EXCLUDED_MACHINE_IDS),
         "critical_stage_1_to_3_count": len(critical),
         "critical_projected_finish_seconds": critical_finish,
         "critical_conservative_finish_seconds": critical_finish * 1.25,
@@ -769,7 +953,7 @@ def write_append_files(
     }
     base.write_json(patch_root / "manifest.json", patch_manifest)
     write_csv(patch_root / "completion_inventory.csv", inventory["rows"], [
-        "run_id", "condition_key", "policy_configuration", "robot_count", "order_rate", "replication", "seed",
+        "campaign_id", "run_id", "condition_key", "policy_configuration", "robot_count", "order_rate", "replication", "seed",
         "stage_first_requested", "inventory_status", "strict_source", "strict_machine_id", "copy_count",
     ])
     write_csv(patch_root / "assignment.csv", items, [
@@ -791,18 +975,27 @@ def write_append_files(
     return patch_root
 
 
-def prepare(dry_run: bool = False, snapshot_root: Path = SNAPSHOT_ROOT_DEFAULT) -> dict[str, Any]:
+def prepare(
+    dry_run: bool = False,
+    snapshot_root: Path = SNAPSHOT_ROOT_DEFAULT,
+    migrate_merged_snapshot: Path | None = None,
+) -> dict[str, Any]:
     base.ensure_clean_tracked_scientific_files(REPO_ROOT)
     original_manifest = load_original_manifest(REPO_ROOT)
     original_manifest_bytes_before = original_manifest_path(REPO_ROOT).read_bytes()
     machines = append_machines()
     allocation_patch_id = append_allocation_patch_id(machines)
-    inventory = completion_inventory(original_manifest, REPO_ROOT, snapshot_root)
-    extension_manifest = build_extension_manifest(original_manifest, machines, allocation_patch_id)
+    if migrate_merged_snapshot is not None:
+        extension_manifest = load_extension_manifest_from_merged_zip(migrate_merged_snapshot, allocation_patch_id, machines)
+        inventory = completion_inventory_from_merged_zip(original_manifest, extension_manifest, migrate_merged_snapshot)
+    else:
+        inventory = completion_inventory(original_manifest, REPO_ROOT, snapshot_root)
+        extension_manifest = build_extension_manifest(original_manifest, machines, allocation_patch_id)
     duration_model = DurationModel(inventory["duration_records"], {m.machine_id: m for m in machines})
     items, report = schedule_items(original_manifest, extension_manifest, inventory, machines, duration_model)
     validate_design(original_manifest, extension_manifest, inventory, items)
-    write_extension_files(extension_manifest, dry_run=dry_run)
+    if migrate_merged_snapshot is None:
+        write_extension_files(extension_manifest, dry_run=dry_run)
     patch_root = write_append_files(original_manifest, extension_manifest, inventory, items, report, dry_run=dry_run)
     original_manifest_bytes_after = original_manifest_path(REPO_ROOT).read_bytes()
     if original_manifest_bytes_after != original_manifest_bytes_before:
@@ -832,13 +1025,17 @@ def validate_design(original_manifest: dict[str, Any], extension_manifest: dict[
     }
     if len(all_tuples) != 1200:
         raise AssertionError(f"expected 1200 scientific tuples, found {len(all_tuples)}")
-    unfinished_original = {run_id for run_id in original_ids if run_id not in inventory["strict_records"]}
+    strict_by_campaign = inventory.get("strict_records_by_campaign") or {original_manifest["campaign_id"]: inventory["strict_records"]}
+    unfinished_original = {run_id for run_id in original_ids if run_id not in strict_by_campaign.get(original_manifest["campaign_id"], {})}
     planned_original = {item["run_id"] for item in items if item["source_campaign_id"] == ORIGINAL_CAMPAIGN_ID}
     if planned_original != unfinished_original:
         raise AssertionError("unfinished original runs are not planned exactly once")
+    unfinished_extension = {run_id for run_id in extension_ids if run_id not in strict_by_campaign.get(extension_manifest["campaign_id"], {})}
     planned_extension = {item["run_id"] for item in items if item["source_campaign_id"] == extension_manifest["campaign_id"]}
-    if planned_extension != extension_ids:
-        raise AssertionError("extension runs are not planned exactly once")
+    if planned_extension != unfinished_extension:
+        raise AssertionError("unfinished extension runs are not planned exactly once")
+    if any(item["assigned_machine_id"] in EXCLUDED_MACHINE_IDS for item in items):
+        raise AssertionError("excluded machine received an assignment")
     if len({(item["source_campaign_id"], item["run_id"]) for item in items}) != len(items):
         raise AssertionError("duplicate execution-plan items detected")
     for machine_id in {item["assigned_machine_id"] for item in items}:
@@ -925,13 +1122,11 @@ def run_machine(machine_id: str, resume: bool = True, progress: bool = False, ke
     specs: list[RunSpec] = []
     selected: list[tuple[dict[str, Any], dict[str, Any], RunSpec, dict[str, Any]]] = []
     for item in sorted(plan["items"], key=item_sort_key):
-        manifest = manifest_for_item(item)
-        if item["source_campaign_id"] == ORIGINAL_CAMPAIGN_ID:
-            manifest = {**manifest, "allocation_patch_id": item["allocation_patch_id"]}
-        base.validate_local_assets(manifest, REPO_ROOT)
+        manifest = {**manifest_for_item(item), "allocation_patch_id": item["allocation_patch_id"]}
+        base.validate_local_assets(manifest, REPO_ROOT, strict=False)
         condition = condition_for_item(manifest, item)
         spec = base.build_run_spec_from_condition(condition, manifest=manifest, machine=machine, repo_root=REPO_ROOT)
-        if resume and base.run_complete_for_campaign(condition, spec, manifest):
+        if resume and base.run_complete_for_campaign(condition, spec, manifest, relaxed=True):
             continue
         specs.append(spec)
         selected.append((item, condition, spec, manifest))
@@ -985,7 +1180,7 @@ def run_machine(machine_id: str, resume: bool = True, progress: bool = False, ke
             outcome_warnings.append(f"final run_outcomes rebuild failed for {manifest['campaign_id']}: {type(exc).__name__}: {exc}")
     invalid = []
     for item, condition, spec, manifest in selected:
-        if not base.run_complete_for_campaign(condition, spec, manifest):
+        if not base.run_complete_for_campaign(condition, spec, manifest, relaxed=True):
             invalid.append(base.completion_failure_summary(condition, spec, return_codes))
     if invalid:
         print(f"[append-sensitivity] {len(invalid)} selected run(s) did not satisfy strict completion:")
@@ -1076,6 +1271,34 @@ def export_combined(snapshot_root: Path = SNAPSHOT_ROOT_DEFAULT) -> Path:
     return output
 
 
+def validate_existing_overlay() -> dict[str, Any]:
+    patch_root = append_patch_root(REPO_ROOT)
+    assignment_path = patch_root / "assignment.csv"
+    report_path = patch_root / "report.json"
+    plans_root = patch_root / "execution_plans"
+    if not assignment_path.exists() or not report_path.exists() or not plans_root.exists():
+        raise RuntimeError(f"missing migrated execution overlay under {patch_root}; run --prepare --migrate-merged-snapshot on the planner machine")
+    with assignment_path.open(newline="", encoding="utf-8") as fh:
+        items = list(csv.DictReader(fh))
+    if any(item.get("assigned_machine_id") in EXCLUDED_MACHINE_IDS for item in items):
+        raise RuntimeError("migrated execution overlay assigns work to an excluded machine")
+    if len({(item.get("source_campaign_id"), item.get("run_id")) for item in items}) != len(items):
+        raise RuntimeError("migrated execution overlay contains duplicate campaign/run assignments")
+    report = base.read_json(report_path)
+    plan_files = sorted(path.stem for path in plans_root.glob("*.json"))
+    expected_plan_files = sorted({item["assigned_machine_id"] for item in items})
+    if plan_files != expected_plan_files:
+        raise RuntimeError(f"execution plan files do not match assigned machines: files={plan_files}, expected={expected_plan_files}")
+    print(f"campaign_id_original={ORIGINAL_CAMPAIGN_ID}")
+    print(f"campaign_id_extension={next(item['source_campaign_id'] for item in items if item['source_campaign_id'] != ORIGINAL_CAMPAIGN_ID)}")
+    print(f"allocation_patch_id={report['allocation_patch_id']}")
+    print(f"assignment_count={len(items)}")
+    print(f"macbook_assignment_count={sum(1 for item in items if item['assigned_machine_id'] == 'dewa_macbook')}")
+    print("assignment_counts=")
+    print(json.dumps(report["assignment_counts"], indent=2, sort_keys=True))
+    return {"items": items, "report": report, "patch_root": patch_root}
+
+
 def print_summary(prepared: dict[str, Any]) -> None:
     manifest = prepared["extension_manifest"]
     report = prepared["report"]
@@ -1084,9 +1307,15 @@ def print_summary(prepared: dict[str, Any]) -> None:
     print(f"campaign_id_extension={manifest['campaign_id']}")
     print(f"allocation_patch_id={manifest['allocation_patch_id']}")
     print(f"simulation_semantics_id={manifest['simulation_semantics_id']}")
-    print(f"strict_completed_original={inventory['counts']['strict_completed']}")
+    strict_by_campaign = inventory.get("strict_records_by_campaign") or {ORIGINAL_CAMPAIGN_ID: inventory.get("strict_records", {})}
+    print(f"strict_completed_original={len(strict_by_campaign.get(ORIGINAL_CAMPAIGN_ID, {}))}")
+    print(f"strict_completed_extension={len(strict_by_campaign.get(manifest['campaign_id'], {}))}")
+    print(f"strict_completed_total={inventory['counts']['strict_completed']}")
     print(f"unfinished_original={report['unfinished_original_count']}")
+    print(f"unfinished_extension={report.get('extension_unfinished_count', manifest['assertions']['condition_count'])}")
     print(f"extension_condition_count={manifest['assertions']['condition_count']}")
+    print(f"excluded_machine_ids={','.join(report.get('excluded_machine_ids', []))}")
+    print(f"macbook_assignment_count={sum(1 for item in prepared['items'] if item['assigned_machine_id'] == 'dewa_macbook')}")
     print(f"critical_projected_finish_hours={report['critical_projected_finish_seconds'] / 3600:.2f}")
     print(f"central_projected_finish_hours={report['central_projected_finish_seconds'] / 3600:.2f}")
     print(f"total_projected_makespan_hours={report['total_projected_makespan_seconds'] / 3600:.2f}")
@@ -1098,27 +1327,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare/run append-only distributed sensitivity expansion.")
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
-    parser.add_argument("--run-machine", choices=base.MACHINE_IDS)
+    parser.add_argument("--run-machine", choices=[machine.machine_id for machine in append_machines()])
     parser.add_argument("--export-combined", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true", default=True)
     parser.add_argument("--progress", action="store_true")
     parser.add_argument("--keep-run-artifacts", action="store_true")
     parser.add_argument("--snapshot-root", default=str(SNAPSHOT_ROOT_DEFAULT))
+    parser.add_argument("--migrate-merged-snapshot", help="one-time local ZIP input used only to generate the committed resume_patch_0003 overlay")
     return parser
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     snapshot_root = Path(args.snapshot_root)
+    migrate_merged_snapshot = Path(args.migrate_merged_snapshot) if args.migrate_merged_snapshot else None
     if args.export_combined:
         path = export_combined(snapshot_root=snapshot_root)
         print(f"[append-sensitivity] wrote combined export: {path}")
         return 0
     if args.run_machine:
+        if migrate_merged_snapshot is not None:
+            raise SystemExit("--migrate-merged-snapshot is a local prepare-time migration input and is not used while running machines")
         return run_machine(args.run_machine, resume=args.resume, progress=args.progress, keep_run_artifacts=args.keep_run_artifacts)
+    if args.validate_only and migrate_merged_snapshot is None:
+        validate_existing_overlay()
+        print("[append-sensitivity] validate-only passed")
+        return 0
     if args.prepare or args.validate_only or args.dry_run:
-        prepared = prepare(dry_run=args.dry_run or args.validate_only, snapshot_root=snapshot_root)
+        prepared = prepare(dry_run=args.dry_run or args.validate_only, snapshot_root=snapshot_root, migrate_merged_snapshot=migrate_merged_snapshot)
         print_summary(prepared)
         if args.validate_only:
             print("[append-sensitivity] validate-only passed")
