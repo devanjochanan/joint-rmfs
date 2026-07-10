@@ -10,6 +10,7 @@ repository root which must be on sys.path).
 """
 
 import csv
+import hashlib
 import pickle
 import os
 import traceback
@@ -1103,20 +1104,35 @@ def assign_backlog_orders(universe: Inventory):
                                                   station_id_cap_df)
 
 
-def draw_storage_from_generated_file(universe: Inventory):
-    # ── PATCH C: load charging config, apply policy, register chargers ────
-    # Runs before initRobots(), so Robot class policy reaches the fleet.
+def _configure_charging_treatment(universe: Inventory, *, placement_source: str, config_path: str | None) -> dict:
+    """Apply only the declared charging-treatment configuration.
+
+    Grid chargers are registered later by layout parsing, and only when this
+    helper selects ``legacy_union``.  Primary runs therefore cannot silently
+    inherit historical grid/static-config chargers.
+    """
     import json as _json
     from model.robot import Robot as _Robot
     from src.rmfs.decisions.charging.config import canonical_charging_config_path
-    _cfg_path = os.environ.get("RMFS_CHARGING_CONFIG", "") or str(canonical_charging_config_path())
+    source = str(placement_source or "reference_off").strip().lower()
+    if source not in {"reference_off", "salsa_adaptive_on", "legacy_union"}:
+        raise ValueError(f"unknown charging placement source: {source}")
+    universe.charger_cells.clear()
+    universe.active_charger_cells.clear()
+    universe.charging_placement_source = source
+    universe.charging_config_hash = None
+    universe.charging_declared_count = 0
+    if source == "reference_off":
+        universe.charging_enabled = False
+        universe.disable_active_charging = True
+        return {"source": source, "config_path": None, "effective_coordinate_hash": hashlib.sha256(b"[]").hexdigest()}
+
+    _cfg_path = config_path or str(canonical_charging_config_path())
     _cfg = {}
-    if os.path.exists(_cfg_path):
-        try:
-            with open(_cfg_path, "r", encoding="utf-8") as _f:
-                _cfg = _json.load(_f)
-        except Exception as _e:
-            print(f"[charging] could not read {_cfg_path}: {_e}")
+    if not os.path.exists(_cfg_path):
+        raise FileNotFoundError(f"charging config required for {source}: {_cfg_path}")
+    with open(_cfg_path, "r", encoding="utf-8") as _f:
+        _cfg = _json.load(_f)
     # Apply policy to the Robot class BEFORE the fleet is created.
     for _k, _a in (("battery_low_pct", "BATTERY_LOW_PCT"),
                    ("battery_charged_pct", "BATTERY_CHARGED_PCT"),
@@ -1132,17 +1148,46 @@ def draw_storage_from_generated_file(universe: Inventory):
     for _pos in _cfg.get("active_charger_positions", []):
         universe.active_charger_cells.add((int(_pos[1]), int(_pos[0])))
     universe.disable_active_charging = bool(_cfg.get("disable_active_charging", False))
-    # Charging is ON by default (realistic battery model). It is active whenever
-    # chargers exist (config positions OR grid value-2 cells). Set
-    # RMFS_CHARGING_ENABLED=0 to fall back to the old no-battery behavior.
+    universe.charging_config_hash = hashlib.sha256(
+        _json.dumps(_cfg, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    universe.charging_declared_count = int(_cfg.get("num_chargers", len(_cfg.get("charger_positions", []))))
+    universe.charging_enabled = bool(universe.charger_cells)
+    effective = sorted((int(x), int(y)) for x, y in universe.charger_cells)
+    return {"source": source, "config_path": _cfg_path,
+            "effective_coordinate_hash": hashlib.sha256(_json.dumps(effective).encode("utf-8")).hexdigest()}
+
+
+def _uses_grid_charger_cells(placement_source: str) -> bool:
+    """Only historical replay uses grid value-2 cells as functional chargers."""
+    return str(placement_source).strip().lower() == "legacy_union"
+
+
+def _refresh_effective_charger_metadata(universe: Inventory) -> None:
+    cells = sorted((int(x), int(y)) for x, y in getattr(universe, "charger_cells", set()))
+    universe.effective_charger_count = len(cells)
+    universe.effective_charger_coordinate_hash = hashlib.sha256(repr(cells).encode("utf-8")).hexdigest()
+
+
+def draw_storage_from_generated_file(universe: Inventory):
+    # Runs before initRobots(), so Robot class policy reaches the fleet.
+    _source = os.environ.get("RMFS_CHARGING_PLACEMENT_SOURCE", "reference_off")
+    _configured = _configure_charging_treatment(
+        universe,
+        placement_source=_source,
+        config_path=os.environ.get("RMFS_CHARGING_CONFIG", "") or None,
+    )
     _env = os.environ.get("RMFS_CHARGING_ENABLED", "").strip().lower()
     _explicit_off = _env in {"0", "false", "no", "off"}
-    universe.charging_enabled = (not _explicit_off) and bool(universe.charger_cells)
+    if _explicit_off:
+        universe.charging_enabled = False
+        universe.charger_cells.clear()
+        universe.active_charger_cells.clear()
     if universe.charging_enabled:
         print(f"[charging] ON: {len(universe.charger_cells)} charger cells "
               f"(active={len(universe.active_charger_cells)}), policy "
               f"{_Robot.BATTERY_LOW_PCT}/{_Robot.BATTERY_CHARGED_PCT}/"
-              f"{_Robot.BATTERY_INTERRUPT_PCT} from {os.path.basename(_cfg_path)}")
+              f"{_Robot.BATTERY_INTERRUPT_PCT} from {_configured['source']}")
     else:
         print("[charging] OFF (RMFS_CHARGING_ENABLED=0, or no chargers found)")
 
@@ -1221,7 +1266,8 @@ def draw_storage_from_generated_file(universe: Inventory):
                     universe.pod_manager.add_pod(obj)
                 elif value == 2:
                     obj.shape = 'square 2'
-                    universe.charger_cells.add((x, y))   # PATCH C: grid-encoded charger
+                    if _uses_grid_charger_cells(getattr(universe, "charging_placement_source", "reference_off")):
+                        universe.charger_cells.add((x, y))
 
                 if obj_left_value != 1:
                     graph_pod.add_edge(obj_key, obj_left_coordinate, weight=100)
@@ -1418,6 +1464,7 @@ def draw_storage_from_generated_file(universe: Inventory):
             total_cols += 1
             universe.addObject(obj)
 
+    _refresh_effective_charger_metadata(universe)
     universe.set_warehouse_size([total_rows, total_cols])
 
 

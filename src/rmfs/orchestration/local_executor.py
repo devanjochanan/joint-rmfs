@@ -20,6 +20,7 @@ from src.rmfs.orchestration.run_spec import RunSpec
 from src.rmfs.orchestration.kpi_schema import (
     FULL_KPI_V3_SCHEMA_VERSION,
     FULL_KPI_V3_FIELDS,
+    FULL_KPI_V3_REQUIRED_FIELDS,
     FULL_KPI_V3_ALL_FIELDS,
     derive_v3_fields,
     empty_v3_kpi_payload,
@@ -341,6 +342,7 @@ def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
         env["PPS_RL_MODEL_PATH"] = spec.pps_model_path
     if spec.charging_enabled is not None:
         env["RMFS_CHARGING_ENABLED"] = "1" if spec.charging_enabled else "0"
+    env["RMFS_CHARGING_PLACEMENT_SOURCE"] = str(spec.charging_placement_source or "reference_off")
     if spec.charging_config_path:
         env["RMFS_CHARGING_CONFIG"] = spec.charging_config_path
     if spec.rts_policy_mode == "rts_rl_explicit":
@@ -629,7 +631,9 @@ def derive_sensitivity_kpi_v3_payload(
     if generated_orders is None:
         generated_orders = len(orders)
     payload["orders_available_in_source"] = int(generated_orders or 0)
-    payload["orders_released"] = len(orders)
+    # OrderManager.orders may contain loaded future demand.  Prefer the explicit
+    # released counter when the runtime provides it.
+    payload["orders_released"] = int(getattr(warehouse, "orders_released", len(orders)) or 0)
 
     orders_started = 0
     orders_completed_count = 0
@@ -742,28 +746,36 @@ def derive_sensitivity_kpi_v3_payload(
         payload["robot_seconds_idle"] = _safe_float(getattr(warehouse, "total_robot_idle", 0.0))
 
     # 6. Charging primitives
+    charging_counters = getattr(warehouse, "charging_counters", {}) or {}
     for chg_field in ("charging_requests", "charging_sessions_started", "charging_sessions_completed", "charging_sessions_interrupted", "drive_by_charging_events", "charger_route_failures", "charger_unavailable_events", "charger_claims_created", "charger_claims_released", "stale_charger_claims_detected", "robots_died_from_battery", "first_low_soc_time_s", "first_robot_death_time_s"):
-        payload[chg_field] = getattr(warehouse, chg_field, None)
+        payload[chg_field] = charging_counters.get(chg_field, getattr(warehouse, chg_field, None))
 
     payload["initial_battery_energy_j"] = getattr(warehouse, "initial_battery_energy_j", None)
     payload["final_battery_energy_j"] = getattr(warehouse, "final_battery_energy_j", None)
-    payload["minimum_final_robot_soc"] = min([getattr(r, "soc", 1.0) for r in robots] or [1.0])
-    payload["mean_final_robot_soc"] = sum([getattr(r, "soc", 1.0) for r in robots]) / len(robots) if robots else 1.0
+    final_soc = [
+        _safe_float(getattr(r, "battery_pct", (100.0 * _safe_float(getattr(r, "battery_level_j", 0.0)) / _safe_float(getattr(r, "BATTERY_CAPACITY_J", 1.0)))))
+        for r in robots
+    ]
+    payload["minimum_final_robot_soc"] = min(final_soc) if final_soc else 100.0
+    payload["mean_final_robot_soc"] = sum(final_soc) / len(final_soc) if final_soc else 100.0
     payload["charging_energy_added_kj"] = getattr(warehouse, "charging_energy_added_kj", None)
 
     # 7. Replenishment primitives
+    replenishment_counters = getattr(warehouse, "replenishment_counters", {}) or {}
     for rep_field in ("proactive_replenishment_requests", "post_pick_replenishment_requests", "rts_replenish_store_selected", "rts_replenish_store_masked", "replenishment_jobs_created", "replenishment_jobs_started", "replenishment_jobs_completed", "replenishment_units_restored", "replenishment_pending_end", "replenishment_queued_end", "replenishment_active_end", "replenishment_cap_blocks_proactive", "replenishment_cap_blocks_post_pick", "replenishment_cap_blocks_rts", "replenishment_station_busy_seconds", "replenishment_station_idle_seconds", "pods_awaiting_replenishment_end", "max_replenishment_request_age_s"):
-        payload[rep_field] = getattr(warehouse, rep_field, None)
+        payload[rep_field] = replenishment_counters.get(rep_field, getattr(warehouse, rep_field, None))
 
     payload["replenishment_trips_completed"] = int(getattr(warehouse, "replenishment_trips", 0) or 0)
 
     # 8. Committed-next and ownership primitives
+    registry = getattr(warehouse, "committed_next_registry", None)
+    committed_counters = getattr(registry, "lifecycle_counters", {}) or {}
     for cn_field in ("committed_next_reservations_created", "committed_next_reservations_activated", "committed_next_reservations_cancelled_charging", "committed_next_reservations_cancelled_other", "committed_next_reservations_stale_end", "committed_next_jobs_restored", "committed_next_jobs_lost", "committed_next_duplicate_restorations", "max_committed_next_reservation_age_s", "stale_rts_ownership_markers_end", "stale_replenishment_markers_end", "max_ownership_marker_age_s"):
-        payload[cn_field] = getattr(warehouse, cn_field, None)
+        payload[cn_field] = committed_counters.get(cn_field, getattr(warehouse, cn_field, None))
 
     # 9. Station detail sidecar and derived metrics
     station_detail = {}
-    p_stations = getattr(warehouse, "picking_stations", []) or []
+    p_stations = getattr(getattr(warehouse, "station_manager", None), "picking_stations", []) or []
     for ps in p_stations:
         ps_id = str(getattr(ps, "station_id", getattr(ps, "id", ps)))
         station_detail[ps_id] = {
@@ -823,7 +835,8 @@ def derive_sensitivity_kpi_v3_payload(
     runtime_invariants = finalization.get("runtime_invariants", {}) or {}
     payload["congestion_detected"] = bool(reason == "congestion" or runtime_invariants.get("hard_violation_count", 0))
     payload["simulation_termination_reason"] = reason
-    payload["simulation_completed_full_horizon"] = bool(reason == "completed" or (reason is None and _safe_float(getattr(warehouse, "time", 0.0)) >= sim_time))
+    elapsed_sim_seconds = _safe_float(getattr(warehouse, "_tick", 0.0)) * _safe_float(getattr(warehouse, "tick_to_second", spec.tick_to_second))
+    payload["simulation_completed_full_horizon"] = bool(reason == "completed" or (reason is None and elapsed_sim_seconds >= sim_time))
 
     payload["robot_count"] = len(robots)
     payload["simulated_seconds"] = sim_time
@@ -831,7 +844,7 @@ def derive_sensitivity_kpi_v3_payload(
     derived = derive_v3_fields(payload)
     payload.update(derived)
 
-    payload["kpi_complete"] = all(payload.get(f) is not None for f in FULL_KPI_V3_FIELDS)
+    payload["kpi_complete"] = all(payload.get(f) is not None for f in FULL_KPI_V3_REQUIRED_FIELDS)
     return payload
 
 
@@ -887,7 +900,7 @@ def write_kpi_interval_snapshot(
     dead_cnt = 0
 
     for r in robots:
-        state = getattr(r, "state", "").lower()
+        state = getattr(r, "current_state", "").lower()
         if "charging" in state or "charge" in state:
             charging_cnt += 1
         elif "waiting" in state:
@@ -1534,6 +1547,12 @@ def run_worker(spec: RunSpec):
             "pps_rl_enabled": normalize_pps_mode(spec.pps_mode) == "ppo",
             "charging_enabled": spec.charging_enabled,
             "charging_config_path": spec.charging_config_path,
+            "charging_placement_source": spec.charging_placement_source,
+            "charging_config_sha256": spec.charging_config_sha256,
+            "charging_realized_layout_sha256": spec.charging_realized_layout_sha256,
+            "charging_declared_count": spec.charging_declared_count,
+            "effective_charger_count": getattr(final_warehouse, "effective_charger_count", None) if final_warehouse is not None else None,
+            "effective_charger_coordinate_hash": getattr(final_warehouse, "effective_charger_coordinate_hash", None) if final_warehouse is not None else None,
             "persist_final_state": bool(spec.persist_final_state),
             "campaign_id": spec.campaign_id,
             "allocation_patch_id": spec.allocation_patch_id,

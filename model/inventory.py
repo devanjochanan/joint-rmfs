@@ -571,10 +571,7 @@ class Inventory(Universe):
         }
 
     def prune_stale_pending_replenishment(self) -> int:
-        """Task 3 Part E2/E3: drop pending replenishment requests that can no longer
-        validly consume the cap (missing/ineligible pod, no valid SKU, or exceeded
-        bounded age), releasing each entry's cap contribution exactly once. The hard
-        cap VALUE is unchanged; this only removes entries that can never dispatch."""
+        """Revalidate aged requests without treating temporary ownership as failure."""
         if not self.pending_replenishment_dispatches:
             return 0
         now = int(self._tick)
@@ -584,19 +581,40 @@ class Inventory(Universe):
             pod = self.pod_manager.get_pod_by_id(int(req["pod_id"]))
             skus = req.get("skus_to_replenish") or []
             age = now - int(req.get("created_tick", now))
-            invalid = (
-                pod is None
-                or getattr(pod, "is_awaiting_replenishment", False)
-                or getattr(pod, "rts_return_in_progress", False)
-                or getattr(pod, "committed_next_owner_robot_id", None)
-                or not skus
-                or age > self.replenishment_pending_stale_ticks
-            )
-            if invalid:
+            remove = pod is None or not skus
+            if pod is not None and not remove and age > self.replenishment_pending_stale_ticks:
+                # Ownership by RTS/committed-next is a valid temporary blocker.
+                # Recompute need and only drop an actually obsolete request.
+                plan = self.evaluate_pod_replenishment_eligibility(pod)
+                needed = bool(plan.get("eligible"))
+                equivalent_job = any(
+                    int(getattr(getattr(job, "pod", None), "pod_id", -1)) == int(pod.pod_id)
+                    and self._is_replenishment_commitment_job(job)
+                    for job in self.job_queue
+                ) or any(
+                    int(getattr(getattr(getattr(robot, "job", None), "pod", None), "pod_id", -1)) == int(pod.pod_id)
+                    and self._is_replenishment_commitment_job(getattr(robot, "job", None))
+                    for robot in self._iter_robots()
+                )
+                if equivalent_job:
+                    remove = True
+                elif needed:
+                    # Refresh the age; the request remains a single cap entry.
+                    req["created_tick"] = now
+                    refreshed = sorted({int(sku) for sku in (plan.get("trigger_skus") or skus)})
+                    req["skus_to_replenish"] = refreshed or list(skus)
+                else:
+                    remove = True
+            if remove:
                 removed += 1
                 if pod is not None:
                     pod.has_pending_replenishment_dispatch = False
-                    pod.must_replenish_before_pick = False
+                    # Clear only when no remaining valid mandatory request exists.
+                    pod.must_replenish_before_pick = any(
+                        int(other.get("pod_id", -1)) == int(pod.pod_id)
+                        and bool(other.get("guaranteed_on_release", False))
+                        for other in self.pending_replenishment_dispatches if other is not req
+                    )
                 self._bump_repl_counter("replenishment_pending_pruned")
             else:
                 kept.append(req)

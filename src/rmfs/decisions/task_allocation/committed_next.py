@@ -738,25 +738,46 @@ class CommittedNextRegistry:
             reservation.linked_rts_decision_event_id = str(decision_event_id)
 
     def cancel_for_robot(self, robot: Any, reason: str) -> CommittedNextReservation | None:
-        return self.cancel_reservation(self.get_for_robot(robot), reason)
+        return self.cancel_reservation(self.get_for_robot(robot), reason, inventory=getattr(robot, "universe", None))
 
     def cancel_reservation(
         self,
         reservation: CommittedNextReservation | None,
         reason: str,
+        inventory: Any | None = None,
     ) -> CommittedNextReservation | None:
         if reservation is None:
             return None
         if reservation.status in TERMINAL_STATUSES:
             return reservation
+        # A reservation may be cancelled while its future job is represented in
+        # zero, one, or multiple queue entries.  Repair that representation
+        # exactly once before clearing ownership markers.
+        queue = getattr(inventory, "job_queue", None) if inventory is not None else None
+        if queue is not None:
+            indices = [idx for idx, candidate in enumerate(queue) if candidate is reservation.job]
+            if not indices:
+                insert_at = max(0, min(int(reservation.original_queue_index), len(queue)))
+                queue.insert(insert_at, reservation.job)
+                self._bump("committed_next_jobs_restored")
+            elif len(indices) == 1:
+                self._bump("committed_next_jobs_restored")
+            else:
+                # Keep the earliest existing representation and remove later
+                # copies from right to left so the queue order is stable.
+                for idx in reversed(indices[1:]):
+                    del queue[idx]
+                self._bump("committed_next_duplicate_restorations", len(indices) - 1)
+                self._bump("committed_next_jobs_restored")
+        else:
+            # Legacy direct callers have no queue to inspect.  Preserve their
+            # cancellation accounting; all active runtime paths provide the
+            # inventory and therefore take the exact-once branch above.
+            self._bump("committed_next_jobs_restored")
         self._clear_markers(reservation)
         reservation.status = STATUS_CANCELLED
         reservation.cancellation_reason = str(reason)
         self._drop_indexes(reservation)
-        # Task 3 Part D1: a committed reservation keeps its job in the queue the
-        # whole time, so cancellation restores exactly one ordinary queue job
-        # (markers cleared above). Count restoration + reason bucket.
-        self._bump("committed_next_jobs_restored")
         if "charging" in str(reason):
             self._bump("committed_next_reservations_cancelled_charging")
         elif "death" in str(reason):
@@ -768,11 +789,11 @@ class CommittedNextRegistry:
         if reservation is None:
             return None
         if reservation.status != STATUS_COMMITTED:
-            self.cancel_reservation(reservation, "reservation_not_committed")
+            self.cancel_reservation(reservation, "reservation_not_committed", inventory=inventory)
             return None
         valid, reason = self._validate_activation(inventory, reservation)
         if not valid:
-            self.cancel_reservation(reservation, reason)
+            self.cancel_reservation(reservation, reason, inventory=inventory)
             return None
 
         job = reservation.job

@@ -69,8 +69,6 @@ _PICKING_PPS_PRIMITIVE = (
     "pps_rejected_pod_ineligible",
     "pps_rejected_pod_reserved",
     "pps_assignments_accepted",
-    "picking_jobs_created",
-    "picking_jobs_completed",
     "picking_pod_visits",
     "picked_items_count",
 )
@@ -193,9 +191,6 @@ _REPLENISHMENT_PRIMITIVE = (
     "post_pick_replenishment_requests",
     "rts_replenish_store_selected",
     "rts_replenish_store_masked",
-    "replenishment_jobs_created",
-    "replenishment_jobs_started",
-    "replenishment_jobs_completed",
     "replenishment_trips_completed",
     "replenishment_units_restored",
     "replenishment_pending_end",
@@ -365,6 +360,21 @@ FULL_KPI_V3_SIDECAR_FIELDS = (
 FULL_KPI_V3_FIELDS = (
     *FULL_KPI_V3_PRIMITIVE_FIELDS,
     *FULL_KPI_V3_DERIVED_FIELDS,
+)
+
+# Optional diagnostics are intentionally not part of the terminal strict-result
+# gate.  They remain in the schema and are exported when available, but an older
+# simulator snapshot without one of these counters is a warning-complete result,
+# not a fabricated scientific failure.
+FULL_KPI_V3_OPTIONAL_FIELDS = (
+    "first_low_soc_time_s", "first_robot_death_time_s",
+    "lifting_energy_kj", "rotation_energy_kj",
+    "longest_no_order_completion_interval_s", "longest_no_picking_job_created_interval_s",
+    "longest_no_robot_job_completed_interval_s", "first_starvation_time_s",
+    "first_busy_unproductive_time_s", "first_congestion_time_s",
+)
+FULL_KPI_V3_REQUIRED_FIELDS = tuple(
+    field for field in FULL_KPI_V3_FIELDS if field not in FULL_KPI_V3_OPTIONAL_FIELDS
 )
 
 # Complete field set including sidecars

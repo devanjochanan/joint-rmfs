@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import json
 import os
 import platform
@@ -85,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     timestamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     export_filename = f"host_export_{args.host_id}_{timestamp}.zip"
 
-    output_dir = Path(args.output_dir or REPO_ROOT).resolve()
+    output_dir = Path(args.output_dir or host_data_root / "exports").resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     export_zip_path = output_dir / export_filename
 
@@ -125,14 +126,23 @@ def main(argv: list[str] | None = None) -> int:
     runs_dir = host_data_root / "runs"
     outcomes_csv_path = host_data_root / "run_outcomes.csv"
 
+    archive_hashes: dict[str, str] = {}
+    def add_bytes(zf, arcname: str, content: bytes) -> None:
+        zf.writestr(arcname, content)
+        archive_hashes[arcname] = hashlib.sha256(content).hexdigest()
+
+    def add_file(zf, path: Path, arcname: str) -> None:
+        content = path.read_bytes()
+        add_bytes(zf, arcname, content)
+
     with zipfile.ZipFile(export_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         # 1. Add ledger and export metadata
-        zf.writestr("host_ledger.json", json.dumps(asdict(ledger), indent=2, default=str))
-        zf.writestr("export_metadata.json", json.dumps(metadata, indent=2, default=str))
+        add_bytes(zf, "host_ledger.json", json.dumps(asdict(ledger), indent=2, default=str).encode("utf-8"))
+        add_bytes(zf, "export_metadata.json", json.dumps(metadata, indent=2, default=str).encode("utf-8"))
 
         # 2. Add run_outcomes.csv if it exists
         if outcomes_csv_path.exists():
-            zf.write(outcomes_csv_path, "run_outcomes.csv")
+            add_file(zf, outcomes_csv_path, "run_outcomes.csv")
             print("Included run_outcomes.csv")
 
         # 3. Add run artifacts for completed conditions
@@ -140,7 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         for cond in ledger.assigned_conditions:
             run_id = cond.get("run_id")
             key = cond.get("condition_key")
-            if not run_id or key not in ledger.completed_conditions:
+            state = ledger.state_for(str(key)) if key else {}
+            if not run_id or state.get("status") not in {"completed_strict", "completed_with_warnings"}:
                 continue
 
             run_dir = runs_dir / run_id
@@ -148,16 +159,25 @@ def main(argv: list[str] | None = None) -> int:
             summary_path = run_dir / "worker_summary.json"
             snapshots_path = run_dir / "kpi_snapshots.jsonl"
 
-            if spec_path.exists():
-                zf.write(spec_path, f"runs/{run_id}/run_spec.json")
-            if summary_path.exists():
-                zf.write(summary_path, f"runs/{run_id}/worker_summary.json")
+            # A result counts only when both its immutable spec and terminal
+            # summary can actually be transferred.
+            if not spec_path.exists() or not summary_path.exists():
+                continue
+            add_file(zf, spec_path, f"runs/{run_id}/run_spec.json")
+            add_file(zf, summary_path, f"runs/{run_id}/worker_summary.json")
             if snapshots_path.exists():
-                zf.write(snapshots_path, f"runs/{run_id}/kpi_snapshots.jsonl")
+                add_file(zf, snapshots_path, f"runs/{run_id}/kpi_snapshots.jsonl")
 
             added_runs += 1
+            ledger.mark_exported(str(key), export_filename)
 
-        print(f"Included run spec & summary for {added_runs} completed runs.")
+        # Preserve all failed attempt summaries in the ledger and attach a
+        # file-level manifest for Git-free ingestion.
+        add_bytes(zf, "sha256_manifest.json", json.dumps({"files": archive_hashes}, indent=2, sort_keys=True).encode("utf-8"))
+
+    ledger.save(ledger_path)
+
+    print(f"Included run spec & summary for {added_runs} completed runs.")
 
     print(f"Export complete. File size: {export_zip_path.stat().st_size / 1024:.1f} KB")
     return 0

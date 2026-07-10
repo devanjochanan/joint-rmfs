@@ -57,7 +57,7 @@ from src.rmfs.orchestration.run_spec import RunSpec  # noqa: E402
 from src.rmfs.rl.rts.training.checkpoint import resolve_policy_checkpoint_id  # noqa: E402
 from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint  # noqa: E402
 from src.rmfs.runtime_io.run_profiles import TICK_TO_SECOND  # noqa: E402
-from src.rmfs.orchestration.kpi_schema import FULL_KPI_V3_FIELDS  # noqa: E402
+from src.rmfs.orchestration.kpi_schema import FULL_KPI_V3_FIELDS, FULL_KPI_V3_REQUIRED_FIELDS  # noqa: E402
 
 CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v2"
 SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v1"
@@ -210,6 +210,11 @@ def validation_warning(message: str) -> None:
 
 
 def dirty_tracked_files(repo_root: Path = REPO_ROOT) -> list[str]:
+    if not (Path(repo_root) / ".git").exists():
+        # Autonomous hosts may run an extracted immutable source snapshot.
+        # SourceIdentity, not Git, is the executable identity there.
+        validation_warning(".git is unavailable; skipping Git dirty-state advisory")
+        return []
     try:
         output = subprocess.check_output(
             ["git", "status", "--porcelain", "--untracked-files=no"],
@@ -217,8 +222,9 @@ def dirty_tracked_files(repo_root: Path = REPO_ROOT) -> list[str]:
             text=True,
             stderr=subprocess.STDOUT,
         )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"could not verify clean tracked files: {exc.output.strip()}") from exc
+    except (subprocess.CalledProcessError, OSError) as exc:
+        validation_warning(f"could not inspect Git dirty state: {exc}")
+        return []
     dirty = []
     for line in output.splitlines():
         if not line.strip():
@@ -228,6 +234,8 @@ def dirty_tracked_files(repo_root: Path = REPO_ROOT) -> list[str]:
 
 
 def ensure_clean_tracked_scientific_files(repo_root: Path = REPO_ROOT) -> None:
+    if not (Path(repo_root) / ".git").exists():
+        return
     scientific = set(SCIENTIFIC_TRACKED_PATHS)
     dirty = [
         path
@@ -1912,18 +1920,31 @@ def execute_host(
     ledger_path = host_data_root / "host_ledger.json"
     manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 
+    source_ident = SourceIdentity.compute(REPO_ROOT)
+    immutable_hashes = {
+        key: str(value)
+        for key, value in manifest.get("assets", {}).items()
+        if key.endswith("sha256") and value
+    }
     if ledger_path.exists():
         print(f"[sensitivity] Loading existing HostLedger from {ledger_path}")
         ledger = HostLedger.load(ledger_path)
         if ledger.campaign_id != manifest["campaign_id"]:
             raise RuntimeError(f"Ledger campaign_id {ledger.campaign_id} does not match manifest {manifest['campaign_id']}")
+        if ledger.manifest_sha256 != manifest_sha:
+            raise RuntimeError("host ledger manifest hash differs from the loaded manifest")
+        if ledger.source_tree_hash and ledger.source_tree_hash != source_ident.source_tree_hash:
+            raise RuntimeError("host source-tree hash differs from the assigned source identity")
+        if ledger.immutable_hashes and ledger.immutable_hashes != immutable_hashes:
+            raise RuntimeError("host immutable asset/input hashes differ from the assigned identity")
+        if ledger.kpi_schema_version and ledger.kpi_schema_version != manifest.get("kpi_schema_version"):
+            raise RuntimeError("host ledger KPI schema differs from the loaded manifest")
     else:
         print(f"[sensitivity] Creating new HostLedger under {host_data_root}")
         assigned = [
             run for run in manifest["runs"]
             if run["machine_id"] == machine_id
         ]
-        source_ident = SourceIdentity.compute(REPO_ROOT)
         ledger = HostLedger.create(
             host_id=machine_id,
             campaign_id=manifest["campaign_id"],
@@ -1931,25 +1952,42 @@ def execute_host(
             assigned_conditions=assigned,
             kpi_schema_version=manifest.get("kpi_schema_version"),
             source_tree_hash=source_ident.source_tree_hash,
+            immutable_hashes=immutable_hashes,
         )
         ledger.save(ledger_path)
 
     runs_dir = host_data_root / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     
-    def validate_identity(condition, spec_dict, summary):
-        if not spec_dict:
-            return False
-        for key in ("policy_configuration", "robot_count", "order_rate_per_hour", "replication", "seed"):
-            spec_val = spec_dict.get(key)
-            cond_key = "order_rate" if key == "order_rate_per_hour" else key
-            cond_val = condition.get(cond_key)
-            if spec_val != cond_val:
-                return False
-        return True
+    def classify_result(condition, spec_dict, summary):
+        """Classify a terminal result consistently for launch and restart."""
+        if not spec_dict or not isinstance(summary, dict):
+            return "quarantined"
+        for key in ("policy_configuration", "robot_count", "order_rate_per_hour", "replication"):
+            expected = condition.get("order_rate" if key == "order_rate_per_hour" else key)
+            if spec_dict.get(key) != expected:
+                return "quarantined"
+        expected_seed = int(condition["seed"])
+        if spec_dict.get("campaign_seed", spec_dict.get("rts_random_seed")) != expected_seed:
+            return "quarantined"
+        if int(spec_dict.get("ticks", -1)) != int(condition["ticks"]):
+            return "quarantined"
+        if summary.get("status") != "success" or not summary.get("finalization", {}).get("finalized", False):
+            return "failed"
+        if summary.get("kpi_schema_version") != manifest.get("kpi_schema_version"):
+            return "quarantined"
+        if not summary.get("kpi_complete", False):
+            # A result with all required fields but missing optional diagnostics
+            # remains useful.  Never elevate an incomplete KPI payload to strict.
+            required = FULL_KPI_V3_REQUIRED_FIELDS if manifest.get("kpi_schema_version") == "full_kpi_v3" else SENSITIVITY_KPI_FIELDS
+            payload = summary.get("kpi", summary)
+            if all(payload.get(field) is not None for field in required if field != "kpi_complete"):
+                return "completed_with_warnings"
+            return "failed"
+        return "completed_strict"
 
     print("[sensitivity] Reconciling ledger with local results directory...")
-    rec_result = ledger.reconcile_with_outputs(runs_dir, validate_fn=validate_identity)
+    rec_result = ledger.reconcile_with_outputs(runs_dir, classify_fn=classify_result)
     if rec_result["reconciled"]:
         print(f"[sensitivity] Reconciled {len(rec_result['reconciled'])} already completed conditions.")
         ledger.save(ledger_path)
@@ -2037,70 +2075,52 @@ def execute_host(
     previous_log_cap = os.environ.get("RMFS_WORKER_LOG_CAP_MB")
     os.environ["RMFS_WORKER_LOG_CAP_MB"] = "5"
 
+    eligible_stages = {int(stage) for stage in stages}
     try:
         while True:
-            cond = ledger.next_condition()
-            if cond is None:
-                print("[sensitivity] All assigned conditions finished successfully!")
+            batch: list[tuple[dict[str, Any], RunSpec, float]] = []
+            while len(batch) < int(machine.max_workers):
+                cond = ledger.next_condition(eligible_stages=eligible_stages)
+                if cond is None:
+                    break
+                spec = build_run_spec_from_condition(cond, manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+                object.__setattr__(spec, "runtime_root", runs_dir / cond["run_id"])
+                ledger.start_condition(str(cond["condition_key"]))
+                batch.append((cond, spec, time.perf_counter()))
+            if not batch:
                 break
-            
-            if int(cond["stage_first_requested"]) not in {int(stage) for stage in stages}:
-                print(f"[sensitivity] Skipping condition {cond['condition_key']} (stage {cond['stage_first_requested']})")
-                continue
-
-            spec = build_run_spec_from_condition(cond, manifest=manifest, machine=machine, repo_root=REPO_ROOT)
-            object.__setattr__(spec, "runtime_root", runs_dir / cond["run_id"])
-            
-            print(f"\n[sensitivity] Starting condition: {cond['condition_key']} (run_id: {cond['run_id']})")
-            ledger.mark_started(cond["condition_key"])
             ledger.save(ledger_path)
-
-            start_t = time.perf_counter()
-            completed = []
+            print(f"[sensitivity] launching {len(batch)} independent conditions (worker budget={machine.max_workers})")
+            completed_by_run: dict[str, dict[str, Any]] = {}
             try:
                 completed = run_specs(
-                    [spec],
-                    max_workers=1,
-                    progress=progress,
-                    on_run_complete=_reclaim_on_complete,
-                    before_launch=_before_launch,
+                    [spec for _cond, spec, _started in batch], max_workers=int(machine.max_workers),
+                    progress=progress, on_run_complete=_reclaim_on_complete, before_launch=_before_launch,
                 )
+                completed_by_run = {item["spec"].run_id: item for item in completed}
             except Exception as exc:
-                print(f"[sensitivity] Worker exception for {cond['run_id']}: {exc}", file=sys.stderr)
-            
-            elapsed = time.perf_counter() - start_t
-            
-            success = False
-            return_code = -1
-            if completed:
-                return_code = completed[0]["return_code"]
-                if return_code == 0:
-                    summary = load_worker_summary(spec.runtime_root)
-                    if summary.get("status") == "success" and (
-                        summary.get("kpi_complete") or manifest.get("kpi_schema_version") == "full_kpi_v3"
-                    ):
-                        success = True
-            
-            if success:
-                print(f"[sensitivity] Condition completed successfully in {elapsed:.1f}s")
-                ledger.mark_completed(cond["condition_key"], {
-                    "return_code": return_code,
-                    "elapsed_seconds": elapsed,
-                    "status": "success",
-                })
-            else:
+                # run_specs drains active children before raising.  Reconciliation below
+                # records each condition independently, preserving healthy siblings.
+                print(f"[sensitivity] worker batch callback/executor exception: {exc}", file=sys.stderr)
+
+            for cond, spec, started in batch:
+                item = completed_by_run.get(spec.run_id, {})
+                return_code = int(item.get("return_code", -1))
                 summary = load_worker_summary(spec.runtime_root)
-                error_msg = summary.get("error_message", "unknown error")
-                error_type = summary.get("error_type", "SimulationError")
-                print(f"[sensitivity] Condition failed (attempt {ledger.retry_counts.get(cond['condition_key'], 0) + 1}): {error_type}: {error_msg}")
-                ledger.mark_failed(cond["condition_key"], {
-                    "return_code": return_code,
-                    "elapsed_seconds": elapsed,
-                    "status": "failed",
-                    "error_type": error_type,
-                    "error_message": error_msg,
-                }, max_retries=max_retries)
-            
+                classification = classify_result(cond, spec.to_json_dict(), summary)
+                elapsed = time.perf_counter() - started
+                if classification in {"completed_strict", "completed_with_warnings"}:
+                    ledger.mark_completed(str(cond["condition_key"]), {
+                        "run_id": spec.run_id, "result_path": str(spec.runtime_root / "worker_summary.json"),
+                        "return_code": return_code, "elapsed_seconds": elapsed,
+                    }, warning_count=int(classification == "completed_with_warnings"))
+                else:
+                    ledger.mark_failed(str(cond["condition_key"]), {
+                        "return_code": return_code, "elapsed_seconds": elapsed,
+                        "status": summary.get("status", "failure"),
+                        "error_type": summary.get("error_type", classification),
+                        "error_message": summary.get("error_message", classification),
+                    }, max_retries=max_retries, quarantined=classification == "quarantined")
             ledger.save(ledger_path)
             rebuild_outcomes_for_host()
 
@@ -2129,6 +2149,14 @@ def execute_host(
         })
         write_json(machine_summary_path, msum)
 
+    terminal_failures = [
+        key for key, state in ledger.condition_states.items()
+        if state.get("status") in {"failed_final", "quarantined"}
+        and int((ledger._condition_by_key(key) or {}).get("stage_first_requested", 0)) in eligible_stages
+    ]
+    if terminal_failures:
+        print(f"[sensitivity] {len(terminal_failures)} selected conditions remain unusable.", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -68,6 +68,7 @@ class FakePod:
         self.rts_return_in_progress = False
         self.has_pending_replenishment_dispatch = True
         self.must_replenish_before_pick = True
+        self.skus = {10: {"current_qty": 0, "limit_qty": 10}}
 
 class FakeJob:
     def __init__(self, jid, pod):
@@ -91,8 +92,8 @@ check("C_no_charger_waiting", (not ok) and r._waiting_for_charger and r._claimed
 
 u = FakeUniverse({(10,5),(20,5)}); r=make_robot(u,5,5,15); r.set_move=fail_for({(10,5)})
 ok = r._start_charging_trip()
-check("C_first_fail_second_ok", ok and r._claimed_charger==(20,5) and (10,5) in u._unroutable_charger_cells,
-      "distance-order retry; mark first invalid")
+check("C_first_fail_second_ok", ok and r._claimed_charger==(20,5) and (10,5) not in getattr(u, "_unroutable_charger_cells", set()),
+      "distance-order retry; transient route failure is not permanently blacklisted")
 
 u = FakeUniverse({(10,5),(20,5)}); r=make_robot(u,soc_pct=15); r.set_move=fail_for({(10,5),(20,5)})
 ok = r._start_charging_trip()
@@ -181,16 +182,20 @@ req_stale   = {"pod_id":"2","skus_to_replenish":[10],"created_tick":100}    # ag
 req_missing = {"pod_id":"999","skus_to_replenish":[10],"created_tick":4900} # pod gone
 req_nosku   = {"pod_id":"1","skus_to_replenish":[],"created_tick":4900}     # no sku
 inv.pending_replenishment_dispatches = [req_valid, req_stale, req_missing, req_nosku]
+inv.job_queue = []
+inv._iter_robots = lambda: []
+inv.evaluate_pod_replenishment_eligibility = lambda pod: {"eligible": True, "trigger_skus": [10]}
 removed = inv.prune_stale_pending_replenishment()
-check("E_prune_removes_invalid", removed == 3 and inv.pending_replenishment_dispatches == [req_valid],
-      "stale-age + missing-pod + no-sku pending pruned; valid kept")
-check("E_prune_release_once", inv.replenishment_counters.get("replenishment_pending_pruned") == 3,
-      "each stale entry releases cap exactly once")
+check("E_prune_removes_invalid", removed == 2 and inv.pending_replenishment_dispatches == [req_valid, req_stale]
+      and req_stale["created_tick"] == 5000,
+      "missing/no-sku pruned; aged demand is revalidated and refreshed")
+check("E_prune_release_once", inv.replenishment_counters.get("replenishment_pending_pruned") == 2,
+      "each obsolete entry releases cap exactly once")
 # new request admitted after release: composition reflects the single remaining pending
 inv.job_queue = []
 inv._iter_robots = lambda: []          # shadow method: no active robots in this fixture
 comp = inv.replenishment_cap_composition()
-check("E_composition_sums", comp["pending"] == 1 and comp["total"] == 1 and comp["hard_cap"] == 11
+check("E_composition_sums", comp["pending"] == 2 and comp["total"] == 2 and comp["hard_cap"] == 11
       and comp["active"] == 0 and comp["queued"] == 0,
       "cap composition exposes active/queued/pending; sums to total")
 

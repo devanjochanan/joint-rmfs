@@ -43,6 +43,12 @@ class RunSpec:
     pps_model_path: str | None = None
     charging_enabled: bool | None = None
     charging_config_path: str | None = None
+    # New campaign records must name their charging treatment explicitly.
+    # ``legacy_union`` is reserved for pre-field manifests and historical replay.
+    charging_placement_source: str = "reference_off"
+    charging_config_sha256: str | None = None
+    charging_realized_layout_sha256: str | None = None
+    charging_declared_count: int | None = None
     persist_final_state: bool = False
     keep_runtime_artifacts: bool = False
     detail_db: bool = False
@@ -77,6 +83,9 @@ class RunSpec:
     kpi_schema_version: str | None = None
     policy_configuration: str | None = None
     replication: int | None = None
+    # Kept for campaign manifests produced before the host-ledger migration.
+    # This is the campaign-level replication seed, not an additional RNG stream.
+    campaign_seed: int | None = None
     rts_checkpoint_sha256: str | None = None
     pps_model_sha256: str | None = None
     kpi_snapshot_cadence_seconds: list[float] | None = None
@@ -148,6 +157,10 @@ class RunSpec:
     @classmethod
     def from_json_dict(cls, data):
         payload = dict(data)
+        if "charging_placement_source" not in payload:
+            # Do not silently reinterpret a legacy manifest as the new no-charge
+            # control. Historical specs retain their previous union semantics.
+            payload["charging_placement_source"] = "legacy_union"
         for derived in (
             "netlogo_steps_requested",
             "simulated_horizon_seconds",

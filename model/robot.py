@@ -202,9 +202,11 @@ class Robot(Object):
             self._enter_waiting_for_charger("no_chargers_configured")
             return False
         occupied = getattr(wh, 'occupied_chargers', {})
-        invalid = getattr(wh, '_unroutable_charger_cells', None)
-        if invalid is None:
-            invalid = wh._unroutable_charger_cells = set()
+        # Only setup validation may populate this permanent exclusion set.  A
+        # route failure can be transient (traffic/graph rebuild), so it belongs
+        # to this attempt rather than blacklisting the charger for every robot.
+        invalid = getattr(wh, '_unroutable_charger_cells', set()) or set()
+        transient_failed = set()
         available = [c for c in charger_cells if c not in occupied and c not in invalid]
         if not available:
             self._enter_waiting_for_charger("no_available_charger")
@@ -215,7 +217,7 @@ class Robot(Object):
             try:
                 self.set_move(dest, graph=wh.graph)
             except Exception:
-                invalid.add(nearest)                       # C3: don't retry known-invalid
+                transient_failed.add(nearest)
                 self._incr_charging_counter("charger_route_failures")
                 continue
             self.current_state = "going_to_charge"
@@ -255,6 +257,14 @@ class Robot(Object):
         self._claim_created_tick = None
         self._claim_progress_pos = None
         self._incr_charging_counter("charger_claims_released")
+
+    def _release_stale_charger_claim_and_route(self):
+        """Release ownership before clearing every charging-specific movement cue."""
+        self._release_charger()
+        self.route_stop_points = []
+        self.destination = None
+        self.movement_plan = None
+        self.charge_after_current_task = False
 
     @staticmethod
     def _checkMovementDirection(p1, p2):
@@ -580,7 +590,7 @@ class Robot(Object):
         if self.current_state == "going_to_charge" and not self.route_stop_points:
             if (self.battery_pct >= self.BATTERY_CHARGED_PCT
                     or self._should_interrupt_charging()):
-                self._release_charger()
+                self._release_stale_charger_claim_and_route()
                 self.current_state = "idle"
             return  # stay put; _apply_drive_by_charging adds charge each tick
         if self.picking_item_in_pod():
