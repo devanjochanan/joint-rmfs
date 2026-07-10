@@ -1722,7 +1722,12 @@ class Inventory(Universe):
             for item in order_items:
                 order.add_sku(item['item_id'], item['item_quantity'])
 
+            # These lines enter the active demand system with the order below.
+            # Record them at the same transition as the order release.
+            pending_line_count = len(order_items)
+
             self.order_manager.add_order(order)
+            self.order_manager.order_lines_released_count += pending_line_count
             # DB
             if not self.fast_train:
                 upsert_order_history(order.order_id, arrival_time=self._tick, db_path=self.sqlite_db_path)

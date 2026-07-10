@@ -109,6 +109,9 @@ def _spec(tmp_path: Path, run_id: str = "run") -> RunSpec:
         campaign_seed=42,
         rts_checkpoint_sha256="a" * 64,
         pps_model_sha256="p" * 64,
+        # This worker unit test exercises resident finalization only; it does
+        # not construct a campaign-local charger config.
+        charging_placement_source="legacy_union",
     )
 
 

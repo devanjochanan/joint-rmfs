@@ -15,6 +15,8 @@ def _plan():
 def test_primary_matrix_is_bundled_two_treatment_720_full_kpi_v3():
     plan, assets = _plan()
     assert plan["kpi_schema_version"] == "full_kpi_v3"
+    assert "charging_config_relative_path" not in plan["assets"]
+    assert "charging_config_sha256" not in plan["assets"]
     # Bundled two-treatment comparison: 2 x (15,20,25) x (400,500,600) x 40 = 720.
     assert len(plan["runs"]) == 720
     assert {run["policy_configuration"] for run in plan["runs"]} == {"all_off", "all_on_rl"}

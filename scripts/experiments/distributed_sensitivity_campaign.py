@@ -26,6 +26,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.experiments.capacity_study_order_rate import (  # noqa: E402
+    # Retained as a legacy-union compatibility constant only.  Primary campaign
+    # preparation never resolves, validates, or hashes this static config.
     DEFAULT_CHARGING_CONFIG_PATH,
     DEFAULT_RTS_CHECKPOINT_DIR,
     PICKER_COUNT,
@@ -61,6 +63,11 @@ from src.rmfs.rl.rts.training.policy_loader import load_policy_from_checkpoint  
 from src.rmfs.runtime_io.run_profiles import TICK_TO_SECOND  # noqa: E402
 from src.rmfs.orchestration.kpi_schema import FULL_KPI_V3_FIELDS, FULL_KPI_V3_REQUIRED_FIELDS, FULL_KPI_V3_SCHEMA_VERSION  # noqa: E402
 from scripts.data.build_adaptive_hybrid import build as build_salsa_adaptive_config, load_grid as load_salsa_grid  # noqa: E402
+from src.rmfs.experiments.sensitivity_allocation import (  # noqa: E402
+    MachineAllocationProfile,
+    allocation_config_rows as treatment_allocation_config_rows,
+    allocate_stage as treatment_allocate_stage,
+)
 
 CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v3"
 SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v1"
@@ -130,6 +137,11 @@ class Machine:
     effective_steps_per_second: float
     eligible_stages: tuple[int, ...]
     anydesk_id: str | None = None
+    allowed_treatments: tuple[str, ...] = ("all_off", "all_on_rl")
+    reference_effective_steps_per_second: float | None = None
+    rl_effective_steps_per_second: float | None = None
+    max_rl_workers: int | None = None
+    rl_rate_source: str = "fallback_reference_measured"
 
 
 @dataclass(frozen=True)
@@ -265,6 +277,21 @@ def ensure_clean_tracked_scientific_files(repo_root: Path = REPO_ROOT) -> None:
         )
 
 
+def validate_source_identity(manifest: dict[str, Any], repo_root: Path = REPO_ROOT) -> SourceIdentity:
+    """Validate the executable source tree in both Git and extracted snapshots."""
+    source = SourceIdentity.compute(repo_root)
+    expected = manifest.get("source_tree_hash")
+    if expected and source.source_tree_hash != expected:
+        raise RuntimeError(
+            "source-tree hash differs from the assigned campaign identity: "
+            f"got {source.source_tree_hash}, expected {expected}"
+        )
+    # Git is advisory for portable operation; protected dirty inputs remain a
+    # hard error when Git metadata is available.
+    ensure_clean_tracked_scientific_files(repo_root)
+    return source
+
+
 def linux_physical_core_count() -> int | None:
     cpuinfo = Path("/proc/cpuinfo")
     if not cpuinfo.exists():
@@ -310,6 +337,9 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
             max_workers=8,
             effective_steps_per_second=414.64,
             eligible_stages=all_stages,
+            reference_effective_steps_per_second=414.64,
+            rl_effective_steps_per_second=414.64,
+            max_rl_workers=8,
         ),
         Machine(
             machine_id="win_admin",
@@ -320,6 +350,9 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
             max_workers=8,
             effective_steps_per_second=395.66,
             eligible_stages=all_stages,
+            reference_effective_steps_per_second=395.66,
+            rl_effective_steps_per_second=395.66,
+            max_rl_workers=8,
         ),
         Machine(
             machine_id="citi_angiebow",
@@ -329,6 +362,9 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
             max_workers=4,
             effective_steps_per_second=363.25,
             eligible_stages=all_stages,
+            reference_effective_steps_per_second=363.25,
+            rl_effective_steps_per_second=363.25,
+            max_rl_workers=4,
         ),
         Machine(
             machine_id="codex_local",
@@ -338,33 +374,47 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
             max_workers=8,
             effective_steps_per_second=300.0,
             eligible_stages=all_stages,
+            reference_effective_steps_per_second=300.0,
+            rl_effective_steps_per_second=300.0,
+            max_rl_workers=8,
         ),
         Machine(
             machine_id="alisha_pc",
             os="windows",
             repository=r"C:\Users\ayual\Program TA\netlogo-rmfs",
-            python=sys.executable,
+            python=r"C:\Users\ayual\Program TA\torch-gpu\Scripts\python.exe",
             max_workers=8,
             effective_steps_per_second=330.0,
             eligible_stages=all_stages,
+            allowed_treatments=("all_off",),
+            reference_effective_steps_per_second=330.0,
+            max_rl_workers=0,
+            rl_rate_source="not_applicable",
         ),
         Machine(
             machine_id="dewa_macbook",
             os="macos",
-            repository="",
-            python="python3",
+            repository="/Users/710502/netlogo-rmfs",
+            python="/Users/710502/torch-gpu/bin/python",
             max_workers=8,
             effective_steps_per_second=260.0,
-            eligible_stages=(1, 2, 3),
+            eligible_stages=all_stages,
+            allowed_treatments=("all_off",),
+            reference_effective_steps_per_second=260.0,
+            max_rl_workers=0,
+            rl_rate_source="not_applicable",
         ),
         Machine(
             machine_id="citi_gojira",
             os="linux",
-            repository="/home/citi/Documents/Dewa's Sandbox/netlogo-rmfs",
-            python="/home/citi/Documents/Dewa's Sandbox/torch-gpu/bin/python",
+            repository="/home/ma012/Documents/I like Gojira/netlogo-rmfs",
+            python="/home/ma012/Documents/I like Gojira/torch-gpu/bin/python",
             max_workers=24,
             effective_steps_per_second=850.0,
             eligible_stages=all_stages,
+            reference_effective_steps_per_second=850.0,
+            rl_effective_steps_per_second=850.0,
+            max_rl_workers=24,
         ),
     ]
 
@@ -373,23 +423,36 @@ def stable_json_hash(payload: Any, length: int = 12) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()[:length]
 
 
+def machine_allocation_profiles(machines: list[Machine]) -> list[MachineAllocationProfile]:
+    profiles = []
+    for machine in machines:
+        allowed = tuple(machine.allowed_treatments)
+        reference_rate = float(machine.reference_effective_steps_per_second or machine.effective_steps_per_second)
+        max_rl_workers = int(machine.max_rl_workers if machine.max_rl_workers is not None else (machine.max_workers if "all_on_rl" in allowed else 0))
+        rl_rate = machine.rl_effective_steps_per_second
+        if "all_on_rl" in allowed and rl_rate is None:
+            rl_rate = float(machine.effective_steps_per_second)
+        profiles.append(MachineAllocationProfile(
+            machine_id=machine.machine_id,
+            max_workers=int(machine.max_workers),
+            allowed_treatments=allowed,
+            eligible_stages=tuple(int(stage) for stage in machine.eligible_stages),
+            reference_effective_steps_per_second=reference_rate,
+            rl_effective_steps_per_second=float(rl_rate) if rl_rate is not None else None,
+            max_rl_workers=max_rl_workers,
+            rl_rate_source=machine.rl_rate_source,
+        ))
+    return profiles
+
+
 def allocation_config_rows(machines: list[Machine]) -> list[dict[str, Any]]:
-    return [
-        {
-            "machine_id": machine.machine_id,
-            "max_workers": int(machine.max_workers),
-            "eligible_stages": list(machine.eligible_stages),
-            "effective_steps_per_second": float(machine.effective_steps_per_second),
-            "rate_semantics": "aggregate_machine_throughput_at_configured_worker_count",
-        }
-        for machine in sorted(machines, key=lambda item: item.machine_id)
-    ]
+    return treatment_allocation_config_rows(machine_allocation_profiles(machines))
 
 
 def generate_allocation_patch_id(machines: list[Machine], rl_overhead_multiplier: float) -> str:
     payload = {
         "allocation_patch_label": ALLOCATION_PATCH_LABEL,
-        "allocation_algorithm": "eligible_worker_slots_lpt.v1",
+        "allocation_algorithm": "treatment_aware_constrained_lpt.v1",
         "machine_allocation_config": allocation_config_rows(machines),
         "condition_cost_model": {
             "base_backend_steps": BACKEND_STEPS_PER_RUN,
@@ -661,10 +724,6 @@ def resolve_assets(args: argparse.Namespace) -> AssetBundle:
         training_artifact=args.rts_training_artifact,
     )
 
-    charging_path = Path(args.charging_config_path or DEFAULT_CHARGING_CONFIG_PATH)
-    if not charging_path.is_absolute():
-        charging_path = REPO_ROOT / charging_path
-
     # Perform strict validation of canonical or overridden assets
     validate_assets_strict(
         repo_root=REPO_ROOT,
@@ -698,8 +757,11 @@ def resolve_assets(args: argparse.Namespace) -> AssetBundle:
         rts_training_latest_relative_path=latest_rel_path,
         rts_lineage=final_lineage,
         rts_lineage_source_relative_dir=relative_to_repo(final_source) if final_source is not None else None,
-        charging_config_relative_path=relative_to_repo(charging_path),
-        charging_config_sha256=sha256_file(charging_path),
+        # Primary treatments generate and hash their charger configuration in
+        # the condition workspace.  The historical static legacy_union JSON is
+        # intentionally not a required campaign asset.
+        charging_config_relative_path="",
+        charging_config_sha256="",
     )
 
 
@@ -935,7 +997,6 @@ def build_scientific_identity(
     input_identity: dict[str, Any],
 ) -> dict[str, Any]:
     rts_dir = REPO_ROOT / assets.rts_checkpoint_relative_dir
-    charging_path = REPO_ROOT / assets.charging_config_relative_path
     return {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
         "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
@@ -945,12 +1006,13 @@ def build_scientific_identity(
         "order_rates": list(ORDER_RATES),
         "picking_stations": PICKER_COUNT,
         "replenishment_stations": REPLENISHMENT_COUNT,
-        "replication_range": {"first": 1, "last": 20},
+        "replication_range": {"first": 1, "last": 40},
         "seed_formula": "seed = 41 + replication",
         "seed_base_minus_one": SEED_BASE_MINUS_ONE,
         "simulated_seconds": SIMULATED_SECONDS,
         "backend_steps_per_full_run": BACKEND_STEPS_PER_RUN,
         "tick_to_second": TICK_TO_SECOND,
+        "source_tree_hash": SourceIdentity.compute(REPO_ROOT).source_tree_hash,
         "input_identity": input_identity,
         "scenario_layout_identity": {
             "scenario_hash": short_hash(input_identity),
@@ -966,8 +1028,6 @@ def build_scientific_identity(
             "rts_metadata_canonical_sha256": canonical_json_sha256(rts_dir / "metadata.json"),
             "rts_feature_schema_canonical_sha256": canonical_json_sha256(rts_dir / "feature_schema.json"),
             "rts_feature_schema_id": assets.rts_feature_schema_id,
-            "charging_config_relative_path": assets.charging_config_relative_path,
-            "charging_config_canonical_sha256": canonical_json_sha256(charging_path),
         },
         "run_profile": {
             "order_generation_mode": "shuffled_historical_cycle",
@@ -984,7 +1044,7 @@ def build_scientific_identity(
 
 
 def generate_campaign_id_from_identity(scientific_identity: dict[str, Any]) -> str:
-    return f"sensitivity_full_kpi_v2_{stable_json_hash(scientific_identity)}"
+    return f"sensitivity_full_kpi_v3_{stable_json_hash(scientific_identity)}"
 
 
 def allocate_stage(
@@ -994,79 +1054,21 @@ def allocate_stage(
     machines: list[Machine],
     rl_overhead_multiplier: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    assigned_counts = {machine.machine_id: 0 for machine in machines}
-    assigned_steps = {machine.machine_id: 0.0 for machine in machines}
-    slots = []
-    for machine in machines:
-        if int(stage) not in set(int(item) for item in machine.eligible_stages):
-            continue
-        slot_count = max(1, int(machine.max_workers))
-        slot_rate = float(machine.effective_steps_per_second) / float(slot_count)
-        for slot_index in range(slot_count):
-            slots.append({
-                "machine": machine,
-                "slot_index": slot_index,
-                "slot_rate": slot_rate,
-                "assigned_steps": 0.0,
-            })
-    if not slots and rows:
-        raise RuntimeError(f"stage {stage} has no eligible machine slots")
-    ordered = sorted(
+    allocated, summary = treatment_allocate_stage(
         rows,
-        key=lambda row: (
-            -estimate_condition_steps(row, rl_overhead_multiplier=rl_overhead_multiplier),
-            int(row["stage_first_requested"]),
-            row["policy_configuration"],
-            int(row["robot_count"]),
-            int(row["order_rate"]),
-            int(row["replication"]),
-        ),
+        stage=stage,
+        profiles=machine_allocation_profiles(machines),
+        estimate_steps=lambda row: estimate_condition_steps(row, rl_overhead_multiplier=rl_overhead_multiplier),
     )
-    allocated = []
-    for row in ordered:
-        slot = min(
-            slots,
-            key=lambda item: (
-                item["assigned_steps"] / float(item["slot_rate"]),
-                assigned_counts[item["machine"].machine_id],
-                item["machine"].machine_id,
-                item["slot_index"],
-            ),
-        )
-        machine = slot["machine"]
-        estimated_steps = estimate_condition_steps(row, rl_overhead_multiplier=rl_overhead_multiplier)
-        assigned_counts[machine.machine_id] += 1
-        assigned_steps[machine.machine_id] += estimated_steps
-        slot["assigned_steps"] += estimated_steps
-        allocated.append({
-            **row,
-            "machine_id": machine.machine_id,
-            "machine_slot_index": int(slot["slot_index"]),
-            "estimated_backend_steps": estimated_steps,
-            "estimated_cost_model": {
-                "base_backend_steps": BACKEND_STEPS_PER_RUN,
-                "rl_overhead_multiplier": rl_overhead_multiplier,
-                "effective_steps_per_second_semantics": "aggregate_machine_throughput_at_configured_worker_count",
-                "slot_rate_steps_per_second": slot["slot_rate"],
-            },
-        })
-    projection = {
-        machine.machine_id: assigned_steps[machine.machine_id] / float(machine.effective_steps_per_second)
-        for machine in machines
-    }
-    return allocated, {
-        "stage": stage,
-        "name": STAGE_NAMES[stage],
-        "new_runs": len(allocated),
-        "assigned_counts": assigned_counts,
-        "assigned_estimated_steps": assigned_steps,
-        "projected_finish_seconds": projection,
-        "eligible_machines": [
-            machine.machine_id
-            for machine in machines
-            if int(stage) in set(int(item) for item in machine.eligible_stages)
-        ],
-    }
+    for row in allocated:
+        row["estimated_cost_model"] = {
+            "base_backend_steps": BACKEND_STEPS_PER_RUN,
+            "rl_overhead_multiplier": rl_overhead_multiplier,
+            "effective_steps_per_second_semantics": "aggregate_machine_throughput_at_configured_worker_count",
+            "slot_rate_steps_per_second": row["allocation_rate_steps_per_second"],
+            "rate_source": row["allocation_rate_source"],
+        }
+    return allocated, {**summary, "name": STAGE_NAMES[stage]}
 
 
 def add_run_identity(
@@ -1096,6 +1098,7 @@ def add_run_identity(
         "tick_to_second": TICK_TO_SECOND,
         "scenario_hash": scenario_hash,
         "layout_hash": layout_hash,
+        "source_tree_hash": scientific_identity["source_tree_hash"],
         "kpi_schema_version": FULL_KPI_V3_SCHEMA_VERSION,
         "rts_checkpoint_id": assets.rts_checkpoint_id,
         "rts_checkpoint_sha256": assets.rts_model_sha256,
@@ -1125,6 +1128,7 @@ def add_run_identity(
         "scenario_id": f"scenario_{scenario_hash}",
         "scenario_hash": scenario_hash,
         "layout_hash": layout_hash,
+        "source_tree_hash": scientific_identity["source_tree_hash"],
         "run_spec_identity": {
             "run_id": run_id,
             "campaign_id": campaign_id,
@@ -1139,6 +1143,7 @@ def add_run_identity(
             "tick_to_second": TICK_TO_SECOND,
             "rts_checkpoint_sha256": assets.rts_model_sha256,
             "pps_model_sha256": assets.pps_model_sha256,
+            "source_tree_hash": scientific_identity["source_tree_hash"],
         },
     }
 
@@ -1215,9 +1220,10 @@ def build_campaign_plan(
         "allocation_patch_id": allocation_patch_id,
         "allocation_patch_label": ALLOCATION_PATCH_LABEL,
         "allocation_config": {
-            "algorithm": "eligible_worker_slots_lpt.v1",
+            "algorithm": "treatment_aware_constrained_lpt.v1",
             "machine_allocation_config": allocation_config_rows(machines),
             "effective_steps_per_second_semantics": "aggregate_machine_throughput_at_configured_worker_count",
+            "allocation_waves": {"critical_stages": [1, 2, 3], "best_effort_stages": [4]},
         },
         "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "source_tree_hash": SourceIdentity.compute(REPO_ROOT).source_tree_hash,
@@ -1243,10 +1249,17 @@ def build_campaign_plan(
         "machines": [asdict(machine) for machine in machines],
         "machine_config_hash": hash_machine_config(machines),
         "machine_rates_used": {
-            machine.machine_id: machine.effective_steps_per_second
+            machine.machine_id: {
+                "reference_effective_steps_per_second": machine.reference_effective_steps_per_second or machine.effective_steps_per_second,
+                "rl_effective_steps_per_second": machine.rl_effective_steps_per_second or (machine.effective_steps_per_second if "all_on_rl" in machine.allowed_treatments else None),
+                "rl_rate_source": machine.rl_rate_source,
+            }
             for machine in machines
         },
-        "assets": asdict(assets),
+        "assets": {
+            key: value for key, value in asdict(assets).items()
+            if key not in {"charging_config_relative_path", "charging_config_sha256"}
+        },
         "treatment_contracts": {
             policy: treatment_execution_contract(policy, assets)
             for policy in POLICY_CONFIGURATIONS
@@ -1315,6 +1328,8 @@ def dry_run_assertions(
         "pair_seed_mismatches": seed_mismatch,
         "pair_layout_mismatches": layout_mismatch,
         "pair_duplicate_members": duplicate_member,
+        "critical_wave_runs": sum(1 for run in runs if run.get("allocation_wave") == "critical"),
+        "best_effort_wave_runs": sum(1 for run in runs if run.get("allocation_wave") == "best_effort"),
     }
     # ── Hard assertions (Sections 3, 4, 5) ──
     if assertions["stage_new_runs"] != {"1": 18, "2": 39, "3": 39, "4": 624}:
@@ -1336,6 +1351,15 @@ def dry_run_assertions(
         raise AssertionError(f"expected 360 complete pairs, got {assertions['complete_pair_count']}")
     if assertions["pair_seed_mismatches"] or assertions["pair_layout_mismatches"] or assertions["pair_duplicate_members"]:
         raise AssertionError("paired seed/layout/member invariant violated")
+    if assertions["critical_wave_runs"] != 96 or assertions["best_effort_wave_runs"] != 624:
+        raise AssertionError("allocation wave counts must be 96 critical / 624 best-effort")
+    for machine_id in ("alisha_pc", "dewa_macbook"):
+        if machine_id not in machine_ids:
+            continue
+        if any(run["machine_id"] == machine_id and run["policy_configuration"] == "all_on_rl" for run in runs):
+            raise AssertionError(f"{machine_id} received an ineligible all_on_rl run")
+        if not any(run["machine_id"] == machine_id and run["policy_configuration"] == "all_off" and run.get("allocation_wave") == "critical" for run in runs):
+            raise AssertionError(f"{machine_id} lacks a critical compatible run")
     return assertions
 
 
@@ -1345,10 +1369,6 @@ def machine_map(manifest: dict[str, Any]) -> dict[str, Machine]:
 
 def campaign_root(repo_root: Path, manifest: dict[str, Any]) -> Path:
     return repo_root / manifest["campaign_root_relative"]
-
-
-def shard_relative_path(machine_id: str) -> Path:
-    return Path("shards") / f"{machine_id}_shard.json"
 
 
 def write_launchers(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
@@ -1365,7 +1385,7 @@ def write_launchers(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
                 (
                     f"& \"{machine.python}\" \"scripts\\experiments\\distributed_sensitivity_campaign.py\" "
                     f"--manifest \"{rel_manifest}\" --machine-id \"{machine.machine_id}\" "
-                    "--execute-host --resume --progress"
+                    "--execute-host --stage 1 --stage 2 --stage 3 --resume --progress"
                 ),
                 "",
             ])
@@ -1378,7 +1398,7 @@ def write_launchers(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
                 (
                     f"exec {json.dumps(machine.python)} scripts/experiments/distributed_sensitivity_campaign.py "
                     f"--manifest {json.dumps(rel_manifest_posix.as_posix())} --machine-id {json.dumps(machine.machine_id)} "
-                    "--execute-host --resume --progress"
+                    "--execute-host --stage 1 --stage 2 --stage 3 --resume --progress"
                 ),
                 "",
             ])
@@ -1397,30 +1417,34 @@ def write_campaign_files(manifest: dict[str, Any], *, dry_run: bool = False) -> 
     if root.exists():
         raise FileExistsError(f"campaign root already exists; refusing to overwrite immutable campaign: {root}")
     root.mkdir(parents=True)
-    shard_paths = {}
+    assignment_paths = {}
     for machine in manifest["machines"]:
         machine_id = machine["machine_id"]
-        shard_runs = [
+        assigned_runs = [
             run for run in manifest["runs"]
             if run["machine_id"] == machine_id
         ]
-        shard = {
-            "schema_version": CAMPAIGN_SCHEMA_VERSION,
-            "campaign_id": manifest["campaign_id"],
-            "allocation_patch_id": manifest["allocation_patch_id"],
-            "simulation_semantics_id": manifest["simulation_semantics_id"],
-            "machine_id": machine_id,
-            "runs": shard_runs,
-            "stage_counts": {
-                str(stage): sum(1 for run in shard_runs if run["stage_first_requested"] == stage)
-                for stage in (1, 2, 3, 4)
-            },
-        }
-        path = root / shard_relative_path(machine_id)
-        write_json(path, shard)
-        shard_paths[machine_id] = path.relative_to(root).as_posix()
+        paths = {}
+        for wave, stages in (("critical", (1, 2, 3)), ("best_effort", (4,))):
+            assignment = {
+                "schema_version": CAMPAIGN_SCHEMA_VERSION,
+                "campaign_id": manifest["campaign_id"],
+                "allocation_patch_id": manifest["allocation_patch_id"],
+                "simulation_semantics_id": manifest["simulation_semantics_id"],
+                "machine_id": machine_id,
+                "allocation_wave": wave,
+                "assigned_conditions": [run for run in assigned_runs if int(run["stage_first_requested"]) in stages],
+                "stage_counts": {
+                    str(stage): sum(1 for run in assigned_runs if run["stage_first_requested"] == stage)
+                    for stage in stages
+                },
+            }
+            path = root / "host_assignments" / f"{machine_id}_{wave}.json"
+            write_json(path, assignment)
+            paths[wave] = path.relative_to(root).as_posix()
+        assignment_paths[machine_id] = paths
     manifest = dict(manifest)
-    manifest["shards"] = shard_paths
+    manifest["host_assignments"] = assignment_paths
     manifest["launchers"] = write_launchers(root, manifest)
     write_json(root / "manifest.json", manifest)
     return root
@@ -1700,10 +1724,18 @@ RUN_OUTCOME_BASE_FIELDS = (
     "repo_commit",
     "error_type",
     "error_message",
+    "row_sha256",
 )
 RUN_OUTCOME_HASH_FIELDS = (
     "scenario_hash",
     "layout_hash",
+    "source_tree_hash",
+    "manifest_sha256",
+    "paired_group_id",
+    "charging_placement_source",
+    "charging_config_sha256",
+    "realized_layout_sha256",
+    "effective_charger_coordinate_hash",
     "rts_checkpoint_id",
     "rts_checkpoint_sha256",
     "rts_metadata_canonical_sha256",
@@ -1711,7 +1743,91 @@ RUN_OUTCOME_HASH_FIELDS = (
     "pps_model_sha256",
     "charging_config_canonical_sha256",
 )
-RUN_OUTCOME_FIELDS = tuple(dict.fromkeys((*RUN_OUTCOME_BASE_FIELDS, *SENSITIVITY_KPI_FIELDS, *FULL_KPI_V3_FIELDS, *RUN_OUTCOME_HASH_FIELDS)))
+RUN_OUTCOME_FIELDS = tuple(dict.fromkeys((*RUN_OUTCOME_BASE_FIELDS, *RUN_OUTCOME_HASH_FIELDS, *FULL_KPI_V3_FIELDS)))
+FAILED_CONDITION_FIELDS = tuple(dict.fromkeys((*RUN_OUTCOME_BASE_FIELDS, *RUN_OUTCOME_HASH_FIELDS, "attempt_count")))
+
+
+def _row_sha256(row: dict[str, Any], fields: tuple[str, ...]) -> str:
+    payload = {field: row.get(field, "") for field in fields if field != "row_sha256"}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+
+
+def _condition_outcome_row(
+    *,
+    manifest: dict[str, Any],
+    machine_id: str,
+    condition: dict[str, Any],
+    summary: dict[str, Any],
+    status: str,
+    manifest_sha256: str = "",
+    error_type: str = "",
+    error_message: str = "",
+) -> dict[str, Any]:
+    """Build the self-contained, v3-only record retained after workspace removal."""
+    identity = dict(condition.get("identity", {}))
+    charging = dict(condition.get("charging", {}))
+    row = {field: "" for field in RUN_OUTCOME_FIELDS}
+    row.update({
+        "campaign_id": manifest["campaign_id"],
+        "allocation_patch_id": manifest.get("allocation_patch_id", ""),
+        "simulation_semantics_id": manifest.get("simulation_semantics_id", ""),
+        "run_id": condition["run_id"],
+        "condition_key": condition["condition_key"],
+        "policy_configuration": condition["policy_configuration"],
+        "robot_count": condition["robot_count"],
+        "order_rate": condition["order_rate"],
+        "replication": condition["replication"],
+        "seed": condition["seed"],
+        "stage_first_requested": condition["stage_first_requested"],
+        "status": status,
+        "termination_reason": summary.get("termination_reason", summary.get("finalization", {}).get("reason", "")),
+        "source_machine_id": machine_id,
+        "repo_commit": summary.get("repo_commit", manifest.get("commit", "")),
+        "error_type": error_type or summary.get("error_type", ""),
+        "error_message": error_message or summary.get("error_message", ""),
+        "scenario_hash": condition.get("scenario_hash", ""),
+        "layout_hash": condition.get("layout_hash", ""),
+        "source_tree_hash": condition.get("source_tree_hash", manifest.get("source_tree_hash", "")),
+        "manifest_sha256": manifest_sha256,
+        "paired_group_id": condition.get("paired_group_id", ""),
+        "charging_placement_source": charging.get("charging_placement_source", identity.get("charging_placement_source", "")),
+        "charging_config_sha256": charging.get("config_sha256", identity.get("charging_config_sha256", "")),
+        "realized_layout_sha256": charging.get("realized_layout_sha256", identity.get("realized_layout_sha256", "")),
+        "effective_charger_coordinate_hash": summary.get("effective_charger_coordinate_hash", ""),
+        "rts_checkpoint_id": identity.get("rts_checkpoint_id", ""),
+        "rts_checkpoint_sha256": identity.get("rts_checkpoint_sha256", ""),
+        "rts_metadata_canonical_sha256": identity.get("rts_metadata_canonical_sha256", ""),
+        "rts_feature_schema_canonical_sha256": identity.get("rts_feature_schema_canonical_sha256", ""),
+        "pps_model_sha256": identity.get("pps_model_sha256", ""),
+        "charging_config_canonical_sha256": "",
+    })
+    kpi = summary.get("kpi", summary)
+    for field in FULL_KPI_V3_FIELDS:
+        if field in kpi and kpi.get(field) is not None:
+            row[field] = kpi[field]
+    row["row_sha256"] = _row_sha256(row, RUN_OUTCOME_FIELDS)
+    return row
+
+
+def _upsert_csv_row(path: Path, fields: tuple[str, ...], row: dict[str, Any], *, key: str = "run_id") -> str:
+    """Atomically persist one terminal record and return its verified row hash."""
+    records: dict[str, dict[str, str]] = {}
+    if path.exists():
+        with path.open(newline="", encoding="utf-8") as fh:
+            records = {str(existing.get(key, "")): existing for existing in csv.DictReader(fh) if existing.get(key)}
+    records[str(row[key])] = {field: row.get(field, "") for field in fields}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    with tmp_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(fields), extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(records[k] for k in sorted(records))
+    replace_with_retry(tmp_path, path)
+    with path.open(newline="", encoding="utf-8") as fh:
+        persisted = next((item for item in csv.DictReader(fh) if item.get(key) == str(row[key])), None)
+    if not persisted or persisted.get("row_sha256") != row.get("row_sha256"):
+        raise RuntimeError(f"durable CSV verification failed for {key}={row[key]}")
+    return str(row["row_sha256"])
 
 
 def rebuild_run_outcomes_csv(*, manifest: dict[str, Any], machine: Machine, repo_root: Path) -> Path:
@@ -2047,23 +2163,17 @@ def execute_host(
     from src.rmfs.orchestration.host_ledger import HostLedger
     from src.rmfs.orchestration.source_identity import SourceIdentity
 
+    manifest = read_json(manifest_path)
     try:
-        ensure_clean_tracked_scientific_files(REPO_ROOT)
+        source_ident = validate_source_identity(manifest, REPO_ROOT)
     except Exception as exc:
-        print(f"\n[CRITICAL ERROR] Dirty tracked scientific files detected: {exc}\n", file=sys.stderr)
-        raise SystemExit(f"campaign stopped: scientific files dirty: {exc}")
+        print(f"\n[CRITICAL ERROR] Source identity validation failed: {exc}\n", file=sys.stderr)
+        raise SystemExit(f"campaign stopped: source identity invalid: {exc}")
 
     all_dirty = dirty_tracked_files(REPO_ROOT)
     non_scientific_dirty = [p for p in all_dirty if p not in SCIENTIFIC_TRACKED_PATHS]
     if non_scientific_dirty:
-        print("\n" + "=" * 80)
-        print("[WARNING] DIRTY LOCAL SOURCE STATE DETECTED:")
-        for p in non_scientific_dirty:
-            print(f"  - {p}")
-        print("This does not stop execution because it does not affect protected scientific semantics.")
-        print("=" * 80 + "\n")
-
-    manifest = read_json(manifest_path)
+        print("[sensitivity] warning: non-scientific tracked files differ from Git; portable source hash remains authoritative")
     machines = machine_map(manifest)
     if machine_id not in machines:
         raise SystemExit(f"unknown machine id {machine_id}; expected one of {sorted(machines)}")
@@ -2083,7 +2193,6 @@ def execute_host(
     ledger_path = host_data_root / "host_ledger.json"
     manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 
-    source_ident = SourceIdentity.compute(REPO_ROOT)
     immutable_hashes = {
         key: str(value)
         for key, value in manifest.get("assets", {}).items()
@@ -2158,83 +2267,6 @@ def execute_host(
     cleanup_stats: dict[str, Any] = {"bytes": 0, "by_filename": {}}
     min_free = min_free_disk_bytes_from_env()
 
-    def rebuild_outcomes_for_host():
-        conditions = {run["run_id"]: run for run in ledger.assigned_conditions}
-        host_outcomes_path = host_data_root / "run_outcomes.csv"
-        # Section 8: preserve rows already durably written for runs whose per-run
-        # workspace was deleted after finalization.
-        preserved: dict[str, dict[str, str]] = {}
-        if host_outcomes_path.exists():
-            try:
-                with host_outcomes_path.open(newline="", encoding="utf-8") as fh:
-                    for existing in csv.DictReader(fh):
-                        rid = existing.get("run_id")
-                        if rid:
-                            preserved[rid] = existing
-            except Exception:
-                preserved = {}
-        fresh: dict[str, dict[str, Any]] = {}
-        for run_id, condition in sorted(conditions.items(), key=lambda item: condition_sort_key(item[1])):
-            summary_path = runs_dir / run_id / "worker_summary.json"
-            if not summary_path.exists():
-                continue
-            try:
-                summary = read_json(summary_path)
-            except Exception:
-                continue
-            row = {field: "" for field in RUN_OUTCOME_FIELDS}
-            row.update({
-                "campaign_id": manifest["campaign_id"],
-                "allocation_patch_id": manifest["allocation_patch_id"],
-                "simulation_semantics_id": manifest["simulation_semantics_id"],
-                "run_id": run_id,
-                "condition_key": condition["condition_key"],
-                "policy_configuration": condition["policy_configuration"],
-                "robot_count": condition["robot_count"],
-                "order_rate": condition["order_rate"],
-                "replication": condition["replication"],
-                "seed": condition["seed"],
-                "stage_first_requested": condition["stage_first_requested"],
-                "status": summary.get("status", ""),
-                "termination_reason": summary.get("termination_reason", summary.get("finalization", {}).get("reason", "")),
-                "source_machine_id": machine_id,
-                "repo_commit": summary.get("repo_commit", manifest.get("commit", "")),
-                "error_type": summary.get("error_type", ""),
-                "error_message": summary.get("error_message", ""),
-                "scenario_hash": condition.get("scenario_hash", ""),
-                "layout_hash": condition.get("layout_hash", ""),
-                "rts_metadata_canonical_sha256": condition["identity"].get("rts_metadata_canonical_sha256", ""),
-                "rts_feature_schema_canonical_sha256": condition["identity"].get("rts_feature_schema_canonical_sha256", ""),
-                "charging_config_canonical_sha256": condition["identity"].get("charging_config_canonical_sha256", ""),
-            })
-            kpi_fields_set = SENSITIVITY_KPI_FIELDS
-            if manifest.get("kpi_schema_version") == "full_kpi_v3":
-                kpi_fields_set = FULL_KPI_V3_FIELDS
-            
-            for field in kpi_fields_set:
-                if field in RUN_OUTCOME_FIELDS:
-                    value = summary.get(field, summary.get("kpi", {}).get(field, ""))
-                    if value not in ("", None) or row.get(field, "") == "":
-                        row[field] = value
-            for field in RUN_OUTCOME_HASH_FIELDS:
-                if row.get(field, "") == "":
-                    row[field] = summary.get(field, "")
-            fresh[run_id] = row
-
-        merged = dict(preserved)
-        merged.update(fresh)                          # a freshly-scanned dir wins
-        ordered_ids = [rid for rid in conditions if rid in merged]
-        ordered_ids += [rid for rid in merged if rid not in conditions]
-        rows = [merged[rid] for rid in ordered_ids]
-
-        path = host_outcomes_path
-        tmp_path = path.with_name(f".{path.name}.tmp")
-        with tmp_path.open("w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(RUN_OUTCOME_FIELDS), extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(rows)
-        replace_with_retry(tmp_path, path)
-
     def _before_launch(spec: RunSpec, active_count: int) -> bool:
         available = free_disk_bytes(host_data_root)
         if available >= min_free:
@@ -2243,30 +2275,6 @@ def execute_host(
             print(f"[sensitivity] free disk below floor; pausing: free={available} required={min_free}")
             return False
         raise RuntimeError(f"insufficient free disk: free={available} required={min_free}")
-
-    def _reclaim_on_complete(spec: RunSpec, return_code: int) -> None:
-        succeeded = False
-        if not keep_run_artifacts:
-            summary = load_worker_summary(spec.runtime_root)
-            succeeded = int(return_code) == 0 and summary.get("status") == "success"
-            if succeeded:
-                stats = reclaim_completed_run_artifacts_with_stats(spec.runtime_root)
-            else:
-                stats = reclaim_failed_run_artifacts_with_stats(spec.runtime_root)
-            merge_reclaim_stats(cleanup_stats, stats)
-        # Durably persist the KPI row first.
-        rebuild_outcomes_for_host()
-        # Section 8: on success, once the compact KPI row is durably present in the
-        # host run_outcomes.csv, the entire per-run workspace is deleted (leaving no
-        # run_spec.json / worker_summary.json / run directory). Debug retention
-        # (keep_run_artifacts) preserves it. Failed finals keep their compact
-        # diagnostics until the retry budget is exhausted (handled by the ledger).
-        if succeeded and not keep_run_artifacts:
-            run_id = Path(spec.runtime_root).name
-            if run_outcomes_contains(host_data_root, run_id):
-                shutil.rmtree(spec.runtime_root, ignore_errors=True)
-            else:
-                print(f"[sensitivity] warning: KPI row for {run_id} not durably present; keeping workspace")
 
     previous_log_cap = os.environ.get("RMFS_WORKER_LOG_CAP_MB")
     os.environ["RMFS_WORKER_LOG_CAP_MB"] = "5"
@@ -2291,7 +2299,7 @@ def execute_host(
             try:
                 completed = run_specs(
                     [spec for _cond, spec, _started in batch], max_workers=int(machine.max_workers),
-                    progress=progress, on_run_complete=_reclaim_on_complete, before_launch=_before_launch,
+                    progress=progress, before_launch=_before_launch,
                 )
                 completed_by_run = {item["spec"].run_id: item for item in completed}
             except Exception as exc:
@@ -2302,14 +2310,43 @@ def execute_host(
             for cond, spec, started in batch:
                 item = completed_by_run.get(spec.run_id, {})
                 return_code = int(item.get("return_code", -1))
-                summary = load_worker_summary(spec.runtime_root)
+                # run_specs captured this before any host cleanup.  Do not
+                # reread the workspace: it is deliberately removed once the
+                # CSV and ledger records below are verified.
+                summary = item.get("worker_summary") if isinstance(item.get("worker_summary"), dict) else {
+                    "status": "failure", "error_type": "missing_terminal_result",
+                    "error_message": "executor did not return a terminal worker summary",
+                }
                 classification = classify_result(cond, spec.to_json_dict(), summary)
                 elapsed = time.perf_counter() - started
                 if classification in {"completed_strict", "completed_with_warnings"}:
-                    ledger.mark_completed(str(cond["condition_key"]), {
-                        "run_id": spec.run_id, "result_path": str(spec.runtime_root / "worker_summary.json"),
-                        "return_code": return_code, "elapsed_seconds": elapsed,
-                    }, warning_count=int(classification == "completed_with_warnings"))
+                    try:
+                        row = _condition_outcome_row(
+                            manifest=manifest, machine_id=machine_id, condition=cond, summary=summary,
+                            status=classification, manifest_sha256=manifest_sha,
+                        )
+                        row_hash = _upsert_csv_row(host_data_root / "run_outcomes.csv", RUN_OUTCOME_FIELDS, row)
+                        ledger.mark_completed(str(cond["condition_key"]), {
+                            "run_id": spec.run_id,
+                            "result_path": f"run_outcomes.csv#{spec.run_id}",
+                            "row_sha256": row_hash,
+                            "return_code": return_code,
+                            "elapsed_seconds": elapsed,
+                        }, warning_count=int(classification == "completed_with_warnings"))
+                        ledger.save(ledger_path)
+                    except Exception as exc:
+                        # Never lose a result to a host persistence failure.
+                        ledger.mark_failed(str(cond["condition_key"]), {
+                            "return_code": return_code, "elapsed_seconds": elapsed,
+                            "error_type": "host_persistence_failure", "error_message": str(exc),
+                        }, max_retries=max_retries, quarantined=True)
+                        ledger.save(ledger_path)
+                        continue
+                    if not keep_run_artifacts:
+                        stats = reclaim_completed_run_artifacts_with_stats(spec.runtime_root)
+                        merge_reclaim_stats(cleanup_stats, stats)
+                        if spec.runtime_root.exists():
+                            shutil.rmtree(spec.runtime_root, ignore_errors=False)
                 else:
                     ledger.mark_failed(str(cond["condition_key"]), {
                         "return_code": return_code, "elapsed_seconds": elapsed,
@@ -2317,8 +2354,32 @@ def execute_host(
                         "error_type": summary.get("error_type", classification),
                         "error_message": summary.get("error_message", classification),
                     }, max_retries=max_retries, quarantined=classification == "quarantined")
+                    state = ledger.state_for(str(cond["condition_key"]))
+                    if state.get("status") in {"failed_final", "quarantined"}:
+                        failure = _condition_outcome_row(
+                            manifest=manifest, machine_id=machine_id, condition=cond, summary=summary,
+                            status=state["status"], manifest_sha256=manifest_sha,
+                            error_type=str(summary.get("error_type", classification)),
+                            error_message=str(summary.get("error_message", classification)),
+                        )
+                        failure["attempt_count"] = str(state.get("attempt_count", 0))
+                        failure = {field: failure.get(field, "") for field in FAILED_CONDITION_FIELDS}
+                        failure["row_sha256"] = _row_sha256(failure, FAILED_CONDITION_FIELDS)
+                        try:
+                            row_hash = _upsert_csv_row(host_data_root / "failed_conditions.csv", FAILED_CONDITION_FIELDS, failure)
+                            state["terminal_failure_row_sha256"] = row_hash
+                            ledger.save(ledger_path)
+                            if not keep_run_artifacts:
+                                stats = reclaim_failed_run_artifacts_with_stats(spec.runtime_root)
+                                merge_reclaim_stats(cleanup_stats, stats)
+                                if spec.runtime_root.exists():
+                                    shutil.rmtree(spec.runtime_root, ignore_errors=False)
+                        except Exception as exc:
+                            # Keep the complete workspace for recovery if the
+                            # compact terminal failure record cannot be proven.
+                            state["failure_reason"] = f"host_persistence_failure: {exc}"
+                            ledger.save(ledger_path)
             ledger.save(ledger_path)
-            rebuild_outcomes_for_host()
 
     finally:
         if previous_log_cap is None:
@@ -2408,7 +2469,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rts-checkpoint-dir", default=None)
     parser.add_argument("--rts-training-artifact", default=None)
     parser.add_argument("--pps-model-path", default=str(DEFAULT_PPS_INFERENCE_ARTIFACT))
-    parser.add_argument("--charging-config-path", default=str(DEFAULT_CHARGING_CONFIG_PATH))
     parser.add_argument("--rl-overhead-multiplier", type=float, default=DEFAULT_RL_OVERHEAD_MULTIPLIER)
     parser.add_argument(
         "--keep-run-artifacts",
@@ -2538,6 +2598,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         manifest_path = manifest_path_from_arg(args.manifest)
         if manifest_path.exists():
             manifest = read_json(manifest_path)
+            validate_source_identity(manifest, REPO_ROOT)
         else:
             machines = default_machines(REPO_ROOT)
             assets = resolve_assets(args)
@@ -2615,7 +2676,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "sorted_skus_data.csv",
                 "worker_summary.json",
             ],
-            "successful_run_retained_files": ["run_spec.json", "worker_summary.json"],
+            "successful_run_retained_files": [],
+            "successful_run_durable_records": ["run_outcomes.csv", "host_ledger.json"],
             "successful_run_deleted_files": list(SUCCESS_RECLAIMABLE_RUN_ARTIFACTS),
             "failed_run_deleted_files": list(FAILED_RECLAIMABLE_RUN_ARTIFACTS),
             "min_free_disk_bytes": min_free_disk_bytes_from_env(),

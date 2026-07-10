@@ -373,8 +373,19 @@ FULL_KPI_V3_OPTIONAL_FIELDS = (
     "longest_no_robot_job_completed_interval_s", "first_starvation_time_s",
     "first_busy_unproductive_time_s", "first_congestion_time_s",
 )
-FULL_KPI_V3_REQUIRED_FIELDS = tuple(
-    field for field in FULL_KPI_V3_FIELDS if field not in FULL_KPI_V3_OPTIONAL_FIELDS
+# Strict completion is intentionally limited to primitives with a confirmed
+# authoritative producer in the resident runtime.  Richer diagnostics remain
+# exportable but cannot turn a usable scientific result into a false failure.
+FULL_KPI_V3_REQUIRED_FIELDS = (
+    "orders_released",
+    "orders_completed",
+    "order_lines_completed",
+    "loaded_robot_distance",
+    "empty_robot_distance",
+    "movement_energy_kj",
+    "fixed_load_energy_kj",
+    "simulation_termination_reason",
+    "simulation_completed_full_horizon",
 )
 
 # ── Treatment-aware applicability ──────────────────────────────────────────

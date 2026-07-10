@@ -19,33 +19,33 @@ def _config(tmp_path):
     return path
 
 
-def test_reference_off_has_no_functional_chargers(tmp_path):
+def test_generated_reference_registers_only_generated_coordinates(tmp_path):
     warehouse = _warehouse()
-    _configure_charging_treatment(warehouse, placement_source="reference_off", config_path=None)
-    assert warehouse.charging_enabled is False
-    assert warehouse.charger_cells == set()
+    _configure_charging_treatment(warehouse, placement_source="generated_reference", config_path=str(_config(tmp_path)))
+    assert warehouse.charging_enabled is True
+    assert warehouse.charger_cells == {(2, 1), (4, 3)}
     assert warehouse.active_charger_cells == set()
-    assert _uses_grid_charger_cells("reference_off") is False
+    assert _uses_grid_charger_cells("generated_reference") is False
 
 
 def test_salsa_registers_only_generated_coordinates(tmp_path):
     warehouse = _warehouse()
-    _configure_charging_treatment(warehouse, placement_source="salsa_adaptive_on", config_path=str(_config(tmp_path)))
+    _configure_charging_treatment(warehouse, placement_source="generated_salsa_adaptive", config_path=str(_config(tmp_path)))
     # JSON [row, col] is converted to runtime (x=col, y=row).
     assert warehouse.charger_cells == {(2, 1), (4, 3)}
     assert warehouse.charging_enabled is True
     assert warehouse.charging_declared_count == 2
-    assert _uses_grid_charger_cells("salsa_adaptive_on") is False
+    assert _uses_grid_charger_cells("generated_salsa_adaptive") is False
 
 
 def test_legacy_union_is_the_only_grid_compatibility_mode():
     assert _uses_grid_charger_cells("legacy_union") is True
-    assert _uses_grid_charger_cells("reference_off") is False
+    assert _uses_grid_charger_cells("generated_reference") is False
 
 
-def test_new_runs_default_off_and_old_json_is_legacy_union(tmp_path):
+def test_new_runs_default_generated_reference_and_old_json_is_legacy_union(tmp_path):
     spec = RunSpec(run_id="r", ticks=1, runtime_root=tmp_path / "r", repo_root=tmp_path, run_profile="gui")
-    assert spec.charging_placement_source == "reference_off"
+    assert spec.charging_placement_source == "generated_reference"
     old = spec.to_json_dict()
     old.pop("charging_placement_source")
     assert RunSpec.from_json_dict(old).charging_placement_source == "legacy_union"

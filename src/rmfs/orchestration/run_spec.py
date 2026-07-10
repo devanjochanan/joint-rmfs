@@ -45,7 +45,7 @@ class RunSpec:
     charging_config_path: str | None = None
     # New campaign records must name their charging treatment explicitly.
     # ``legacy_union`` is reserved for pre-field manifests and historical replay.
-    charging_placement_source: str = "reference_off"
+    charging_placement_source: str = "generated_reference"
     charging_config_sha256: str | None = None
     charging_realized_layout_sha256: str | None = None
     charging_declared_count: int | None = None
@@ -125,6 +125,8 @@ class RunSpec:
         return float(self.demand_buffer_ticks) * self.tick_to_second
 
     def validate_runtime_semantics(self) -> None:
+        if self.charging_placement_source not in {"generated_reference", "generated_salsa_adaptive", "legacy_union"}:
+            raise ValueError(f"unsupported charging_placement_source: {self.charging_placement_source!r}")
         if int(self.ticks) <= 0:
             raise ValueError("RunSpec.ticks must be positive backend / NetLogo steps")
         if int(self.robot_count) < 1:

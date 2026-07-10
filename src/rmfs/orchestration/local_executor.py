@@ -343,7 +343,7 @@ def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
         env["PPS_RL_MODEL_PATH"] = spec.pps_model_path
     if spec.charging_enabled is not None:
         env["RMFS_CHARGING_ENABLED"] = "1" if spec.charging_enabled else "0"
-    env["RMFS_CHARGING_PLACEMENT_SOURCE"] = str(spec.charging_placement_source or "reference_off")
+    env["RMFS_CHARGING_PLACEMENT_SOURCE"] = str(spec.charging_placement_source or "generated_reference")
     if spec.charging_config_path:
         env["RMFS_CHARGING_CONFIG"] = spec.charging_config_path
     if spec.rts_policy_mode == "rts_rl_explicit":
@@ -632,9 +632,12 @@ def derive_sensitivity_kpi_v3_payload(
     if generated_orders is None:
         generated_orders = len(orders)
     payload["orders_available_in_source"] = int(generated_orders or 0)
-    # OrderManager.orders may contain loaded future demand.  Prefer the explicit
-    # released counter when the runtime provides it.
-    payload["orders_released"] = int(getattr(warehouse, "orders_released", len(orders)) or 0)
+    # The manager counter is incremented at the active-demand transition.  Do
+    # not substitute the loaded input/source count here: that would turn a
+    # backlog file into a false release KPI.
+    order_manager = getattr(warehouse, "order_manager", None)
+    released_count = getattr(order_manager, "orders_released_count", None)
+    payload["orders_released"] = int(released_count) if released_count is not None else None
 
     orders_started = 0
     orders_completed_count = 0
@@ -698,7 +701,11 @@ def derive_sensitivity_kpi_v3_payload(
                 if details.get("stockout_blocked") or details.get("blocked_stockout"):
                     lines_blocked_stockout += 1
 
-    payload["order_lines_released"] = lines_released
+    # Orders held by OrderManager are active/released orders; this is distinct
+    # from the raw source CSV counted above.
+    payload["order_lines_released"] = int(
+        getattr(order_manager, "order_lines_released_count", 0) or lines_released
+    )
     payload["order_lines_picked"] = lines_picked
     payload["order_lines_completed"] = lines_completed
     payload["order_lines_unfinished_end"] = lines_unfinished
@@ -1133,10 +1140,10 @@ def run_worker(spec: RunSpec):
     status_path = spec.runtime_root / "worker_status.json"
     ticks_done = 0
     last_status_tick = -1
-    if spec.charging_placement_source == "salsa_adaptive_on":
+    if spec.charging_placement_source in {"generated_reference", "generated_salsa_adaptive"}:
         config_path = Path(spec.charging_config_path or "")
         if not config_path.is_file():
-            raise RuntimeError("salsa_adaptive_on requires a condition-local charging config")
+            raise RuntimeError(f"{spec.charging_placement_source} requires a condition-local charging config")
         actual = hashlib.sha256(config_path.read_bytes()).hexdigest()
         if spec.charging_config_sha256 and actual != spec.charging_config_sha256:
             raise RuntimeError("condition-local charging config hash mismatch")
@@ -1798,10 +1805,22 @@ def run_specs(
                     item["spec"],
                     {"peak_runtime_directory_bytes": int(item.get("peak_runtime_directory_bytes", 0) or 0)},
                 )
+                # Capture terminal output before the completion callback runs.  A
+                # sensitivity host is allowed to remove its workspace once its
+                # compact CSV/ledger records are durable, so callers must not be
+                # forced to reread worker_summary.json afterwards.
+                worker_summary = load_worker_summary(item["spec"].runtime_root)
+                kpi_payload = worker_summary.get("kpi") if isinstance(worker_summary, dict) else None
+                terminal_status = str(worker_summary.get("status", "failure")) if isinstance(worker_summary, dict) else "failure"
                 completed.append({
                     "spec": item["spec"],
                     "return_code": return_code,
                     "peak_runtime_directory_bytes": int(item.get("peak_runtime_directory_bytes", 0) or 0),
+                    "terminal_status": terminal_status,
+                    "worker_summary": worker_summary,
+                    "kpi_payload": kpi_payload if isinstance(kpi_payload, dict) else None,
+                    "error_category": worker_summary.get("error_type") if isinstance(worker_summary, dict) else "worker_summary_missing",
+                    "error_message": worker_summary.get("error_message") if isinstance(worker_summary, dict) else "worker_summary.json missing",
                 })
                 counts_changed = True
                 if on_run_complete is not None:

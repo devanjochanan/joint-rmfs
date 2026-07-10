@@ -1,4 +1,5 @@
 import csv
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from scripts.experiments.distributed_sensitivity_campaign import (
     run_complete_for_campaign,
     seed_for_replication,
     treatment_execution_contracts,
+    validate_source_identity,
+    write_campaign_files,
     write_json,
 )
 
@@ -92,6 +95,20 @@ def test_campaign_plan_has_no_duplicate_identities_or_shard_overlap():
     assert {run["policy_configuration"] for run in manifest["runs"]} == set(POLICY_CONFIGURATIONS)
 
 
+def test_new_campaign_files_write_host_assignments_not_shards(tmp_path, monkeypatch):
+    manifest = {**build_manifest(), "campaign_root_relative": "unused"}
+    root = tmp_path / "campaign"
+    monkeypatch.setattr(
+        "scripts.experiments.distributed_sensitivity_campaign.campaign_root",
+        lambda _repo_root, _manifest: root,
+    )
+    write_campaign_files(manifest)
+    written = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    assert "shards" not in written
+    assert set(written["host_assignments"]) == {row["machine_id"] for row in manifest["machines"]}
+    assert not (root / "shards").exists()
+
+
 def test_campaign_id_ignores_allocation_and_local_machine_details():
     assets = fake_assets()
     machines = default_machines()
@@ -108,6 +125,11 @@ def test_campaign_id_ignores_allocation_and_local_machine_details():
             effective_steps_per_second=(m.effective_steps_per_second + 17.0 if m.machine_id == "alisha_pc" else m.effective_steps_per_second),
             eligible_stages=m.eligible_stages,
             anydesk_id=m.anydesk_id,
+            allowed_treatments=m.allowed_treatments,
+            reference_effective_steps_per_second=m.reference_effective_steps_per_second,
+            rl_effective_steps_per_second=m.rl_effective_steps_per_second,
+            max_rl_workers=m.max_rl_workers,
+            rl_rate_source=m.rl_rate_source,
         )
         for m in machines
     ]
@@ -138,6 +160,11 @@ def test_allocation_patch_id_changes_without_scientific_identity_change():
             effective_steps_per_second=m.effective_steps_per_second,
             eligible_stages=m.eligible_stages,
             anydesk_id=m.anydesk_id,
+            allowed_treatments=m.allowed_treatments,
+            reference_effective_steps_per_second=m.reference_effective_steps_per_second,
+            rl_effective_steps_per_second=m.rl_effective_steps_per_second,
+            max_rl_workers=m.max_rl_workers,
+            rl_rate_source=m.rl_rate_source,
         )
         for m in machines
     ]
@@ -383,6 +410,7 @@ def test_resume_identity_accepts_cleaned_success_summary(tmp_path):
             "requested_robot_count": condition["robot_count"],
             "rts_checkpoint_sha256": condition["identity"]["rts_checkpoint_sha256"],
             "pps_model_sha256": condition["identity"]["pps_model_sha256"],
+            "source_tree_hash": condition["identity"]["source_tree_hash"],
             "status": "success",
             "finalization": {"finalized": True},
             "kpi_complete": True,
@@ -413,6 +441,19 @@ def test_clean_scientific_inputs_ignore_runtime_outputs(monkeypatch):
     )
 
     ensure_clean_tracked_scientific_files(Path.cwd())
+
+
+def test_portable_snapshot_accepts_matching_source_hash(tmp_path):
+    (tmp_path / "worker.py").write_text("VALUE = 1\n", encoding="utf-8")
+    from src.rmfs.orchestration.source_identity import SourceIdentity
+    identity = SourceIdentity.compute(tmp_path).source_tree_hash
+    assert validate_source_identity({"source_tree_hash": identity}, tmp_path).source_tree_hash == identity
+
+
+def test_portable_snapshot_rejects_source_hash_mismatch(tmp_path):
+    (tmp_path / "worker.py").write_text("VALUE = 1\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="source-tree hash differs"):
+        validate_source_identity({"source_tree_hash": "0" * 64}, tmp_path)
 
 
 def test_dirty_scientific_inputs_stop_prepare_validate_and_execution(monkeypatch):
@@ -499,6 +540,7 @@ def _write_complete_summary(spec, manifest, condition, **overrides):
         "rts_checkpoint_sha256": "different-rts-hash",
         "pps_model_sha256": "different-pps-hash",
         "rts_checkpoint_id": "different-checkpoint-id",
+        "source_tree_hash": condition["identity"]["source_tree_hash"],
         "status": "success",
         "finalization": {"finalized": True},
         "kpi_complete": True,

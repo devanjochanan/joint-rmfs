@@ -1091,6 +1091,7 @@ def assign_cluster_labels(universe: Inventory, data_backlog_order_df, full_order
         if order_dum in unique_orders:
             order = universe.order_manager.get_order_by_id(order_dum)
             order.add_sku(row['item_id'], row['item_quantity'])
+            universe.order_manager.record_order_line_released()
             order_sku_map[order_dum] += 1
         if order_dum in order_sku_map:
             order = universe.order_manager.get_order_by_id(order_dum)
@@ -1146,20 +1147,19 @@ def _configure_charging_treatment(universe: Inventory, *, placement_source: str,
     import json as _json
     from model.robot import Robot as _Robot
     from src.rmfs.decisions.charging.config import canonical_charging_config_path
-    source = str(placement_source or "reference_off").strip().lower()
-    if source not in {"reference_off", "salsa_adaptive_on", "legacy_union"}:
+    source = str(placement_source or "generated_reference").strip().lower()
+    if source not in {"generated_reference", "generated_salsa_adaptive", "legacy_union"}:
         raise ValueError(f"unknown charging placement source: {source}")
     universe.charger_cells.clear()
     universe.active_charger_cells.clear()
     universe.charging_placement_source = source
     universe.charging_config_hash = None
     universe.charging_declared_count = 0
-    if source == "reference_off":
-        universe.charging_enabled = False
-        universe.disable_active_charging = True
-        return {"source": source, "config_path": None, "effective_coordinate_hash": hashlib.sha256(b"[]").hexdigest()}
-
-    _cfg_path = config_path or str(canonical_charging_config_path())
+    # Both primary modes require their condition-local generated configuration.
+    # Only explicit historical replay may fall back to the legacy static path.
+    _cfg_path = config_path or (str(canonical_charging_config_path()) if source == "legacy_union" else "")
+    if not _cfg_path:
+        raise FileNotFoundError(f"charging config required for {source}")
     _cfg = {}
     if not os.path.exists(_cfg_path):
         raise FileNotFoundError(f"charging config required for {source}: {_cfg_path}")
@@ -1203,7 +1203,7 @@ def _refresh_effective_charger_metadata(universe: Inventory) -> None:
 
 def draw_storage_from_generated_file(universe: Inventory):
     # Runs before initRobots(), so Robot class policy reaches the fleet.
-    _source = os.environ.get("RMFS_CHARGING_PLACEMENT_SOURCE", "reference_off")
+    _source = os.environ.get("RMFS_CHARGING_PLACEMENT_SOURCE", "generated_reference")
     _configured = _configure_charging_treatment(
         universe,
         placement_source=_source,
@@ -1298,7 +1298,7 @@ def draw_storage_from_generated_file(universe: Inventory):
                     universe.pod_manager.add_pod(obj)
                 elif value == 2:
                     obj.shape = 'square 2'
-                    if _uses_grid_charger_cells(getattr(universe, "charging_placement_source", "reference_off")):
+                    if _uses_grid_charger_cells(getattr(universe, "charging_placement_source", "generated_reference")):
                         universe.charger_cells.add((x, y))
 
                 if obj_left_value != 1:

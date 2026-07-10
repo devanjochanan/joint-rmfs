@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Git-free importer for autonomous RMFS host export archives."""
+"""Import hash-verified, KPI-only RMFS host exports without Git metadata."""
 
 from __future__ import annotations
 
@@ -13,75 +13,72 @@ from pathlib import Path
 from typing import Any
 
 
-def _read_json(zf: zipfile.ZipFile, name: str) -> dict[str, Any]:
+IDENTITY_FIELDS = (
+    "campaign_id", "run_id", "paired_group_id", "policy_configuration", "robot_count",
+    "order_rate", "replication", "seed", "source_tree_hash", "layout_hash",
+    "charging_placement_source", "charging_config_sha256", "effective_charger_coordinate_hash",
+    "rts_checkpoint_sha256", "pps_model_sha256", "kpi_schema_version", "simulation_semantics_id",
+)
+
+
+def _json(zf: zipfile.ZipFile, name: str) -> dict[str, Any]:
     return json.loads(zf.read(name).decode("utf-8"))
 
 
+def _csv(zf: zipfile.ZipFile, name: str) -> list[dict[str, str]]:
+    if name not in zf.namelist():
+        return []
+    return list(csv.DictReader(zf.read(name).decode("utf-8").splitlines()))
+
+
 def _validate_hashes(zf: zipfile.ZipFile) -> None:
-    hashes = _read_json(zf, "sha256_manifest.json").get("files", {})
-    for name, expected in hashes.items():
-        if name not in zf.namelist():
-            raise RuntimeError(f"archive hash manifest references missing member: {name}")
-        actual = hashlib.sha256(zf.read(name)).hexdigest()
-        if actual != expected:
+    for name, expected in _json(zf, "sha256_manifest.json").get("files", {}).items():
+        if name not in zf.namelist() or hashlib.sha256(zf.read(name)).hexdigest() != expected:
             raise RuntimeError(f"archive member hash mismatch: {name}")
 
 
-def _condition_key(spec: dict[str, Any]) -> tuple[Any, ...]:
-    return tuple(spec.get(key) for key in (
-        "policy_configuration", "rts_policy_mode", "pps_mode", "charging_placement_source",
-        "charging_config_sha256", "charging_realized_layout_sha256", "rts_checkpoint_sha256",
-        "pps_model_sha256", "campaign_id", "robot_count", "order_rate_per_hour", "replication",
-        "campaign_seed",
-    )) + (spec.get("source_tree_hash"),)
+def _identity(row: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(row.get(field, "") for field in IDENTITY_FIELDS)
+
+
+def _canonical_row(row: dict[str, Any]) -> str:
+    return json.dumps(row, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def import_exports(archives: list[Path], output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    outcomes: dict[tuple[Any, ...], dict[str, Any]] = {}
+    accepted: dict[tuple[Any, ...], dict[str, str]] = {}
+    conflicted: set[tuple[Any, ...]] = set()
     failures: list[dict[str, Any]] = []
     quarantined: list[dict[str, Any]] = []
     for archive in archives:
         with zipfile.ZipFile(archive) as zf:
             _validate_hashes(zf)
-            ledger = _read_json(zf, "host_ledger.json")
+            ledger = _json(zf, "host_ledger.json")
             states = ledger.get("condition_states", {})
-            for condition in ledger.get("assigned_conditions", []):
-                key = str(condition.get("condition_key", ""))
-                state = states.get(key, {})
-                status = state.get("status")
-                if status not in {"completed_strict", "completed_with_warnings"}:
-                    for attempt in state.get("attempts", []):
-                        if attempt.get("status", "").startswith(("failed", "quarantined")):
-                            failures.append({"archive": archive.name, "condition_key": key, **attempt})
+            for state_key, state in states.items():
+                for attempt in state.get("attempts", []):
+                    if str(attempt.get("status", "")).startswith(("failed", "quarantined")):
+                        failures.append({"archive": archive.name, "condition_key": state_key, **attempt})
+            for row in _csv(zf, "failed_conditions.csv"):
+                failures.append({"archive": archive.name, "terminal_failure": True, **row})
+            for row in _csv(zf, "run_outcomes.csv"):
+                if row.get("status") not in {"completed_strict", "completed_with_warnings"}:
+                    quarantined.append({"archive": archive.name, "run_id": row.get("run_id"), "reason": "non_completed_outcome_row"})
                     continue
-                run_id = str(condition.get("run_id", ""))
-                spec_name = f"runs/{run_id}/run_spec.json"
-                summary_name = f"runs/{run_id}/worker_summary.json"
-                if spec_name not in zf.namelist() or summary_name not in zf.namelist():
-                    quarantined.append({"archive": archive.name, "condition_key": key, "reason": "missing_required_result_member"})
+                key = _identity(row)
+                if key in conflicted:
                     continue
-                spec, summary = _read_json(zf, spec_name), _read_json(zf, summary_name)
-                if summary.get("status") != "success" or not summary.get("finalization", {}).get("finalized", False):
-                    quarantined.append({"archive": archive.name, "condition_key": key, "reason": "nonterminal_success"})
-                    continue
-                scientific_key = _condition_key(spec)
-                record = {"archive": archive.name, "source_campaign_id": spec.get("campaign_id"), "run_id": run_id,
-                          "condition": condition, "spec": spec, "summary": summary, "status": status}
-                prior = outcomes.get(scientific_key)
-                if prior is None:
-                    outcomes[scientific_key] = record
-                elif prior["summary"].get("kpi", prior["summary"]) == record["summary"].get("kpi", record["summary"]):
+                previous = accepted.get(key)
+                if previous is None:
+                    accepted[key] = row
+                elif _canonical_row(previous) == _canonical_row(row):
                     continue
                 else:
-                    quarantined.append({"condition": scientific_key, "reason": "conflicting_successful_duplicate", "archives": [prior["archive"], archive.name]})
-                    outcomes.pop(scientific_key, None)
-    rows = []
-    for key, record in sorted(outcomes.items(), key=lambda item: tuple(str(v) for v in item[0])):
-        row = dict(record["condition"])
-        row.update(record["summary"].get("kpi", {}))
-        row.update({"source_campaign_id": record["source_campaign_id"], "run_id": record["run_id"], "completion_status": record["status"]})
-        rows.append(row)
+                    quarantined.append({"identity": key, "reason": "conflicting_successful_duplicate", "archives": [previous.get("source_machine_id"), archive.name]})
+                    accepted.pop(key, None)
+                    conflicted.add(key)
+    rows = [accepted[key] for key in sorted(accepted, key=lambda key: tuple(str(v) for v in key))]
     fields = sorted({field for row in rows for field in row})
     with (output_dir / "imported_outcomes.csv").open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
