@@ -2058,27 +2058,23 @@ def execute_machine(
     completed = []
     run_return_codes: dict[str, int] = {}
     try:
-        critical_specs = [spec for spec in specs if int(spec.stage_first_requested or 0) in {1, 2, 3}]
-        stage4_specs = [spec for spec in specs if int(spec.stage_first_requested or 0) == 4]
-        for wave_name, wave_specs in (("critical stages 1-3", critical_specs), ("stage 4", stage4_specs)):
-            if not wave_specs:
-                continue
+        if specs:
             print(
-                f"[sensitivity] starting {wave_name}: {len(wave_specs)} runs, "
+                f"[sensitivity] starting combined stage-priority queue: {len(specs)} runs, "
                 f"max_workers={machine.max_workers}"
             )
-            completed.extend(run_specs(
-                wave_specs,
+            completed = run_specs(
+                specs,
                 max_workers=int(machine.max_workers),
                 progress=progress,
                 on_run_complete=_reclaim_on_complete,
                 before_launch=_before_launch,
-            ))
+            )
             try:
                 rebuild_run_outcomes_csv(manifest=manifest, machine=machine, repo_root=REPO_ROOT)
             except Exception as exc:
                 print(
-                    f"[sensitivity] warning: run_outcomes.csv rebuild failed after {wave_name}: "
+                    "[sensitivity] warning: run_outcomes.csv rebuild failed after worker queue: "
                     f"{type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )

@@ -17,6 +17,7 @@ from scripts.experiments.distributed_sensitivity_campaign import (
     build_campaign_plan,
     build_run_spec_from_condition,
     build_scientific_identity,
+    condition_sort_key,
     default_machines,
     ensure_clean_tracked_scientific_files,
     execute_machine,
@@ -255,7 +256,23 @@ def test_continuous_execution_combines_stages_before_calling_run_specs(tmp_path,
         resume=False,
         progress=False,
     ) == 0
-    assert launched == [[1, 1, 1, 1, 1, 1, 2, 2, 3, 3], [4, 4]]
+    assert launched == [[1, 1, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4]]
+
+
+def test_gojira_first_wave_backfills_idle_critical_slots_with_stage4():
+    manifest = build_manifest()
+    gojira = next(machine for machine in default_machines() if machine.machine_id == "citi_gojira")
+    queue = sorted(
+        [run for run in manifest["runs"] if run["machine_id"] == gojira.machine_id],
+        key=condition_sort_key,
+    )
+    first_wave = queue[:gojira.max_workers]
+    assert sum(run["stage_first_requested"] in {1, 2, 3} for run in queue) == 20
+    assert len(first_wave) == 24
+    assert [run["stage_first_requested"] for run in first_wave[:20]] == sorted(
+        run["stage_first_requested"] for run in first_wave[:20]
+    )
+    assert all(run["stage_first_requested"] == 4 for run in first_wave[20:])
 
 
 def test_execute_machine_returns_nonzero_for_invalid_selected_run(tmp_path, monkeypatch):
