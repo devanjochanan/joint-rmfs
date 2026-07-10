@@ -109,7 +109,8 @@ def test_new_campaign_files_write_host_assignments_not_shards(tmp_path, monkeypa
     assert not (root / "shards").exists()
     for launcher in (root / "launchers").iterdir():
         content = launcher.read_text(encoding="utf-8")
-        assert "--execute-host --resume --progress" in content
+        assert "--launch-host --progress" in content
+        assert "--resume" not in content
         assert "--stage" not in content
 
 
@@ -194,11 +195,13 @@ def test_primary_run_specs_are_no_state_and_use_explicit_rts_contracts():
 def test_continuous_execution_combines_stages_before_calling_run_specs(tmp_path, monkeypatch):
     manifest = build_manifest()
     machine = default_machines()[0]
-    selected = [
-        {**run, "machine_id": machine.machine_id}
-        for run in manifest["runs"]
-        if run["stage_first_requested"] == 1
-    ][:6]
+    selected = []
+    for stage, count in ((1, 6), (2, 2), (3, 2), (4, 2)):
+        selected.extend([
+            {**run, "machine_id": machine.machine_id}
+            for run in manifest["runs"]
+            if run["stage_first_requested"] == stage
+        ][:count])
     manifest = {
         **manifest,
         "campaign_root_relative": tmp_path.relative_to(Path.cwd()).as_posix() if tmp_path.is_relative_to(Path.cwd()) else "data/runtime/distributed_sensitivity/test_combined_queue",
@@ -211,10 +214,10 @@ def test_continuous_execution_combines_stages_before_calling_run_specs(tmp_path,
     write_json(root / "manifest.json", manifest)
     write_json(shard_path, {"campaign_id": manifest["campaign_id"], "machine_id": machine.machine_id, "runs": selected})
 
-    launched = {}
+    launched = []
 
     def fake_run_specs(specs, **kwargs):
-        launched["stage_order"] = [spec.stage_first_requested for spec in specs]
+        launched.append([spec.stage_first_requested for spec in specs])
         completed = []
         for spec in specs:
             write_json(spec.runtime_root / "run_spec.json", spec.to_json_dict())
@@ -243,18 +246,16 @@ def test_continuous_execution_combines_stages_before_calling_run_specs(tmp_path,
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.validate_local_assets", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_specs", fake_run_specs)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.rebuild_run_outcomes_csv", lambda **_kwargs: root / machine.machine_id / "run_outcomes.csv")
+    monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_complete_for_campaign", lambda *_args, **_kwargs: True)
 
-    # Section 10: the shard/execute_machine path is deprecated in favour of the
-    # host-ledger path (execute_host); it must refuse to run.
-    with pytest.raises(SystemExit) as exc:
-        execute_machine(
-            manifest_path=root / "manifest.json",
-            machine_id=machine.machine_id,
-            stages=[1],
-            resume=False,
-            progress=False,
-        )
-    assert "--execute-host" in str(exc.value)
+    assert execute_machine(
+        manifest_path=root / "manifest.json",
+        machine_id=machine.machine_id,
+        stages=[1, 2, 3, 4],
+        resume=False,
+        progress=False,
+    ) == 0
+    assert launched == [[1, 1, 1, 1, 1, 1, 2, 2, 3, 3], [4, 4]]
 
 
 def test_execute_machine_returns_nonzero_for_invalid_selected_run(tmp_path, monkeypatch):
@@ -290,15 +291,13 @@ def test_execute_machine_returns_nonzero_for_invalid_selected_run(tmp_path, monk
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.validate_local_assets", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_specs", fake_run_specs)
 
-    with pytest.raises(SystemExit) as exc:
-        execute_machine(
-            manifest_path=root / "manifest.json",
-            machine_id=machine.machine_id,
-            stages=[condition["stage_first_requested"]],
-            resume=False,
-            progress=False,
-        )
-    assert "--execute-host" in str(exc.value)
+    assert execute_machine(
+        manifest_path=root / "manifest.json",
+        machine_id=machine.machine_id,
+        stages=[condition["stage_first_requested"]],
+        resume=False,
+        progress=False,
+    ) == 1
 
 
 def test_execute_machine_returns_zero_only_after_strict_completion(tmp_path, monkeypatch):
@@ -322,6 +321,7 @@ def test_execute_machine_returns_zero_only_after_strict_completion(tmp_path, mon
         write_json(
             spec.runtime_root / "worker_summary.json",
             {
+                **spec.to_json_dict(),
                 "run_id": spec.run_id,
                 "campaign_id": spec.campaign_id,
                 "simulation_semantics_id": spec.simulation_semantics_id,
@@ -343,15 +343,13 @@ def test_execute_machine_returns_zero_only_after_strict_completion(tmp_path, mon
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.validate_local_assets", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("scripts.experiments.distributed_sensitivity_campaign.run_specs", fake_run_specs)
 
-    with pytest.raises(SystemExit) as exc:
-        execute_machine(
-            manifest_path=root / "manifest.json",
-            machine_id=machine.machine_id,
-            stages=[condition["stage_first_requested"]],
-            resume=False,
-            progress=False,
-        )
-    assert "--execute-host" in str(exc.value)
+    assert execute_machine(
+        manifest_path=root / "manifest.json",
+        machine_id=machine.machine_id,
+        stages=[condition["stage_first_requested"]],
+        resume=False,
+        progress=False,
+    ) == 0
 
 
 def test_run_outcomes_csv_rebuilds_from_retained_worker_summary(tmp_path):
@@ -465,7 +463,7 @@ def test_launch_host_materializes_and_executes_without_a_manifest(monkeypatch, t
         lambda _args: (manifest_path, {"campaign_id": "local"}),
     )
     monkeypatch.setattr(
-        "scripts.experiments.distributed_sensitivity_campaign.execute_host",
+        "scripts.experiments.distributed_sensitivity_campaign.execute_machine",
         lambda **kwargs: called.update(kwargs) or 0,
     )
     assert main(["--launch-host", "--machine-id", "win_lukman", "--progress"]) == 0

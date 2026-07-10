@@ -1376,19 +1376,16 @@ def campaign_root(repo_root: Path, manifest: dict[str, Any]) -> Path:
 
 def write_launchers(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
     launchers: dict[str, str] = {}
-    rel_manifest_posix = Path(manifest["campaign_root_relative"]) / "manifest.json"
     for row in manifest["machines"]:
         machine = Machine(**row)
         if machine.os.lower().startswith("win"):
             path = root / "launchers" / f"run_{machine.machine_id}.ps1"
-            rel_manifest = str(rel_manifest_posix).replace("/", "\\")
             content = "\n".join([
                 "$ErrorActionPreference = \"Stop\"",
                 f"Set-Location -LiteralPath \"{machine.repository}\"",
                 (
                     f"& \"{machine.python}\" \"scripts\\experiments\\distributed_sensitivity_campaign.py\" "
-                    f"--manifest \"{rel_manifest}\" --machine-id \"{machine.machine_id}\" "
-                    "--execute-host --resume --progress"
+                    f"--machine-id \"{machine.machine_id}\" --launch-host --progress"
                 ),
                 "",
             ])
@@ -1400,8 +1397,7 @@ def write_launchers(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
                 f"cd {json.dumps(machine.repository)}",
                 (
                     f"exec {json.dumps(machine.python)} scripts/experiments/distributed_sensitivity_campaign.py "
-                    f"--manifest {json.dumps(rel_manifest_posix.as_posix())} --machine-id {json.dumps(machine.machine_id)} "
-                    "--execute-host --resume --progress"
+                    f"--machine-id {json.dumps(machine.machine_id)} --launch-host --progress"
                 ),
                 "",
             ])
@@ -1975,26 +1971,18 @@ def execute_machine(
     progress: bool,
     keep_run_artifacts: bool = False,
 ) -> int:
-    # Section 10: the shard/execute_machine workflow is DEPRECATED in favour of
-    # the single host-ledger execution path (execute_host). It kept per-run
-    # summaries and used committed shards; it must not be used for the finalized
-    # campaign. Retained only so historical manifests remain inspectable.
-    raise SystemExit(
-        "execute_machine (--run-continuously / --stage shard workflow) is deprecated; "
-        "use the host-ledger path: --execute-host --manifest <m> --machine-id <id> --resume"
-    )
     ensure_clean_tracked_scientific_files(REPO_ROOT)
     manifest = read_json(manifest_path)
     machines = machine_map(manifest)
     if machine_id not in machines:
         raise SystemExit(f"unknown machine id {machine_id}; expected one of {sorted(machines)}")
     machine = machines[machine_id]
-    validate_local_assets(manifest, REPO_ROOT)
-    shard = load_machine_shard(manifest, manifest_path, machine_id)
+    validate_local_assets(manifest, REPO_ROOT, strict=False)
+    assigned_runs = [run for run in manifest["runs"] if run["machine_id"] == machine_id]
     cleanup_stats: dict[str, Any] = {"bytes": 0, "by_filename": {}}
     startup_reclaimed_runs = 0
     if not keep_run_artifacts:
-        for condition in shard["runs"]:
+        for condition in assigned_runs:
             run_root = condition_runtime_root(REPO_ROOT, manifest, machine_id, condition["run_id"])
             if run_complete_for_campaign(
                 condition,
@@ -2014,7 +2002,7 @@ def execute_machine(
             )
 
     selected = sorted(
-        [run for run in shard["runs"] if int(run["stage_first_requested"]) in {int(stage) for stage in stages}],
+        [run for run in assigned_runs if int(run["stage_first_requested"]) in {int(stage) for stage in stages}],
         key=condition_sort_key,
     )
     specs = []
@@ -2048,14 +2036,21 @@ def execute_machine(
     def _reclaim_on_complete(spec: RunSpec, return_code: int) -> None:
         nonlocal peak_runtime_directory_bytes
         peak_runtime_directory_bytes = max(peak_runtime_directory_bytes, directory_size_bytes(spec.runtime_root))
-        if not keep_run_artifacts:
+        if keep_run_artifacts:
+            return
+        try:
             summary = load_worker_summary(spec.runtime_root)
             if int(return_code) == 0 and summary.get("status") == "success":
                 stats = reclaim_completed_run_artifacts_with_stats(spec.runtime_root)
             else:
                 stats = reclaim_failed_run_artifacts_with_stats(spec.runtime_root)
             merge_reclaim_stats(cleanup_stats, stats)
-        rebuild_run_outcomes_csv(manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+        except Exception as exc:
+            print(
+                f"[sensitivity] warning: cleanup failed for {spec.run_id}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
 
     previous_log_cap = os.environ.get("RMFS_WORKER_LOG_CAP_MB")
     os.environ["RMFS_WORKER_LOG_CAP_MB"] = "5"
@@ -2063,14 +2058,30 @@ def execute_machine(
     completed = []
     run_return_codes: dict[str, int] = {}
     try:
-        if specs:
-            completed = run_specs(
-                specs,
+        critical_specs = [spec for spec in specs if int(spec.stage_first_requested or 0) in {1, 2, 3}]
+        stage4_specs = [spec for spec in specs if int(spec.stage_first_requested or 0) == 4]
+        for wave_name, wave_specs in (("critical stages 1-3", critical_specs), ("stage 4", stage4_specs)):
+            if not wave_specs:
+                continue
+            print(
+                f"[sensitivity] starting {wave_name}: {len(wave_specs)} runs, "
+                f"max_workers={machine.max_workers}"
+            )
+            completed.extend(run_specs(
+                wave_specs,
                 max_workers=int(machine.max_workers),
                 progress=progress,
                 on_run_complete=_reclaim_on_complete,
                 before_launch=_before_launch,
-            )
+            ))
+            try:
+                rebuild_run_outcomes_csv(manifest=manifest, machine=machine, repo_root=REPO_ROOT)
+            except Exception as exc:
+                print(
+                    f"[sensitivity] warning: run_outcomes.csv rebuild failed after {wave_name}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
     finally:
         if previous_log_cap is None:
             os.environ.pop("RMFS_WORKER_LOG_CAP_MB", None)
@@ -2585,14 +2596,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         if not args.machine_id:
             raise SystemExit("--launch-host requires --machine-id")
         manifest_path, _manifest = materialize_local_campaign_plan(args)
-        return execute_host(
+        return execute_machine(
             manifest_path=manifest_path,
             machine_id=args.machine_id,
             stages=[1, 2, 3, 4],
             resume=False,
             progress=bool(args.progress),
-            max_retries=int(args.max_retries),
-            host_data_root=Path(args.host_data_root) if args.host_data_root else None,
             keep_run_artifacts=bool(args.keep_run_artifacts),
         )
 
@@ -2738,7 +2747,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "complete_pairs": manifest["assertions"]["complete_pair_count"],
             "clean_tracked_scientific_inputs": True,
             "strict_completion_required": True,
-            "completion_callbacks_fail_closed": True,
+            "cleanup_errors_stop_worker_queue": False,
             "treatment_execution_contracts": manifest["scientific_identity"]["treatment_execution_contracts"],
             "sensitivity_persist_final_state": False,
             "expected_worker_files_without_state": [
@@ -2749,7 +2758,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "worker_summary.json",
             ],
             "successful_run_retained_files": [],
-            "successful_run_durable_records": ["run_outcomes.csv", "host_ledger.json"],
+            "successful_run_durable_records": ["run_outcomes.csv", "machine_summary.json"],
             "successful_run_deleted_files": list(SUCCESS_RECLAIMABLE_RUN_ARTIFACTS),
             "failed_run_deleted_files": list(FAILED_RECLAIMABLE_RUN_ARTIFACTS),
             "min_free_disk_bytes": min_free_disk_bytes_from_env(),

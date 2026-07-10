@@ -1218,8 +1218,8 @@ def draw_storage_from_generated_file(universe: Inventory):
     if universe.charging_enabled:
         print(f"[charging] ON: {len(universe.charger_cells)} charger cells "
               f"(active={len(universe.active_charger_cells)}), policy "
-              f"{_Robot.BATTERY_LOW_PCT}/{_Robot.BATTERY_CHARGED_PCT}/"
-              f"{_Robot.BATTERY_INTERRUPT_PCT} from {_configured['source']}")
+              f"{Robot.BATTERY_LOW_PCT}/{Robot.BATTERY_CHARGED_PCT}/"
+              f"{Robot.BATTERY_INTERRUPT_PCT} from {_configured['source']}")
     else:
         print("[charging] OFF (RMFS_CHARGING_ENABLED=0, or no chargers found)")
 

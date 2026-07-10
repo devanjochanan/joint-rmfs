@@ -1137,6 +1137,7 @@ def run_worker(spec: RunSpec):
     original_cwd = Path.cwd()
     netlogo_module = None
     session = None
+    final_warehouse = None
     status_path = spec.runtime_root / "worker_status.json"
     ticks_done = 0
     last_status_tick = -1
