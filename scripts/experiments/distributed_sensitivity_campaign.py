@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -71,7 +72,7 @@ from src.rmfs.experiments.sensitivity_allocation import (  # noqa: E402
 
 CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v4"
 SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v4_130_interaction_ppo_constrained"
-ALLOCATION_PATCH_LABEL = "allocation_patch_0001"
+ALLOCATION_PATCH_LABEL = "allocation_patch_0002"
 CANONICAL_RTS_CHECKPOINT_ID = "batch_000014"
 # Campaign PPS asset: compact policy-only inference artifact (NOT the full PPO
 # training archive). Exact deterministic parity is verified separately.
@@ -117,6 +118,26 @@ MACHINE_IDS = (
     "alisha_pc",
     "citi_gojira",
 )
+# Final 130-run host distribution.  The scientific conditions do not change;
+# this only moves execution ownership away from the two reduced-use machines.
+BASELINE_MACHINE_RUN_COUNTS = {
+    "win_lukman": 20,
+    "win_admin": 18,
+    "citi_angiebow": 21,
+    "codex_local": 17,
+    "alisha_pc": 16,
+    "citi_gojira": 38,
+}
+TARGET_MACHINE_RUN_COUNTS = {
+    "win_lukman": 10,
+    "win_admin": 18,
+    "citi_angiebow": 5,
+    "codex_local": 21,
+    "alisha_pc": 16,
+    "citi_gojira": 60,
+}
+TRANSFER_DONORS = ("win_lukman", "citi_angiebow")
+TRANSFER_RECIPIENTS = ("citi_gojira", "codex_local")
 SCIENTIFIC_TRACKED_PATHS = (
     "data/input/scenarios/cindy_s3/generated_pod.csv",
     "data/input/scenarios/cindy_s3/items.csv",
@@ -495,6 +516,7 @@ def generate_allocation_patch_id(machines: list[Machine], rl_overhead_multiplier
         "allocation_patch_label": ALLOCATION_PATCH_LABEL,
         "allocation_algorithm": "treatment_aware_constrained_lpt.v1",
         "machine_allocation_config": allocation_config_rows(machines),
+        "target_machine_run_counts": TARGET_MACHINE_RUN_COUNTS,
         "condition_cost_model": {
             "base_backend_steps": BACKEND_STEPS_PER_RUN,
             "rl_overhead_multiplier": float(rl_overhead_multiplier),
@@ -1298,6 +1320,138 @@ def generate_campaign_id(
     return generate_campaign_id_from_identity(scientific_identity)
 
 
+def _run_allocation_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        int(row["stage_first_requested"]),
+        str(row["policy_configuration"]),
+        int(row["robot_count"]),
+        int(row["order_rate"]),
+        int(row["replication"]),
+        str(row["condition_key"]),
+    )
+
+
+def apply_machine_run_targets(
+    runs: list[dict[str, Any]],
+    machines: list[Machine],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Move only the requested donor excess to Gojira and Dewa Mac.
+
+    The underlying LPT allocator is still used first.  This small deterministic
+    patch preserves every scientific condition and keeps Win Admin and Alisha's
+    assignments unchanged.
+    """
+    machine_by_id = {machine.machine_id: machine for machine in machines}
+    if set(machine_by_id) != set(TARGET_MACHINE_RUN_COUNTS):
+        raise AssertionError(
+            f"machine target keys changed: machines={sorted(machine_by_id)} "
+            f"targets={sorted(TARGET_MACHINE_RUN_COUNTS)}"
+        )
+    before = Counter(str(row["machine_id"]) for row in runs)
+    if dict(before) != BASELINE_MACHINE_RUN_COUNTS:
+        raise AssertionError(
+            "baseline allocation changed before the manual transfer: "
+            f"expected={BASELINE_MACHINE_RUN_COUNTS}, got={dict(before)}"
+        )
+
+    moved: list[dict[str, Any]] = []
+    for donor in TRANSFER_DONORS:
+        donor_rows = sorted(
+            (row for row in runs if row["machine_id"] == donor),
+            key=_run_allocation_sort_key,
+        )
+        keep = int(TARGET_MACHINE_RUN_COUNTS[donor])
+        moved.extend(donor_rows[keep:])
+
+    recipient_sequence: list[str] = []
+    for recipient in TRANSFER_RECIPIENTS:
+        deficit = int(TARGET_MACHINE_RUN_COUNTS[recipient]) - int(before[recipient])
+        if deficit < 0:
+            raise AssertionError(f"{recipient} already exceeds its target")
+        recipient_sequence.extend([recipient] * deficit)
+    if len(moved) != len(recipient_sequence):
+        raise AssertionError(
+            f"transfer mismatch: donor excess={len(moved)} recipient capacity={len(recipient_sequence)}"
+        )
+
+    profiles = {profile.machine_id: profile for profile in machine_allocation_profiles(machines)}
+    for row, recipient in zip(sorted(moved, key=_run_allocation_sort_key), recipient_sequence):
+        treatment = str(row["allocation_treatment"])
+        if not profiles[recipient].supports(treatment, int(row["stage_first_requested"])):
+            raise AssertionError(f"{recipient} cannot execute {treatment}: {row['condition_key']}")
+        row["machine_id"] = recipient
+
+    # Rebuild slot timing fields after the transfer so the manifest's duration
+    # estimates match the new host ownership.
+    slot_finish = {
+        machine.machine_id: [0.0] * int(machine.max_workers)
+        for machine in machines
+    }
+    stage_summaries: dict[str, Any] = {}
+    for stage in (1, 2, 3, 4):
+        stage_rows = sorted(
+            (row for row in runs if int(row["stage_first_requested"]) == stage),
+            key=_run_allocation_sort_key,
+        )
+        for row in stage_rows:
+            machine_id = str(row["machine_id"])
+            profile = profiles[machine_id]
+            treatment = str(row["allocation_treatment"])
+            slot_count = profile.slot_count_for(treatment)
+            index = min(range(slot_count), key=lambda i: (slot_finish[machine_id][i], i))
+            steps = float(row["estimated_backend_steps"])
+            duration = steps / profile.slot_rate_for(treatment)
+            start = slot_finish[machine_id][index]
+            finish = start + duration
+            slot_finish[machine_id][index] = finish
+            row.update({
+                "machine_slot_index": index,
+                "estimated_duration_seconds": duration,
+                "projected_slot_start_seconds": start,
+                "projected_slot_finish_seconds": finish,
+                "allocation_rate_steps_per_second": profile.slot_rate_for(treatment),
+                "allocation_rate_source": (
+                    profile.rl_rate_source if treatment == "all_on_rl" else "reference_measured"
+                ),
+            })
+
+        stage_summaries[str(stage)] = {
+            "stage": stage,
+            "name": STAGE_NAMES[stage],
+            "allocation_wave": "critical" if stage in (1, 2, 3) else "best_effort",
+            "new_runs": len(stage_rows),
+            "assigned_runs_by_machine_and_treatment": {
+                machine_id: {
+                    treatment: sum(
+                        1 for row in stage_rows
+                        if row["machine_id"] == machine_id and row["allocation_treatment"] == treatment
+                    )
+                    for treatment in ("all_off", "all_on_rl")
+                }
+                for machine_id in MACHINE_IDS
+            },
+            "projected_finish_seconds_by_machine": {
+                machine_id: max(values, default=0.0)
+                for machine_id, values in slot_finish.items()
+            },
+            "projected_stage_makespan_seconds": max(
+                (max(values, default=0.0) for values in slot_finish.values()),
+                default=0.0,
+            ),
+            "final_slot_finish_seconds_by_machine": {
+                machine_id: list(values)
+                for machine_id, values in slot_finish.items()
+            },
+        }
+
+    after = Counter(str(row["machine_id"]) for row in runs)
+    if dict(after) != TARGET_MACHINE_RUN_COUNTS:
+        raise AssertionError(
+            f"final machine distribution mismatch: expected={TARGET_MACHINE_RUN_COUNTS}, got={dict(after)}"
+        )
+    return runs, stage_summaries
+
+
 def build_campaign_plan(
     *,
     campaign_id: str,
@@ -1355,6 +1509,7 @@ def build_campaign_plan(
         runs.extend(stage_runs)
         stage_summaries[str(stage)] = summary
         already_requested.update(row["condition_key"] for row in rows)
+    runs, stage_summaries = apply_machine_run_targets(runs, machines)
     assertions = dry_run_assertions(runs, machines, stage_summaries)
     return {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,

@@ -78,6 +78,14 @@ def test_campaign_plan_counts_allocations_and_seed_design():
     assert manifest["assertions"]["mixed_run_count"] == 42
     assert len(manifest["runs"]) == 130
     assert manifest["assertions"]["old_capacity_study_roots_contribute_completions"] == 0
+    assert manifest["assertions"]["total_fresh_runs_by_machine"] == {
+        "win_lukman": 10,
+        "win_admin": 18,
+        "citi_angiebow": 5,
+        "codex_local": 21,
+        "alisha_pc": 16,
+        "citi_gojira": 60,
+    }
 
     for replication, expected_seed in ((1, 42), (3, 44), (20, 61)):
         assert seed_for_replication(replication) == expected_seed
