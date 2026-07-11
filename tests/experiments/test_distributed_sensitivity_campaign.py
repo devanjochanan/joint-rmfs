@@ -71,13 +71,15 @@ def test_campaign_plan_counts_allocations_and_seed_design():
 
     assert manifest["simulation_semantics_id"] == SIMULATION_SEMANTICS_ID
     assert manifest["allocation_patch_id"].startswith(f"{ALLOCATION_PATCH_LABEL}_")
-    assert manifest["assertions"]["machine_count"] == 7
-    assert manifest["assertions"]["stage_new_runs"] == {"1": 18, "2": 39, "3": 39, "4": 624}
-    assert manifest["assertions"]["total_unique_fresh_runs"] == 720
-    assert len(manifest["runs"]) == 720
+    assert manifest["assertions"]["machine_count"] == 6
+    assert manifest["assertions"]["stage_new_runs"] == {"1": 18, "2": 19, "3": 19, "4": 74}
+    assert manifest["assertions"]["total_unique_fresh_runs"] == 130
+    assert manifest["assertions"]["main_run_count"] == 88
+    assert manifest["assertions"]["mixed_run_count"] == 42
+    assert len(manifest["runs"]) == 130
     assert manifest["assertions"]["old_capacity_study_roots_contribute_completions"] == 0
 
-    for replication, expected_seed in ((1, 42), (40, 81)):
+    for replication, expected_seed in ((1, 42), (3, 44), (20, 61)):
         assert seed_for_replication(replication) == expected_seed
         assert {run["seed"] for run in manifest["runs"] if run["replication"] == replication} == {expected_seed}
 
@@ -87,11 +89,11 @@ def test_campaign_plan_has_no_duplicate_identities_or_shard_overlap():
 
     run_ids = [run["run_id"] for run in manifest["runs"]]
     condition_keys = [run["condition_key"] for run in manifest["runs"]]
-    assert len(run_ids) == len(set(run_ids)) == 720
-    assert len(condition_keys) == len(set(condition_keys)) == 720
+    assert len(run_ids) == len(set(run_ids)) == 130
+    assert len(condition_keys) == len(set(condition_keys)) == 130
     assert all(count == 1 for count in Counter(run_ids).values())
     assert all(count == 1 for count in Counter(condition_keys).values())
-    assert sum(manifest["assertions"]["total_fresh_runs_by_machine"].values()) == 720
+    assert sum(manifest["assertions"]["total_fresh_runs_by_machine"].values()) == 130
 
     assert {run["policy_configuration"] for run in manifest["runs"]} == set(POLICY_CONFIGURATIONS)
 

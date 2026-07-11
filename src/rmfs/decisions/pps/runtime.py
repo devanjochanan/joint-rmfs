@@ -59,7 +59,7 @@ def get_pps_mode() -> str:
 def is_pps_rl_enabled() -> bool:
     """Check if PPS RL (PPO) is enabled based on current mode and env vars."""
     value = os.environ.get("PPS_RL_ENABLED", "1").strip().lower()
-    return get_pps_mode() == "ppo" and value not in {"0", "false", "no", "off"}
+    return get_pps_mode() in {"ppo", "ppo_constrained"} and value not in {"0", "false", "no", "off"}
 
 
 def _pps_rl_model_candidates() -> list[str]:
@@ -425,7 +425,7 @@ def runtime_set_pps_mode(
 
     _PPS_MODE = normalize_pps_mode(mode)
     os.environ["PPS_MODE"] = _PPS_MODE
-    if _PPS_MODE == "ppo" and _PPS_RL_MODEL is None:
+    if _PPS_MODE in {"ppo", "ppo_constrained"} and _PPS_RL_MODEL is None:
         _PPS_RL_LOAD_ATTEMPTED = False
     _PPS_RL_ACTIVE_LOGGED = False
 

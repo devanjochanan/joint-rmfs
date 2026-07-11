@@ -69,20 +69,25 @@ from src.rmfs.experiments.sensitivity_allocation import (  # noqa: E402
     allocate_stage as treatment_allocate_stage,
 )
 
-CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v3"
-SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v2"
+CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v4"
+SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v4_130_interaction_ppo_constrained"
 ALLOCATION_PATCH_LABEL = "allocation_patch_0001"
 CANONICAL_RTS_CHECKPOINT_ID = "batch_000014"
 # Campaign PPS asset: compact policy-only inference artifact (NOT the full PPO
 # training archive). Exact deterministic parity is verified separately.
 DEFAULT_PPS_INFERENCE_ARTIFACT = REPO_ROOT / "data/models/pps/pps_rl_policy_inference.zip"
-# Bundled two-treatment comparison (charging enabled in BOTH; different packages).
-TREATMENTS = ("all_off", "all_on_rl")
-POLICY_CONFIGURATIONS = TREATMENTS          # `policy_configuration` field == treatment name
+MAIN_TREATMENTS = ("all_off", "all_on_rl")
+ALLOCATION_TREATMENTS = ("all_off", "all_on_rl")
+SCENARIOS = ("cindy_s3", "scenario4_sij")
+RTS_COMPONENTS = ("current", "rts_rl")
+PPS_COMPONENTS = ("heuristic", "ppo_constrained")
+CHARGING_COMPONENTS = ("reference", "salsa_adaptive")
 # Campaign-local factor grid — do NOT import from another experiment.
 ROBOT_COUNTS = (15, 20, 25)
 ORDER_RATES = (400, 500, 600)
-REPLICATIONS = range(1, 41)                 # 40 paired replications
+MAIN_CENTER_REPLICATIONS = range(1, 21)
+MAIN_EDGE_REPLICATIONS = range(1, 4)
+MIXED_REPLICATIONS = range(1, 4)
 SIMULATED_SECONDS = 87_000.0
 BACKEND_STEPS_PER_RUN = 580_000
 SEED_BASE_MINUS_ONE = 41
@@ -96,10 +101,10 @@ ARCHIVED_ROOTS_IGNORED = (
     "data/runtime/capacity_study_order_rate_packC",
 )
 STAGE_NAMES = {
-    1: "one_rep_sensitivity",
-    2: "central_all_off_to_40",
-    3: "central_all_on_rl_to_40",
-    4: "full_sensitivity_to_40",
+    1: "main_grid_rep1",
+    2: "central_all_off_to_20",
+    3: "central_all_on_rl_to_20",
+    4: "edge_reps_and_interactions",
 }
 CENTRAL_ROBOT_COUNT = 20
 CENTRAL_ORDER_RATE = 500
@@ -110,14 +115,17 @@ MACHINE_IDS = (
     "citi_angiebow",
     "codex_local",
     "alisha_pc",
-    "dewa_macbook",
     "citi_gojira",
 )
 SCIENTIFIC_TRACKED_PATHS = (
-    "data/input/base/generated_pod.csv",
-    "data/input/base/items.csv",
-    "data/input/base/pods.csv",
-    "data/input/base/raw_order.csv",
+    "data/input/scenarios/cindy_s3/generated_pod.csv",
+    "data/input/scenarios/cindy_s3/items.csv",
+    "data/input/scenarios/cindy_s3/pods.csv",
+    "data/input/scenarios/cindy_s3/raw_order.csv",
+    "data/input/scenarios/scenario4_sij/generated_pod.csv",
+    "data/input/scenarios/scenario4_sij/items.csv",
+    "data/input/scenarios/scenario4_sij/pods.csv",
+    "data/input/scenarios/scenario4_sij/raw_order.csv",
     "data/models/pps/pps_rl_policy_inference.zip",
     "data/models/pps/pps_rl_policy_inference.metadata.json",
     "data/models/rts/batch_000014/checkpoint/model.pt",
@@ -125,6 +133,51 @@ SCIENTIFIC_TRACKED_PATHS = (
     "data/models/rts/batch_000014/checkpoint/feature_schema.json",
 )
 _SALSA_CONFIG_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
+
+
+@dataclass(frozen=True)
+class PolicyComponents:
+    policy_configuration: str
+    scenario: str
+    rts: str
+    pps: str
+    charging: str
+    design_group: str
+
+
+def _policy_name(*, scenario: str, rts: str, pps: str, charging: str) -> str:
+    if scenario == "cindy_s3" and rts == "current" and pps == "heuristic" and charging == "reference":
+        return "all_off"
+    if scenario == "scenario4_sij" and rts == "rts_rl" and pps == "ppo_constrained" and charging == "salsa_adaptive":
+        return "all_on_rl"
+    scenario_tag = {"cindy_s3": "cindy", "scenario4_sij": "sij"}[scenario]
+    rts_tag = {"current": "cur", "rts_rl": "rtsrl"}[rts]
+    pps_tag = {"heuristic": "heur", "ppo_constrained": "ppoc"}[pps]
+    charge_tag = {"reference": "refchg", "salsa_adaptive": "salsa"}[charging]
+    return f"mix_{scenario_tag}_{rts_tag}_{pps_tag}_{charge_tag}"
+
+
+def _policy_components() -> dict[str, PolicyComponents]:
+    components: dict[str, PolicyComponents] = {}
+    for scenario in SCENARIOS:
+        for rts in RTS_COMPONENTS:
+            for pps in PPS_COMPONENTS:
+                for charging in CHARGING_COMPONENTS:
+                    name = _policy_name(scenario=scenario, rts=rts, pps=pps, charging=charging)
+                    design_group = "main" if name in MAIN_TREATMENTS else "mixed"
+                    components[name] = PolicyComponents(
+                        policy_configuration=name,
+                        scenario=scenario,
+                        rts=rts,
+                        pps=pps,
+                        charging=charging,
+                        design_group=design_group,
+                    )
+    return dict(sorted(components.items()))
+
+
+POLICY_COMPONENTS = _policy_components()
+POLICY_CONFIGURATIONS = tuple(POLICY_COMPONENTS)
 
 
 @dataclass(frozen=True)
@@ -389,19 +442,6 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
             eligible_stages=all_stages,
             allowed_treatments=("all_off",),
             reference_effective_steps_per_second=330.0,
-            max_rl_workers=0,
-            rl_rate_source="not_applicable",
-        ),
-        Machine(
-            machine_id="dewa_macbook",
-            os="macos",
-            repository="/Users/710502/netlogo-rmfs",
-            python="/Users/710502/torch-gpu/bin/python",
-            max_workers=8,
-            effective_steps_per_second=260.0,
-            eligible_stages=all_stages,
-            allowed_treatments=("all_off",),
-            reference_effective_steps_per_second=260.0,
             max_rl_workers=0,
             rl_rate_source="not_applicable",
         ),
@@ -772,6 +812,17 @@ def seed_for_replication(replication: int) -> int:
     return SEED_BASE_MINUS_ONE + int(replication)
 
 
+def policy_components_for(policy: str) -> PolicyComponents:
+    try:
+        return POLICY_COMPONENTS[policy]
+    except KeyError as exc:
+        raise ValueError(f"unknown policy configuration: {policy!r}") from exc
+
+
+def allocation_treatment_for_components(components: PolicyComponents) -> str:
+    return "all_on_rl" if components.rts == "rts_rl" or components.pps == "ppo_constrained" else "all_off"
+
+
 def condition_key(policy: str, robot_count: int, order_rate: int, replication: int) -> str:
     return f"{policy}|robots={robot_count}|order_rate={order_rate}|rep={replication}"
 
@@ -793,29 +844,37 @@ def _stage_candidate_tuples(stage: int) -> list[tuple[str, int, int, int]]:
     if stage == 1:
         return [
             (t, rc, orr, 1)
-            for t in TREATMENTS for rc in ROBOT_COUNTS for orr in ORDER_RATES
+            for t in MAIN_TREATMENTS for rc in ROBOT_COUNTS for orr in ORDER_RATES
         ]
     if stage == 2:
         return [
             ("all_off", CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, rep)
-            for rep in REPLICATIONS
+            for rep in MAIN_CENTER_REPLICATIONS
         ]
     if stage == 3:
         return [
             ("all_on_rl", CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, rep)
-            for rep in REPLICATIONS
+            for rep in MAIN_CENTER_REPLICATIONS
         ]
     if stage == 4:
-        return [
+        edge = [
             (t, rc, orr, rep)
-            for t in TREATMENTS for rc in ROBOT_COUNTS
-            for orr in ORDER_RATES for rep in REPLICATIONS
+            for t in MAIN_TREATMENTS for rc in ROBOT_COUNTS for orr in ORDER_RATES
+            if not (rc == CENTRAL_ROBOT_COUNT and orr == CENTRAL_ORDER_RATE)
+            for rep in MAIN_EDGE_REPLICATIONS
         ]
+        mixed = [
+            (name, CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, rep)
+            for name, components in POLICY_COMPONENTS.items()
+            if components.design_group == "mixed"
+            for rep in MIXED_REPLICATIONS
+        ]
+        return edge + mixed
     raise ValueError(f"unknown stage: {stage}")
 
 
 def condition_charging_identity(
-    policy: str, robot_count: int, seed: int, layout_path: Path
+    policy: str, robot_count: int, seed: int, layout_path: Path, *, charging_component: str | None = None
 ) -> dict[str, Any]:
     """Deterministic treatment-local charging metadata (both treatments enabled).
 
@@ -831,7 +890,9 @@ def condition_charging_identity(
         return {"low": cfg.get("battery_low_pct"), "charged": cfg.get("battery_charged_pct"),
                 "interrupt": cfg.get("battery_interrupt_pct")}
 
-    if policy == "all_off":
+    charging = charging_component or policy_components_for(policy).charging
+
+    if charging == "reference":
         cache_key = ("reference", str(Path(layout_path).resolve()), int(seed))
         cached = _SALSA_CONFIG_CACHE.get(cache_key)
         if cached is not None:
@@ -850,7 +911,7 @@ def condition_charging_identity(
         _SALSA_CONFIG_CACHE[cache_key] = dict(value)
         return dict(value)
 
-    if policy == "all_on_rl":
+    if charging == "salsa_adaptive":
         cache_key = ("salsa", str(Path(layout_path).resolve()), int(robot_count))
         cached = _SALSA_CONFIG_CACHE.get(cache_key)
         if cached is not None:
@@ -869,7 +930,7 @@ def condition_charging_identity(
         _SALSA_CONFIG_CACHE[cache_key] = dict(value)
         return dict(value)
 
-    raise ValueError(f"unknown primary treatment: {policy!r}")
+    raise ValueError(f"unknown charging component: {charging!r}")
 
 
 def base_condition_rows(stage: int, already_requested: set[str]) -> list[dict[str, Any]]:
@@ -878,23 +939,39 @@ def base_condition_rows(stage: int, already_requested: set[str]) -> list[dict[st
     candidates = _stage_candidate_tuples(stage)
     rows = []
     for policy, robot_count, order_rate, replication in candidates:
+        components = policy_components_for(policy)
+        scenario_root_relative = scenario_input_root_relative(components.scenario)
+        scenario_root = REPO_ROOT / scenario_root_relative
+        allocation_treatment = allocation_treatment_for_components(components)
         key = condition_key(policy, robot_count, order_rate, replication)
         if key in already_requested:
             continue
         rows.append({
             "condition_key": key,
             "policy_configuration": policy,
+            "allocation_treatment": allocation_treatment,
+            "design_group": components.design_group,
+            "scenario_name": components.scenario,
+            "input_root_relative": scenario_root_relative.as_posix(),
+            "rts_component": components.rts,
+            "pps_component": components.pps,
+            "charging_component": components.charging,
             "robot_count": int(robot_count),
             "order_rate": int(order_rate),
             "picker_count": PICKER_COUNT,
             "replenishment_count": REPLENISHMENT_COUNT,
             "replication": int(replication),
             "seed": seed_for_replication(replication),
-            "paired_group_id": paired_group_id(robot_count, order_rate, replication),
+            "paired_group_id": (
+                paired_group_id(robot_count, order_rate, replication)
+                if components.design_group == "main"
+                else f"mixed|{policy}|rep={int(replication)}|seed={seed_for_replication(int(replication))}"
+            ),
             "stage_first_requested": int(stage),
             "charging": condition_charging_identity(
                 policy, int(robot_count), int(seed_for_replication(replication)),
-                REPO_ROOT / INPUT_ROOT_RELATIVE / "generated_pod.csv"
+                scenario_root / "generated_pod.csv",
+                charging_component=components.charging,
             ),
         })
     return rows
@@ -902,30 +979,55 @@ def base_condition_rows(stage: int, already_requested: set[str]) -> list[dict[st
 
 def estimate_condition_steps(row: dict[str, Any], *, rl_overhead_multiplier: float) -> float:
     multiplier = 1.0
-    if row["policy_configuration"] == "all_on_rl":
+    if row.get("allocation_treatment", row["policy_configuration"]) == "all_on_rl":
         multiplier *= float(rl_overhead_multiplier)
     multiplier *= 1.0 + 0.015 * ((int(row["robot_count"]) - CENTRAL_ROBOT_COUNT) / 5.0)
     multiplier *= 1.0 + 0.02 * ((int(row["order_rate"]) - CENTRAL_ORDER_RATE) / 100.0)
     return BACKEND_STEPS_PER_RUN * max(0.2, multiplier)
 
 
-def build_input_identity(input_meta: dict[str, Any]) -> dict[str, Any]:
+def scenario_input_root_relative(scenario_name: str) -> Path:
+    if scenario_name not in SCENARIOS:
+        raise ValueError(f"unknown scenario: {scenario_name!r}")
+    return Path("data/input/scenarios") / scenario_name
+
+
+def build_input_identity(input_meta: dict[str, Any], *, input_root_relative: Path | None = None) -> dict[str, Any]:
+    root_relative = input_root_relative or INPUT_ROOT_RELATIVE
     file_identities = {}
-    for rel_path in sorted(input_meta.get("file_digests", {})):
-        file_identities[rel_path] = tracked_text_identity(REPO_ROOT / INPUT_ROOT_RELATIVE / rel_path)
     required = {"generated_pod.csv", "items.csv", "pods.csv", "raw_order.csv"}
+    for rel_path in sorted(input_meta.get("file_digests", {})):
+        if rel_path not in required:
+            continue
+        parts = Path(rel_path).parts
+        if "__pycache__" in parts or str(rel_path).endswith((".pyc", ".pyo")):
+            continue
+        file_identities[rel_path] = tracked_text_identity(REPO_ROOT / root_relative / rel_path)
     missing = sorted(required - set(file_identities))
     if missing:
         raise RuntimeError(f"scientific input identity missing executed input files: {missing}")
     return {
-        "input_root_relative": INPUT_ROOT_RELATIVE.as_posix(),
+        "input_root_relative": root_relative.as_posix(),
         "tracked_file_identities": file_identities,
         "layout_identity": file_identities["generated_pod.csv"],
     }
 
 
+def build_scenario_input_identities() -> dict[str, dict[str, Any]]:
+    identities = {}
+    for scenario_name in SCENARIOS:
+        root_relative = scenario_input_root_relative(scenario_name)
+        input_meta = validate_input_root(REPO_ROOT / root_relative)
+        identities[scenario_name] = build_input_identity(
+            input_meta,
+            input_root_relative=root_relative,
+        )
+    return identities
+
+
 def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, Any]) -> dict[str, Any]:
     asset_dict = asdict(assets) if isinstance(assets, AssetBundle) else dict(assets)
+    components = policy_components_for(policy)
     common = {
         "order_generation_mode": "shuffled_historical_cycle",
         "full_raw_order_replay": False,
@@ -938,10 +1040,8 @@ def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, An
         "task_allocator_scope": "active_job_queue",
         "worker_status_cadence": 1000,
     }
-    if policy == "all_on_rl":
-        # Integrated proposed treatment: RTS RL + PPO PPS + Salsa adaptive charging.
-        return {
-            **common,
+    rts_contract = (
+        {
             "rts_policy_mode": "rts_rl_explicit",
             "rts_rollout_enabled": True,
             "rts_rollout_write_disk": False,
@@ -952,20 +1052,9 @@ def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, An
             "rts_policy_device": "cpu",
             "rts_feature_ablation": "full",
             "rts_state_capture_mode": "full",
-            "pps_mode": "ppo",
-            "pps_policy": "ppo",
-            "charging_enabled": True,
-            "charging_package": "salsa_adaptive",
-            "charging_generator": "scripts/data/build_adaptive_hybrid.py",
-            "charging_placement_source": "generated_salsa_adaptive",
-            "active_charging_enabled": True,
-            "drive_by_charging_enabled": True,
-            "committed_next_reservations_enabled": True,
         }
-    if policy == "all_off":
-        # Reference bundled treatment: heuristic RTS + heuristic PPS + reference charging.
-        return {
-            **common,
+        if components.rts == "rts_rl"
+        else {
             "rts_policy_mode": "current",
             "rts_rollout_enabled": False,
             "rts_rollout_write_disk": False,
@@ -974,17 +1063,32 @@ def treatment_execution_contract(policy: str, assets: AssetBundle | dict[str, An
             "rts_policy_device": None,
             "rts_feature_ablation": None,
             "rts_state_capture_mode": "auto",
-            "pps_mode": "heuristic",
-            "pps_policy": "heuristic",
-            "charging_enabled": True,
+        }
+    )
+    charging_contract = (
+        {
             "charging_package": "reference_baseline",
             "charging_generator": "scripts/data/build_baseline_random.py",
             "charging_placement_source": "generated_reference",
-            "active_charging_enabled": True,
-            "drive_by_charging_enabled": True,
-            "committed_next_reservations_enabled": False,
         }
-    raise ValueError(f"unknown primary treatment: {policy}")
+        if components.charging == "reference"
+        else {
+            "charging_package": "salsa_adaptive",
+            "charging_generator": "scripts/data/build_adaptive_hybrid.py",
+            "charging_placement_source": "generated_salsa_adaptive",
+        }
+    )
+    return {
+        **common,
+        **rts_contract,
+        "pps_mode": components.pps,
+        "pps_policy": components.pps,
+        "charging_enabled": True,
+        **charging_contract,
+        "active_charging_enabled": True,
+        "drive_by_charging_enabled": True,
+        "committed_next_reservations_enabled": components.rts == "rts_rl",
+    }
 
 
 def treatment_execution_contracts(assets: AssetBundle | dict[str, Any]) -> dict[str, Any]:
@@ -997,19 +1101,36 @@ def treatment_execution_contracts(assets: AssetBundle | dict[str, Any]) -> dict[
 def build_scientific_identity(
     *,
     assets: AssetBundle,
-    input_identity: dict[str, Any],
+    input_identity: dict[str, Any] | None = None,
+    scenario_input_identities: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    scenario_input_identities = scenario_input_identities or build_scenario_input_identities()
+    input_identity = input_identity or scenario_input_identities["cindy_s3"]
     rts_dir = REPO_ROOT / assets.rts_checkpoint_relative_dir
     return {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
         "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
         "kpi_schema_version": FULL_KPI_V3_SCHEMA_VERSION,
         "policy_configurations": list(POLICY_CONFIGURATIONS),
+        "main_treatments": list(MAIN_TREATMENTS),
+        "design": {
+            "main_center_repetitions": len(list(MAIN_CENTER_REPLICATIONS)),
+            "main_edge_repetitions": len(list(MAIN_EDGE_REPLICATIONS)),
+            "mixed_repetitions": len(list(MIXED_REPLICATIONS)),
+            "main_run_count": 88,
+            "mixed_run_count": 42,
+            "total_run_count": 130,
+            "macbook_excluded": True,
+        },
         "robot_counts": list(ROBOT_COUNTS),
         "order_rates": list(ORDER_RATES),
         "picking_stations": PICKER_COUNT,
         "replenishment_stations": REPLENISHMENT_COUNT,
-        "replication_range": {"first": 1, "last": 40},
+        "replication_plan": {
+            "center_main": {"first": 1, "last": max(MAIN_CENTER_REPLICATIONS)},
+            "edge_main": {"first": 1, "last": max(MAIN_EDGE_REPLICATIONS)},
+            "mixed": {"first": 1, "last": max(MIXED_REPLICATIONS)},
+        },
         "seed_formula": "seed = 41 + replication",
         "seed_base_minus_one": SEED_BASE_MINUS_ONE,
         "simulated_seconds": SIMULATED_SECONDS,
@@ -1017,9 +1138,13 @@ def build_scientific_identity(
         "tick_to_second": TICK_TO_SECOND,
         "source_tree_hash": SourceIdentity.compute(REPO_ROOT).source_tree_hash,
         "input_identity": input_identity,
+        "scenario_input_identities": scenario_input_identities,
         "scenario_layout_identity": {
-            "scenario_hash": short_hash(input_identity),
-            "layout_hash": input_identity["layout_identity"],
+            name: {
+                "scenario_hash": short_hash(identity),
+                "layout_hash": identity["layout_identity"],
+            }
+            for name, identity in scenario_input_identities.items()
         },
         "assets": {
             "pps_model_relative_path": assets.pps_model_relative_path,
@@ -1040,7 +1165,7 @@ def build_scientific_identity(
             "task_allocator_scope": "active_job_queue",
             "detail_db": False,
             "persist_final_state": False,
-            "charging_semantics": "both_enabled__all_off_reference__all_on_rl_salsa_adaptive",
+            "charging_semantics": "per_condition_reference_or_salsa_adaptive",
         },
         "treatment_execution_contracts": treatment_execution_contracts(assets),
     }
@@ -1056,12 +1181,14 @@ def allocate_stage(
     stage: int,
     machines: list[Machine],
     rl_overhead_multiplier: float,
+    initial_slot_finish_seconds: dict[str, list[float]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     allocated, summary = treatment_allocate_stage(
         rows,
         stage=stage,
         profiles=machine_allocation_profiles(machines),
         estimate_steps=lambda row: estimate_condition_steps(row, rl_overhead_multiplier=rl_overhead_multiplier),
+        initial_slot_finish_seconds=initial_slot_finish_seconds,
     )
     for row in allocated:
         row["estimated_cost_model"] = {
@@ -1084,13 +1211,19 @@ def add_run_identity(
     commit: str | None,
     ticks: int,
     assets: AssetBundle,
-    scenario_hash: str,
-    layout_hash: str,
 ) -> dict[str, Any]:
+    scenario_identity = scientific_identity["scenario_layout_identity"][row["scenario_name"]]
+    scenario_hash = scenario_identity["scenario_hash"]
+    layout_hash = scenario_identity["layout_hash"]
     identity = {
         "campaign_id": campaign_id,
         "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
         "policy_configuration": row["policy_configuration"],
+        "design_group": row["design_group"],
+        "scenario_name": row["scenario_name"],
+        "rts_component": row["rts_component"],
+        "pps_component": row["pps_component"],
+        "charging_component": row["charging_component"],
         "robot_count": row["robot_count"],
         "order_rate": row["order_rate"],
         "picking_stations": PICKER_COUNT,
@@ -1128,7 +1261,8 @@ def add_run_identity(
         "commit": commit,
         "allocation_patch_id": allocation_patch_id,
         "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
-        "scenario_id": f"scenario_{scenario_hash}",
+        "scenario_id": row["scenario_name"],
+        "scenario_name": row["scenario_name"],
         "scenario_hash": scenario_hash,
         "layout_hash": layout_hash,
         "source_tree_hash": scientific_identity["source_tree_hash"],
@@ -1156,10 +1290,10 @@ def generate_campaign_id(
     assets: AssetBundle,
     rl_overhead_multiplier: float,
 ) -> str:
-    input_meta = validate_input_root(REPO_ROOT / INPUT_ROOT_RELATIVE)
+    scenario_input_identities = build_scenario_input_identities()
     scientific_identity = build_scientific_identity(
         assets=assets,
-        input_identity=build_input_identity(input_meta),
+        scenario_input_identities=scenario_input_identities,
     )
     return generate_campaign_id_from_identity(scientific_identity)
 
@@ -1174,20 +1308,24 @@ def build_campaign_plan(
     ticks = ticks_from_seconds(SIMULATED_SECONDS)
     if ticks != BACKEND_STEPS_PER_RUN:
         raise RuntimeError(f"expected {BACKEND_STEPS_PER_RUN} backend steps, got {ticks}")
-    input_meta = validate_input_root(REPO_ROOT / INPUT_ROOT_RELATIVE)
-    input_identity = build_input_identity(input_meta)
-    scientific_identity = build_scientific_identity(assets=assets, input_identity=input_identity)
+    scenario_input_identities = build_scenario_input_identities()
+    scientific_identity = build_scientific_identity(
+        assets=assets,
+        scenario_input_identities=scenario_input_identities,
+    )
     expected_campaign_id = generate_campaign_id_from_identity(scientific_identity)
     if campaign_id != expected_campaign_id:
         raise RuntimeError(f"campaign_id mismatch: got {campaign_id}, expected {expected_campaign_id}")
     allocation_patch_id = generate_allocation_patch_id(machines, rl_overhead_multiplier)
-    scenario_hash = scientific_identity["scenario_layout_identity"]["scenario_hash"]
-    layout_hash = scientific_identity["scenario_layout_identity"]["layout_hash"]
     branch = git_clean_value("rev-parse", "--abbrev-ref", "HEAD")
     commit = git_clean_value("rev-parse", "HEAD")
     already_requested: set[str] = set()
     runs: list[dict[str, Any]] = []
     stage_summaries: dict[str, Any] = {}
+    slot_finish_seconds: dict[str, list[float]] = {
+        machine.machine_id: [0.0] * int(machine.max_workers)
+        for machine in machines
+    }
     for stage in (1, 2, 3, 4):
         rows = base_condition_rows(stage, already_requested)
         allocated, summary = allocate_stage(
@@ -1195,7 +1333,12 @@ def build_campaign_plan(
             stage=stage,
             machines=machines,
             rl_overhead_multiplier=rl_overhead_multiplier,
+            initial_slot_finish_seconds=slot_finish_seconds,
         )
+        slot_finish_seconds = {
+            machine_id: list(values)
+            for machine_id, values in summary.get("final_slot_finish_seconds_by_machine", {}).items()
+        }
         stage_runs = [
             add_run_identity(
                 row,
@@ -1206,8 +1349,6 @@ def build_campaign_plan(
                 commit=commit,
                 ticks=ticks,
                 assets=assets,
-                scenario_hash=scenario_hash,
-                layout_hash=layout_hash,
             )
             for row in allocated
         ]
@@ -1223,7 +1364,7 @@ def build_campaign_plan(
         "allocation_patch_id": allocation_patch_id,
         "allocation_patch_label": ALLOCATION_PATCH_LABEL,
         "allocation_config": {
-            "algorithm": "treatment_aware_constrained_lpt.v1",
+            "algorithm": "treatment_aware_constrained_lpt_carryover.v2",
             "machine_allocation_config": allocation_config_rows(machines),
             "effective_steps_per_second_semantics": "aggregate_machine_throughput_at_configured_worker_count",
             "allocation_waves": {"critical_stages": [1, 2, 3], "best_effort_stages": [4]},
@@ -1236,7 +1377,7 @@ def build_campaign_plan(
         "python_at_prepare": sys.executable,
         "output_root_relative": OUTPUT_ROOT_RELATIVE.as_posix(),
         "campaign_root_relative": (OUTPUT_ROOT_RELATIVE / campaign_id).as_posix(),
-        "input_root_relative": INPUT_ROOT_RELATIVE.as_posix(),
+        "input_root_relative": "per_condition",
         "archived_roots_ignored": list(ARCHIVED_ROOTS_IGNORED),
         "old_capacity_study_completions_used": 0,
         "tick_to_second": TICK_TO_SECOND,
@@ -1267,7 +1408,10 @@ def build_campaign_plan(
             policy: treatment_execution_contract(policy, assets)
             for policy in POLICY_CONFIGURATIONS
         },
-        "input_meta": input_meta,
+        "input_meta": {
+            name: validate_input_root(REPO_ROOT / scenario_input_root_relative(name))
+            for name in SCENARIOS
+        },
         "stages": stage_summaries,
         "runs": runs,
         "assertions": assertions,
@@ -1289,12 +1433,15 @@ def dry_run_assertions(
     rl_hashes = {
         (run["identity"]["rts_checkpoint_sha256"], run["identity"]["pps_model_sha256"])
         for run in runs
-        if run["policy_configuration"] == "all_on_rl"
+        if run.get("allocation_treatment") == "all_on_rl"
     }
 
-    # ── Pairing validation (Section 5): group by paired_group_id ──
+    # Main treatment pairing validation: mixed interaction rows are intentionally
+    # not one-to-one all_off/all_on_rl pairs.
     pairs: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for run in runs:
+        if run.get("design_group") != "main":
+            continue
         pid = run["paired_group_id"]
         pairs.setdefault(pid, {"all_off": [], "all_on_rl": []})[run["policy_configuration"]].append(run)
     pair_defects = []
@@ -1318,14 +1465,20 @@ def dry_run_assertions(
         "stage_new_runs": {str(s): len(by_stage[s]) for s in stages},
         "total_unique_fresh_runs": len({run["condition_key"] for run in runs}),
         "total_fresh_runs_by_machine": by_machine_total,
-        "replication_seeds": {"1": seed_for_replication(1), "40": seed_for_replication(40)},
+        "replication_seeds": {
+            "1": seed_for_replication(1),
+            "3": seed_for_replication(3),
+            "20": seed_for_replication(20),
+        },
         "unique_run_ids": len({run["run_id"] for run in runs}),
         "unique_condition_keys": len({run["condition_key"] for run in runs}),
         "duplicate_run_ids": len(runs) - len({run["run_id"] for run in runs}),
         "duplicate_condition_keys": len(runs) - len({run["condition_key"] for run in runs}),
         "old_capacity_study_roots_contribute_completions": 0,
         "rts_rl_unique_asset_hash_pairs": len(rl_hashes),
-        "primary_treatments": sorted({run["policy_configuration"] for run in runs}),
+        "policy_configurations": sorted({run["policy_configuration"] for run in runs}),
+        "main_run_count": sum(1 for run in runs if run.get("design_group") == "main"),
+        "mixed_run_count": sum(1 for run in runs if run.get("design_group") == "mixed"),
         "pair_count": len(pairs),
         "complete_pair_count": len(complete_pairs),
         "pair_seed_mismatches": seed_mismatch,
@@ -1335,33 +1488,36 @@ def dry_run_assertions(
         "best_effort_wave_runs": sum(1 for run in runs if run.get("allocation_wave") == "best_effort"),
     }
     # ── Hard assertions (Sections 3, 4, 5) ──
-    if assertions["stage_new_runs"] != {"1": 18, "2": 39, "3": 39, "4": 624}:
+    if assertions["stage_new_runs"] != {"1": 18, "2": 19, "3": 19, "4": 74}:
         raise AssertionError(f"stage counts: {assertions['stage_new_runs']}")
-    if assertions["total_unique_fresh_runs"] != 720:
-        raise AssertionError(f"total unique conditions must be 720, got {assertions['total_unique_fresh_runs']}")
-    if assertions["replication_seeds"] != {"1": 42, "40": 81}:
+    if assertions["total_unique_fresh_runs"] != 130:
+        raise AssertionError(f"total unique conditions must be 130, got {assertions['total_unique_fresh_runs']}")
+    if assertions["main_run_count"] != 88 or assertions["mixed_run_count"] != 42:
+        raise AssertionError(
+            f"expected 88 main / 42 mixed, got {assertions['main_run_count']} / {assertions['mixed_run_count']}"
+        )
+    if assertions["replication_seeds"] != {"1": 42, "3": 44, "20": 61}:
         raise AssertionError(assertions["replication_seeds"])
     if assertions["duplicate_run_ids"] or assertions["duplicate_condition_keys"]:
         raise AssertionError("duplicate campaign identities detected")
     if assertions["rts_rl_unique_asset_hash_pairs"] != 1:
-        raise AssertionError("all_on_rl runs must pin exactly one RTS/PPS hash pair")
-    if assertions["primary_treatments"] != ["all_off", "all_on_rl"]:
-        raise AssertionError(assertions["primary_treatments"])
-    # Every condition belongs to a pair; a full 720 matrix has 360 complete pairs.
-    if assertions["pair_count"] != 360:
-        raise AssertionError(f"expected 360 paired groups, got {assertions['pair_count']}")
-    if assertions["complete_pair_count"] != 360:
-        raise AssertionError(f"expected 360 complete pairs, got {assertions['complete_pair_count']}")
+        raise AssertionError("all neural/PPO runs must pin exactly one RTS/PPS hash pair")
+    if "all_off" not in assertions["policy_configurations"] or "all_on_rl" not in assertions["policy_configurations"]:
+        raise AssertionError(assertions["policy_configurations"])
+    if assertions["pair_count"] != 44:
+        raise AssertionError(f"expected 44 main paired groups, got {assertions['pair_count']}")
+    if assertions["complete_pair_count"] != 44:
+        raise AssertionError(f"expected 44 complete main pairs, got {assertions['complete_pair_count']}")
     if assertions["pair_seed_mismatches"] or assertions["pair_layout_mismatches"] or assertions["pair_duplicate_members"]:
         raise AssertionError("paired seed/layout/member invariant violated")
-    if assertions["critical_wave_runs"] != 96 or assertions["best_effort_wave_runs"] != 624:
-        raise AssertionError("allocation wave counts must be 96 critical / 624 best-effort")
+    if assertions["critical_wave_runs"] != 56 or assertions["best_effort_wave_runs"] != 74:
+        raise AssertionError("allocation wave counts must be 56 critical / 74 best-effort")
     for machine_id in ("alisha_pc", "dewa_macbook"):
         if machine_id not in machine_ids:
             continue
-        if any(run["machine_id"] == machine_id and run["policy_configuration"] == "all_on_rl" for run in runs):
-            raise AssertionError(f"{machine_id} received an ineligible all_on_rl run")
-        if not any(run["machine_id"] == machine_id and run["policy_configuration"] == "all_off" and run.get("allocation_wave") == "critical" for run in runs):
+        if any(run["machine_id"] == machine_id and run.get("allocation_treatment") == "all_on_rl" for run in runs):
+            raise AssertionError(f"{machine_id} received an ineligible neural/PPO run")
+        if not any(run["machine_id"] == machine_id and run.get("allocation_treatment") == "all_off" and run.get("allocation_wave") == "critical" for run in runs):
             raise AssertionError(f"{machine_id} lacks a critical compatible run")
     return assertions
 
@@ -1494,12 +1650,18 @@ def build_run_spec_from_condition(
         generated_charging_path = condition_runtime_root(repo_root, manifest, machine.machine_id, condition["run_id"]) / "input_snapshot" / "salsa_adaptive_charging.json"
         write_json(generated_charging_path, charging["config"])
     contract = treatment_execution_contract(condition["policy_configuration"], assets)
+    input_root_relative = Path(condition.get("input_root_relative") or manifest["input_root_relative"])
+    pps_model_path = (
+        str(local_asset_path(repo_root, assets["pps_model_relative_path"]))
+        if str(contract["pps_mode"]) == "ppo_constrained"
+        else None
+    )
     common = {
         "run_id": condition["run_id"],
         "ticks": int(condition["ticks"]),
         "runtime_root": condition_runtime_root(repo_root, manifest, machine.machine_id, condition["run_id"]),
         "repo_root": repo_root,
-        "input_root": repo_root / manifest["input_root_relative"],
+        "input_root": repo_root / input_root_relative,
         "branch": manifest.get("branch"),
         "commit": manifest.get("commit"),
         "python_executable": machine.python,
@@ -1564,9 +1726,7 @@ def build_run_spec_from_condition(
             rts_feature_ablation=str(contract["rts_feature_ablation"]),
             rts_state_capture_mode=str(contract["rts_state_capture_mode"]),
             pps_mode=str(contract["pps_mode"]),
-            # all_on_rl loads the compact policy-only inference artifact (routed to
-            # the inference loader by basename); all_off passes no PPS model.
-            pps_model_path=str(local_asset_path(repo_root, assets["pps_model_relative_path"])),
+            pps_model_path=pps_model_path,
             charging_enabled=bool(contract["charging_enabled"]),
             charging_config_path=str(generated_charging_path) if generated_charging_path else None,
             committed_next_reservations_enabled=bool(contract["committed_next_reservations_enabled"]),
@@ -1579,6 +1739,7 @@ def build_run_spec_from_condition(
         rts_policy_checkpoint_id=str(contract["rts_checkpoint_id"]),
         rts_state_capture_mode=str(contract["rts_state_capture_mode"]),
         pps_mode=str(contract["pps_mode"]),
+        pps_model_path=pps_model_path,
         charging_enabled=bool(contract["charging_enabled"]),
         charging_config_path=str(generated_charging_path) if generated_charging_path else None,
         committed_next_reservations_enabled=bool(contract["committed_next_reservations_enabled"]),
@@ -1712,6 +1873,13 @@ RUN_OUTCOME_BASE_FIELDS = (
     "run_id",
     "condition_key",
     "policy_configuration",
+    "design_group",
+    "allocation_treatment",
+    "scenario_id",
+    "scenario_name",
+    "rts_component",
+    "pps_component",
+    "charging_component",
     "robot_count",
     "order_rate",
     "replication",
@@ -1773,6 +1941,13 @@ def _condition_outcome_row(
         "run_id": condition["run_id"],
         "condition_key": condition["condition_key"],
         "policy_configuration": condition["policy_configuration"],
+        "design_group": condition.get("design_group", ""),
+        "allocation_treatment": condition.get("allocation_treatment", ""),
+        "scenario_id": condition.get("scenario_id", ""),
+        "scenario_name": condition.get("scenario_name", ""),
+        "rts_component": condition.get("rts_component", ""),
+        "pps_component": condition.get("pps_component", ""),
+        "charging_component": condition.get("charging_component", ""),
         "robot_count": condition["robot_count"],
         "order_rate": condition["order_rate"],
         "replication": condition["replication"],
@@ -1866,6 +2041,13 @@ def rebuild_run_outcomes_csv(*, manifest: dict[str, Any], machine: Machine, repo
             "run_id": run_id,
             "condition_key": condition["condition_key"],
             "policy_configuration": condition["policy_configuration"],
+            "design_group": condition.get("design_group", ""),
+            "allocation_treatment": condition.get("allocation_treatment", ""),
+            "scenario_id": condition.get("scenario_id", ""),
+            "scenario_name": condition.get("scenario_name", ""),
+            "rts_component": condition.get("rts_component", ""),
+            "pps_component": condition.get("pps_component", ""),
+            "charging_component": condition.get("charging_component", ""),
             "robot_count": condition["robot_count"],
             "order_rate": condition["order_rate"],
             "replication": condition["replication"],
@@ -2353,6 +2535,16 @@ def execute_host(
                             status=classification, manifest_sha256=manifest_sha,
                         )
                         row_hash = _upsert_csv_row(host_data_root / "run_outcomes.csv", RUN_OUTCOME_FIELDS, row)
+                        print(
+                            "[sensitivity] completed "
+                            f"run_id={spec.run_id} "
+                            f"policy={cond['policy_configuration']} "
+                            f"scenario={cond.get('scenario_name', '')} "
+                            f"r{cond['robot_count']} arr{cond['order_rate']} "
+                            f"rep{int(cond['replication']):03d} "
+                            f"status={classification} "
+                            f"orders={row.get('orders_completed', '')}"
+                        )
                         ledger.mark_completed(str(cond["condition_key"]), {
                             "run_id": spec.run_id,
                             "result_path": f"run_outcomes.csv#{spec.run_id}",
@@ -2496,6 +2688,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rts-checkpoint-dir", default=None)
     parser.add_argument("--rts-training-artifact", default=None)
     parser.add_argument("--pps-model-path", default=str(DEFAULT_PPS_INFERENCE_ARTIFACT))
+    parser.add_argument(
+        "--scenario",
+        choices=("cindy_s3", "scenario4_sij"),
+        default=None,
+        help="Use one explicit scenario bundle for both all_off and all_on_rl.",
+    )
     parser.add_argument("--rl-overhead-multiplier", type=float, default=DEFAULT_RL_OVERHEAD_MULTIPLIER)
     parser.add_argument(
         "--keep-run-artifacts",
@@ -2553,7 +2751,10 @@ def materialize_local_campaign_plan(args: argparse.Namespace) -> tuple[Path, dic
 
 
 def main(argv: Iterable[str] | None = None) -> int:
+    global INPUT_ROOT_RELATIVE
     args = build_parser().parse_args(argv)
+    if args.scenario:
+        INPUT_ROOT_RELATIVE = Path("data/input/scenarios") / args.scenario
     if args.prepare_campaign or args.validate_only or args.run_continuously or args.stage or args.execute_host or args.launch_host or args.prepare_host_assignment:
         ensure_clean_tracked_scientific_files(REPO_ROOT)
 
@@ -2690,26 +2891,28 @@ def main(argv: Iterable[str] | None = None) -> int:
         # 1. strictly load canonical assets
         validate_local_assets(manifest, REPO_ROOT)
         
-        # 2. Check bundled two-treatment identities (720 unique paired runs)
+        # 2. Check the 130-run main + interaction design.
         runs = manifest["runs"]
-        if len(runs) != 720:
-            raise AssertionError(f"Expected 720 runs, got {len(runs)}")
+        if len(runs) != 130:
+            raise AssertionError(f"Expected 130 runs, got {len(runs)}")
 
         run_ids = [run["run_id"] for run in runs]
         condition_keys = [run["condition_key"] for run in runs]
-        if len(set(run_ids)) != 720:
+        if len(set(run_ids)) != 130:
             raise AssertionError(f"Duplicate run IDs found, unique count: {len(set(run_ids))}")
-        if len(set(condition_keys)) != 720:
+        if len(set(condition_keys)) != 130:
             raise AssertionError(f"Duplicate condition keys found, unique count: {len(set(condition_keys))}")
 
         # 3. Check cumulative stage counts and seeds
-        expected_stage_counts = {"1": 18, "2": 39, "3": 39, "4": 624}
+        expected_stage_counts = {"1": 18, "2": 19, "3": 19, "4": 74}
         actual_stage_counts = manifest["assertions"]["stage_new_runs"]
         if actual_stage_counts != expected_stage_counts:
             raise AssertionError(f"Stage new runs count mismatch: expected {expected_stage_counts}, got {actual_stage_counts}")
+        if manifest["assertions"].get("main_run_count") != 88 or manifest["assertions"].get("mixed_run_count") != 42:
+            raise AssertionError(f"Expected 88 main + 42 mixed runs, got {manifest['assertions']}")
 
         # Verify seeds
-        for replication in (1, 40):
+        for replication in (1, 3, 20):
             expected_seed = seed_for_replication(replication)
             for run in runs:
                 if run["replication"] == replication:
@@ -2732,7 +2935,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     raise AssertionError(f"RunSpec {run['run_id']} has key '{key}' referencing runtime training: {val}")
             if spec.persist_final_state is not False:
                 raise AssertionError(f"RunSpec {run['run_id']} unexpectedly persists final state")
-            if spec.rts_policy_checkpoint_id != (manifest["assets"]["rts_checkpoint_id"] if run["policy_configuration"] == "all_on_rl" else "not_applicable"):
+            expected_checkpoint = manifest["assets"]["rts_checkpoint_id"] if run.get("rts_component") == "rts_rl" else "not_applicable"
+            if spec.rts_policy_checkpoint_id != expected_checkpoint:
                 raise AssertionError(f"RunSpec {run['run_id']} has wrong RTS checkpoint ID")
         print(json.dumps({
             "campaign_id": manifest["campaign_id"],

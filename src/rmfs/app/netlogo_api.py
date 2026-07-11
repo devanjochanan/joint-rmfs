@@ -390,7 +390,7 @@ def _pps_rl_future_station_demands(universe):
     return future
 
 
-def _pps_rl_candidate_pods(universe):
+def _pps_rl_candidate_pods(universe, limit=PPS_RL_MAX_PODS):
     station_demands = _pps_rl_station_demands(universe)
     demand_skus = set()
     for demand in station_demands.values():
@@ -403,13 +403,18 @@ def _pps_rl_candidate_pods(universe):
     for pod in universe.pod_manager.pods:
         if not universe.pod_manager.is_idle(pod.pod_id):
             continue
+        if (
+            getattr(pod, "is_awaiting_replenishment", False)
+            or getattr(pod, "must_replenish_before_pick", False)
+        ):
+            continue
         pod_skus = {
             sku for sku, details in pod.skus.items()
             if details["current_qty"] > 0
         }
         if pod_skus & demand_skus:
             candidates.append(pod)
-    return candidates[:PPS_RL_MAX_PODS]
+    return candidates if limit is None else candidates[:int(limit)]
 
 
 def _pps_rl_decision_needed(universe):
@@ -438,12 +443,12 @@ def _pps_rl_zone_robot_counts(universe):
     return counts
 
 
-def _build_pps_rl_observation(universe):
+def _build_pps_rl_observation(universe, candidates=None):
     if not hasattr(universe, "pps_rl_sku_index"):
         universe.pps_rl_sku_index = _build_pps_rl_sku_index(universe)
 
     sku_index = universe.pps_rl_sku_index
-    candidates = _pps_rl_candidate_pods(universe)
+    candidates = list(candidates) if candidates is not None else _pps_rl_candidate_pods(universe)
     station_demands = _pps_rl_station_demands(universe)
     future_demands = _pps_rl_future_station_demands(universe)
     stations = sorted(universe.station_manager.picking_stations, key=lambda s: s.station_id)
@@ -507,6 +512,11 @@ _PPS_COUNTER_FIELDS = (
     "pps_actions_invalid", "pps_rejected_station_full", "pps_rejected_station_no_orders",
     "pps_rejected_sku_mismatch", "pps_rejected_pod_ineligible", "pps_rejected_pod_reserved",
     "pps_assignments_accepted",
+    "pps_raw_actions_zero", "pps_raw_actions_infeasible",
+    "pps_actions_corrected", "pps_constrained_assignments_accepted",
+    "pps_fallback_assignments", "pps_zero_progress_rounds",
+    "pps_candidate_count_before_truncation", "pps_candidate_count_after_truncation",
+    "pps_candidates_truncated",
 )
 
 
@@ -516,6 +526,122 @@ def _pps_bump(universe, name, n=1):
     if ctr is None:
         ctr = universe.pps_counters = {f: 0 for f in _PPS_COUNTER_FIELDS}
     ctr[name] = ctr.get(name, 0) + n
+
+
+def _pps_station_payload(station):
+    """Build exact all-SKU demand maps for one picking station."""
+    sku_to_quantity = defaultdict(int)
+    sku_to_order_map = defaultdict(list)
+    for order in station.orders:
+        for sku, qty in order.get_remaining_skus().items():
+            if qty <= 0:
+                continue
+            sku_to_quantity[sku] += qty
+            sku_to_order_map[sku].append((order.order_id, qty))
+    return sku_to_quantity, sku_to_order_map
+
+
+def _pps_feasible_station_options(universe, pod):
+    """Return useful stations for a pod, scored with the full SKU inventory."""
+    if not universe.pod_manager.is_idle(pod.pod_id):
+        return []
+    if (
+        getattr(pod, "is_awaiting_replenishment", False)
+        or getattr(pod, "must_replenish_before_pick", False)
+    ):
+        return []
+
+    options = []
+    stations = sorted(universe.station_manager.picking_stations, key=lambda s: s.station_id)
+    for station in stations:
+        if len(station.incoming_pod) >= station.max_robots or not station.orders:
+            continue
+        sku_to_quantity, sku_to_order_map = _pps_station_payload(station)
+        matched_units = sum(
+            min(float(pod.skus[sku]["current_qty"]), float(qty))
+            for sku, qty in sku_to_quantity.items()
+            if sku in pod.skus and float(pod.skus[sku]["current_qty"]) > 0
+        )
+        if matched_units <= 0:
+            continue
+        orders_helped = len({
+            order_id
+            for sku, rows in sku_to_order_map.items()
+            if sku in pod.skus and float(pod.skus[sku]["current_qty"]) > 0
+            for order_id, _qty in rows
+        })
+        distance = abs(float(pod.pos_x) - float(station.pos_x)) + abs(float(pod.pos_y) - float(station.pos_y))
+        score = (matched_units, orders_helped, -distance, str(station.station_id))
+        options.append((score, station, sku_to_quantity, sku_to_order_map))
+    return sorted(options, key=lambda row: row[0], reverse=True)
+
+
+def _pps_queue_assignment(universe, pod, station, sku_to_quantity, sku_to_order_map):
+    """Create one checked picking job and return whether it was accepted."""
+    job = universe.add_picking_task_after_pps(
+        station, pod, sku_to_order_map, sku_to_quantity,
+    )
+    if len(job.orders) == 0:
+        return False
+    universe.job_queue.append(job)
+    _pps_bump(universe, "pps_assignments_accepted")
+    for order_id, sku, qty in job.orders:
+        upsert_job_task(
+            pod_id=str(job.pod.pod_id), order_id=str(order_id), sku=str(sku),
+            qty=str(qty), assigned_station=station.station_id,
+            pod_assigned_time=universe._tick, status="queue",
+            db_path=getattr(universe, "sqlite_db_path", None),
+        )
+    return True
+
+
+def _execute_pps_constrained_actions(universe, actions, candidates, all_candidates):
+    """Repair raw PPO choices using exact all-SKU feasibility checks."""
+    station_ids = sorted(s.station_id for s in universe.station_manager.picking_stations)
+    flat_actions = np.asarray(actions).reshape(-1)
+    assignments = 0
+    n_slots = min(len(candidates), len(flat_actions))
+    if n_slots:
+        _pps_bump(universe, "pps_decision_rounds")
+        _pps_bump(universe, "pps_candidates_evaluated", n_slots)
+
+    for index in range(n_slots):
+        pod = candidates[index]
+        raw_action = int(flat_actions[index])
+        options = _pps_feasible_station_options(universe, pod)
+        if raw_action == 0:
+            _pps_bump(universe, "pps_actions_zero")
+            _pps_bump(universe, "pps_raw_actions_zero")
+        preferred_id = station_ids[raw_action - 1] if 1 <= raw_action <= len(station_ids) else None
+        chosen = next((row for row in options if row[1].station_id == preferred_id), None)
+        if chosen is None and options:
+            if raw_action != 0:
+                _pps_bump(universe, "pps_raw_actions_infeasible")
+            _pps_bump(universe, "pps_actions_corrected")
+            chosen = options[0]
+        if chosen is None:
+            continue
+        _score, station, sku_to_quantity, sku_to_order_map = chosen
+        if _pps_queue_assignment(universe, pod, station, sku_to_quantity, sku_to_order_map):
+            assignments += 1
+            _pps_bump(universe, "pps_constrained_assignments_accepted")
+
+    # One bounded fallback may inspect pods hidden by the 60-pod model limit.
+    if assignments == 0:
+        fallback_options = []
+        for pod in all_candidates:
+            options = _pps_feasible_station_options(universe, pod)
+            if options:
+                fallback_options.append((options[0][0], pod, options[0]))
+        if fallback_options:
+            _score, pod, chosen = max(fallback_options, key=lambda row: row[0])
+            _inner_score, station, sku_to_quantity, sku_to_order_map = chosen
+            if _pps_queue_assignment(universe, pod, station, sku_to_quantity, sku_to_order_map):
+                assignments += 1
+                _pps_bump(universe, "pps_fallback_assignments")
+        if assignments == 0 and fallback_options:
+            _pps_bump(universe, "pps_zero_progress_rounds")
+    return assignments
 
 
 def _execute_pps_rl_actions(universe, actions):
@@ -572,29 +698,12 @@ def _execute_pps_rl_actions(universe, actions):
             _pps_bump(universe, "pps_rejected_sku_mismatch")
             continue
 
-        job = universe.add_picking_task_after_pps(
-            station,
-            pod,
-            sku_to_order_map,
-            sku_to_quantity,
-        )
-        if len(job.orders) == 0:
+        if not _pps_queue_assignment(
+            universe, pod, station, sku_to_quantity, sku_to_order_map,
+        ):
             _pps_bump(universe, "pps_rejected_sku_mismatch")
             continue
-
-        universe.job_queue.append(job)
         assignments += 1
-        _pps_bump(universe, "pps_assignments_accepted")
-        for order_id, sku, qty in job.orders:
-            upsert_job_task(
-                pod_id=str(job.pod.pod_id),
-                order_id=str(order_id),
-                sku=str(sku),
-                qty=str(qty),
-                assigned_station=station.station_id,
-                pod_assigned_time=universe._tick,
-                status="queue",
-            )
 
     return assignments
 
@@ -618,8 +727,17 @@ def _apply_pps_rl_policy(universe):
     if model is None:
         return 0
 
-    observation = _build_pps_rl_observation(universe)
+    all_candidates = _pps_rl_candidate_pods(universe, limit=None)
+    candidates = all_candidates[:PPS_RL_MAX_PODS]
+    _pps_bump(universe, "pps_candidate_count_before_truncation", len(all_candidates))
+    _pps_bump(universe, "pps_candidate_count_after_truncation", len(candidates))
+    _pps_bump(universe, "pps_candidates_truncated", max(0, len(all_candidates) - len(candidates)))
+    observation = _build_pps_rl_observation(universe, candidates=candidates)
     actions, _state = model.predict(observation, deterministic=True)
+    if get_pps_mode() == "ppo_constrained":
+        return _execute_pps_constrained_actions(
+            universe, actions, candidates, all_candidates,
+        )
     return _execute_pps_rl_actions(universe, actions)
 
 

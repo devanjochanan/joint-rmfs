@@ -330,7 +330,7 @@ def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
         "RMFS_RUN_PROFILE": spec.run_profile,
         "RMFS_NUM_ROBOTS": str(int(spec.robot_count)),
         "PPS_MODE": pps_mode,
-        "PPS_RL_ENABLED": "1" if pps_mode == "ppo" else "0",
+        "PPS_RL_ENABLED": "1" if pps_mode in {"ppo", "ppo_constrained"} else "0",
         "RMFS_ORDER_GENERATION_MODE": spec.order_generation_mode,
         "RMFS_FULL_RAW_ORDER_REPLAY": "1" if spec.full_raw_order_replay else "0",
         "RMFS_DETAIL_DB": "1" if spec.detail_db else "0",
@@ -785,7 +785,16 @@ def derive_sensitivity_kpi_v3_payload(
     # PPS (all_off), where these fields are not applicable to completion.
     pps_counters = getattr(warehouse, "pps_counters", None)
     if pps_counters:
-        for pps_field in ("pps_decision_rounds", "pps_candidates_evaluated", "pps_actions_zero", "pps_actions_invalid", "pps_rejected_station_full", "pps_rejected_station_no_orders", "pps_rejected_sku_mismatch", "pps_rejected_pod_ineligible", "pps_rejected_pod_reserved", "pps_assignments_accepted"):
+        for pps_field in (
+            "pps_decision_rounds", "pps_candidates_evaluated", "pps_actions_zero",
+            "pps_actions_invalid", "pps_rejected_station_full", "pps_rejected_station_no_orders",
+            "pps_rejected_sku_mismatch", "pps_rejected_pod_ineligible",
+            "pps_rejected_pod_reserved", "pps_assignments_accepted",
+            "pps_raw_actions_zero", "pps_raw_actions_infeasible", "pps_actions_corrected",
+            "pps_constrained_assignments_accepted", "pps_fallback_assignments",
+            "pps_zero_progress_rounds", "pps_candidate_count_before_truncation",
+            "pps_candidate_count_after_truncation", "pps_candidates_truncated",
+        ):
             payload[pps_field] = pps_counters.get(pps_field)
 
     # 9. Station detail sidecar and derived metrics
@@ -1591,7 +1600,7 @@ def run_worker(spec: RunSpec):
             "worker_status_cadence": spec.worker_status_cadence,
             "pps_mode": normalize_pps_mode(spec.pps_mode),
             "pps_model_path": spec.pps_model_path,
-            "pps_rl_enabled": normalize_pps_mode(spec.pps_mode) == "ppo",
+            "pps_rl_enabled": normalize_pps_mode(spec.pps_mode) in {"ppo", "ppo_constrained"},
             "charging_enabled": spec.charging_enabled,
             "charging_config_path": spec.charging_config_path,
             "charging_placement_source": spec.charging_placement_source,

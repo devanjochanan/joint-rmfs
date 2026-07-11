@@ -111,7 +111,7 @@ def allocation_wave_for_stage(stage: int) -> str:
 
 
 def _condition_treatment(row: dict[str, Any]) -> str:
-    value = str(row.get("policy_configuration", row.get("treatment", "")))
+    value = str(row.get("allocation_treatment", row.get("policy_configuration", row.get("treatment", ""))))
     if value not in TREATMENTS:
         raise ValueError(f"unsupported treatment {value!r}")
     return value
@@ -170,6 +170,7 @@ def allocate_stage(
     stage: int,
     profiles: Iterable[MachineAllocationProfile],
     estimate_steps: Callable[[dict[str, Any]], float],
+    initial_slot_finish_seconds: dict[str, list[float]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Allocate one stage with constrained-first, treatment-aware LPT slots."""
     stage = int(stage)
@@ -204,10 +205,13 @@ def allocate_stage(
     # Slots represent the shared physical worker budget.  RL-capable slots are
     # a subset of normal slots, so all_off work sees the same running finish time
     # after constrained RL work is placed.
-    shared_slots = {
-        profile.machine_id: [0.0] * profile.max_workers
-        for profile in profiles
-    }
+    shared_slots: dict[str, list[float]] = {}
+    for profile in profiles:
+        initial = list((initial_slot_finish_seconds or {}).get(profile.machine_id, []))
+        if len(initial) < profile.max_workers:
+            initial.extend([0.0] * (profile.max_workers - len(initial)))
+        shared_slots[profile.machine_id] = [float(value) for value in initial[:profile.max_workers]]
+        per_machine[profile.machine_id]["slot_finish_seconds"] = list(shared_slots[profile.machine_id])
     assigned_participants = {treatment: set() for treatment in TREATMENTS}
     required_participants = {
         treatment: _required_participants(stage=stage, treatment=treatment, profiles=profiles)
@@ -231,18 +235,8 @@ def allocate_stage(
             profile = slot["profile"]
             index = int(slot["slot_index"])
             start_seconds = shared_slots[profile.machine_id][index]
-            if treatment == RL_TREATMENT:
-                # RL preference is based on measured aggregate machine
-                # throughput.  This prevents a lower-capacity host with a
-                # slightly faster individual slot from displacing a stronger
-                # RL host merely because it has fewer slots.
-                finish = (
-                    per_machine[profile.machine_id]["estimated_steps"][treatment] + steps
-                ) / profile.aggregate_rate_for(treatment)
-                slot_finish = start_seconds + steps / profile.slot_rate_for(treatment)
-            else:
-                finish = start_seconds + steps / profile.slot_rate_for(treatment)
-                slot_finish = finish
+            slot_finish = start_seconds + steps / profile.slot_rate_for(treatment)
+            finish = slot_finish
             choices.append((finish, slot_finish, sum(per_machine[profile.machine_id]["runs"].values()), profile.machine_id, index, slot))
         _finish, _slot_finish, _count, _machine_id, index, selected = min(choices, key=lambda item: item[:5])
         profile = selected["profile"]
@@ -281,6 +275,10 @@ def allocate_stage(
         "assigned_estimated_steps_by_machine_and_treatment": {machine_id: details["estimated_steps"] for machine_id, details in per_machine.items()},
         "projected_finish_seconds_by_machine": projected,
         "projected_stage_makespan_seconds": max(projected.values(), default=0.0),
+        "final_slot_finish_seconds_by_machine": {
+            machine_id: list(values)
+            for machine_id, values in sorted(shared_slots.items())
+        },
     }
     return allocated, summary
 
@@ -297,8 +295,23 @@ def allocate_waves(
         raise AssertionError(f"expected 720 campaign conditions, got {len(source)}")
     allocated: list[dict[str, Any]] = []
     stage_summaries: dict[str, Any] = {}
+    profiles_tuple = tuple(profiles)
+    slot_finish_seconds = {
+        profile.machine_id: [0.0] * profile.max_workers
+        for profile in profiles_tuple
+    }
     for stage in (*CRITICAL_STAGES, *BEST_EFFORT_STAGES):
-        stage_allocated, summary = allocate_stage(source, stage=stage, profiles=profiles, estimate_steps=estimate_steps)
+        stage_allocated, summary = allocate_stage(
+            source,
+            stage=stage,
+            profiles=profiles_tuple,
+            estimate_steps=estimate_steps,
+            initial_slot_finish_seconds=slot_finish_seconds,
+        )
+        slot_finish_seconds = {
+            machine_id: list(values)
+            for machine_id, values in summary.get("final_slot_finish_seconds_by_machine", {}).items()
+        }
         allocated.extend(stage_allocated)
         stage_summaries[str(stage)] = summary
     critical = [row for row in allocated if row["allocation_wave"] == "critical"]

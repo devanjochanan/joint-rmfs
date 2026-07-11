@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
         "--mode",
         "--pps-mode",
         dest="mode",
-        choices=("ppo", "random", "rika", "heuristic", "demand"),
+        choices=("ppo", "ppo_constrained", "random", "rika", "heuristic", "demand"),
         default="rika",
         help="PPS mode to use.",
     )
@@ -285,6 +285,11 @@ def main() -> None:
     print(f"Pod visits: {_get_pod_visits(universe)}")
     print(f"Pile-on rate: {_get_pile_on_rate(universe)}")
     print(f"Picked quantity: {_get_picked_quantity(universe)}")
+    pps_counters = getattr(universe, "pps_counters", {}) or {}
+    if pps_counters:
+        print("PPS counters:")
+        for name in sorted(pps_counters):
+            print(f"  {name}: {pps_counters[name]}")
     print(f"Total energy: {universe.total_energy}")
     print(f"Stop-and-go: {universe.stop_and_go}")
     print(f"Total turning: {universe.total_turning}")

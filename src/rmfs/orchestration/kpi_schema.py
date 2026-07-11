@@ -69,6 +69,15 @@ _PICKING_PPS_PRIMITIVE = (
     "pps_rejected_pod_ineligible",
     "pps_rejected_pod_reserved",
     "pps_assignments_accepted",
+    "pps_raw_actions_zero",
+    "pps_raw_actions_infeasible",
+    "pps_actions_corrected",
+    "pps_constrained_assignments_accepted",
+    "pps_fallback_assignments",
+    "pps_zero_progress_rounds",
+    "pps_candidate_count_before_truncation",
+    "pps_candidate_count_after_truncation",
+    "pps_candidates_truncated",
     "picking_pod_visits",
     "picked_items_count",
 )
@@ -400,6 +409,10 @@ FULL_KPI_V3_PPS_PPO_FIELDS = (
     "pps_actions_invalid", "pps_rejected_station_full", "pps_rejected_station_no_orders",
     "pps_rejected_sku_mismatch", "pps_rejected_pod_ineligible", "pps_rejected_pod_reserved",
     "pps_assignments_accepted", "pps_assignment_acceptance_rate",
+    "pps_raw_actions_zero", "pps_raw_actions_infeasible", "pps_actions_corrected",
+    "pps_constrained_assignments_accepted", "pps_fallback_assignments",
+    "pps_zero_progress_rounds", "pps_candidate_count_before_truncation",
+    "pps_candidate_count_after_truncation", "pps_candidates_truncated",
     "pps_assignment_to_job_conversion_rate",
 )
 
