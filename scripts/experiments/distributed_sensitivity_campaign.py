@@ -70,7 +70,7 @@ from src.rmfs.experiments.sensitivity_allocation import (  # noqa: E402
 )
 
 CAMPAIGN_SCHEMA_VERSION = "distributed_sensitivity_campaign.v3"
-SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v1"
+SIMULATION_SEMANTICS_ID = "sensitivity_simulation_semantics.v2"
 ALLOCATION_PATCH_LABEL = "allocation_patch_0001"
 CANONICAL_RTS_CHECKPOINT_ID = "batch_000014"
 # Campaign PPS asset: compact policy-only inference artifact (NOT the full PPO

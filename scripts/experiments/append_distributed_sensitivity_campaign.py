@@ -219,9 +219,118 @@ def zip_entries_by_run(snapshot_root: Path) -> dict[str, list[dict[str, Any]]]:
     entries: dict[str, list[dict[str, Any]]] = {}
     for zip_path in iter_snapshot_zip_paths(snapshot_root):
         try:
-            names = zipfile.ZipFile(zip_path).namelist()
+            with zipfile.ZipFile(zip_path) as zf:
+                names = zf.namelist()
         except zipfile.BadZipFile:
             continue
+
+        machine = None
+        if "host_export_" in zip_path.name:
+            name_without_ext = zip_path.name[:-4]
+            rem = name_without_ext[len("host_export_"):]
+            subparts = rem.split("_")
+            if len(subparts) >= 3:
+                machine = "_".join(subparts[:-2])
+            else:
+                machine = subparts[0]
+
+        # Check if the zip has run_outcomes.csv
+        if "run_outcomes.csv" in names:
+            try:
+                rows = read_zip_csv_rows(zip_path, "run_outcomes.csv")
+                for row in rows:
+                    rid = row.get("run_id")
+                    if not rid:
+                        continue
+                    spec = {
+                        "campaign_id": row.get("campaign_id"),
+                        "policy_configuration": row.get("policy_configuration"),
+                        "robot_count": int(row.get("robot_count") or 0) if row.get("robot_count") else 0,
+                        "order_rate_per_hour": int(row.get("order_rate") or 0) if row.get("order_rate") else 0,
+                        "replication": int(row.get("replication") or 0) if row.get("replication") else 0,
+                        "campaign_seed": int(row.get("seed") or 0) if row.get("seed") else 0,
+                        "simulation_semantics_id": row.get("simulation_semantics_id"),
+                        "allocation_patch_id": row.get("allocation_patch_id"),
+                    }
+                    summary = {
+                        "status": "success",
+                        "finalization": {"finalized": True},
+                        "kpi_schema_version": row.get("kpi_schema_version"),
+                        "kpi_complete": True,
+                        "seed": int(row.get("seed") or 0) if row.get("seed") else 0,
+                        "requested_robot_count": int(row.get("robot_count") or 0) if row.get("robot_count") else 0,
+                        "worker_wall_time_elapsed": float(row.get("simulated_seconds") or 0.0) if row.get("simulated_seconds") else 0.0,
+                    }
+                    for k, v in row.items():
+                        if k not in summary:
+                            summary[k] = v
+                    entries.setdefault(rid, []).append({
+                        "source": f"zip:{zip_path.name}:run_outcomes.csv",
+                        "zip_path": zip_path,
+                        "machine_id": machine,
+                        "spec": spec,
+                        "summary": summary,
+                        "status_payload": None,
+                    })
+            except Exception:
+                pass
+
+        # Check if the zip has failed_conditions.csv
+        if "failed_conditions.csv" in names:
+            try:
+                rows = read_zip_csv_rows(zip_path, "failed_conditions.csv")
+                for row in rows:
+                    rid = row.get("run_id")
+                    if not rid:
+                        continue
+                    spec = {
+                        "campaign_id": row.get("campaign_id"),
+                        "policy_configuration": row.get("policy_configuration"),
+                        "robot_count": int(row.get("robot_count") or 0) if row.get("robot_count") else 0,
+                        "order_rate_per_hour": int(row.get("order_rate") or 0) if row.get("order_rate") else 0,
+                        "replication": int(row.get("replication") or 0) if row.get("replication") else 0,
+                        "campaign_seed": int(row.get("seed") or 0) if row.get("seed") else 0,
+                        "simulation_semantics_id": row.get("simulation_semantics_id"),
+                        "allocation_patch_id": row.get("allocation_patch_id"),
+                    }
+                    summary = {
+                        "status": row.get("status") or "failed",
+                        "error_type": row.get("error_type"),
+                        "error_message": row.get("error_message"),
+                        "seed": int(row.get("seed") or 0) if row.get("seed") else 0,
+                    }
+                    entries.setdefault(rid, []).append({
+                        "source": f"zip:{zip_path.name}:failed_conditions.csv",
+                        "zip_path": zip_path,
+                        "machine_id": machine,
+                        "spec": spec,
+                        "summary": summary,
+                        "status_payload": None,
+                    })
+            except Exception:
+                pass
+
+        # Check if the zip has host_ledger.json
+        if "host_ledger.json" in names:
+            try:
+                ledger = read_zip_json(zip_path, "host_ledger.json")
+                if ledger and isinstance(ledger, dict):
+                    states = ledger.get("condition_states", {})
+                    for state in states.values():
+                        if state.get("status") == "running" and state.get("run_id"):
+                            rid = state["run_id"]
+                            entries.setdefault(rid, []).append({
+                                "source": f"zip:{zip_path.name}:host_ledger.json",
+                                "zip_path": zip_path,
+                                "machine_id": machine,
+                                "spec": None,
+                                "summary": None,
+                                "status_payload": {"present": True, "status": "running"},
+                            })
+            except Exception:
+                pass
+
+        # Legacy directory-scanning fallback
         summary_names = [name for name in names if name.endswith("/worker_summary.json")]
         spec_names = [name for name in names if name.endswith("/run_spec.json")]
         status_names = {name for name in names if name.endswith("/worker_status.json")}
@@ -235,20 +344,16 @@ def zip_entries_by_run(snapshot_root: Path) -> dict[str, list[dict[str, Any]]]:
         for name in status_names:
             run_id = Path(name).parent.name
             by_run.setdefault(run_id, {})["status_name"] = name
+
         for run_id, row in by_run.items():
-            machine = machine_from_run_path(row.get("spec_name") or row.get("summary_name") or row.get("status_name") or "")
-            if not machine and "host_export_" in zip_path.name:
-                name_without_ext = zip_path.name[:-4]
-                rem = name_without_ext[len("host_export_"):]
-                subparts = rem.split("_")
-                if len(subparts) >= 3:
-                    machine = "_".join(subparts[:-2])
-                else:
-                    machine = subparts[0]
+            if any(e["source"].startswith(f"zip:{zip_path.name}:") for e in entries.get(run_id, [])):
+                continue
+            machine_from_path = machine_from_run_path(row.get("spec_name") or row.get("summary_name") or row.get("status_name") or "")
+            eff_machine = machine or machine_from_path
             entries.setdefault(run_id, []).append({
                 "source": f"zip:{zip_path.name}",
                 "zip_path": zip_path,
-                "machine_id": machine,
+                "machine_id": eff_machine,
                 **row,
             })
     return entries
@@ -262,11 +367,119 @@ def read_zip_copy(row: dict[str, Any]) -> dict[str, Any]:
     return {**row, "spec": spec, "summary": summary, "status_payload": status}
 
 
+def read_local_csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    try:
+        with path.open(newline="", encoding="utf-8") as fh:
+            return list(csv.DictReader(fh))
+    except Exception:
+        return []
+
+
+def read_local_json(path: Path) -> Any | None:
+    if not path.exists():
+        return None
+    try:
+        with path.open(encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
 def live_entries_by_run(manifest: dict[str, Any], repo_root: Path) -> dict[str, list[dict[str, Any]]]:
     root = base.campaign_root(repo_root, manifest)
     machine_ids = [row["machine_id"] for row in manifest.get("machines", [])]
     run_ids = [run["run_id"] for run in manifest.get("runs", [])]
     entries: dict[str, list[dict[str, Any]]] = {}
+
+    for machine_id in machine_ids:
+        # Load run_outcomes.csv
+        outcomes_path = root / machine_id / "run_outcomes.csv"
+        if outcomes_path.exists():
+            for row in read_local_csv_rows(outcomes_path):
+                rid = row.get("run_id")
+                if not rid:
+                    continue
+                spec = {
+                    "campaign_id": row.get("campaign_id"),
+                    "policy_configuration": row.get("policy_configuration"),
+                    "robot_count": int(row.get("robot_count") or 0) if row.get("robot_count") else 0,
+                    "order_rate_per_hour": int(row.get("order_rate") or 0) if row.get("order_rate") else 0,
+                    "replication": int(row.get("replication") or 0) if row.get("replication") else 0,
+                    "campaign_seed": int(row.get("seed") or 0) if row.get("seed") else 0,
+                    "simulation_semantics_id": row.get("simulation_semantics_id"),
+                    "allocation_patch_id": row.get("allocation_patch_id"),
+                }
+                summary = {
+                    "status": "success",
+                    "finalization": {"finalized": True},
+                    "kpi_schema_version": row.get("kpi_schema_version"),
+                    "kpi_complete": True,
+                    "seed": int(row.get("seed") or 0) if row.get("seed") else 0,
+                    "requested_robot_count": int(row.get("robot_count") or 0) if row.get("robot_count") else 0,
+                    "worker_wall_time_elapsed": float(row.get("simulated_seconds") or 0.0) if row.get("simulated_seconds") else 0.0,
+                }
+                for k, v in row.items():
+                    if k not in summary:
+                        summary[k] = v
+                entries.setdefault(rid, []).append({
+                    "source": "live:run_outcomes.csv",
+                    "machine_id": machine_id,
+                    "spec": spec,
+                    "summary": summary,
+                    "status_payload": None,
+                })
+
+        # Load failed_conditions.csv
+        failed_path = root / machine_id / "failed_conditions.csv"
+        if failed_path.exists():
+            for row in read_local_csv_rows(failed_path):
+                rid = row.get("run_id")
+                if not rid:
+                    continue
+                spec = {
+                    "campaign_id": row.get("campaign_id"),
+                    "policy_configuration": row.get("policy_configuration"),
+                    "robot_count": int(row.get("robot_count") or 0) if row.get("robot_count") else 0,
+                    "order_rate_per_hour": int(row.get("order_rate") or 0) if row.get("order_rate") else 0,
+                    "replication": int(row.get("replication") or 0) if row.get("replication") else 0,
+                    "campaign_seed": int(row.get("seed") or 0) if row.get("seed") else 0,
+                    "simulation_semantics_id": row.get("simulation_semantics_id"),
+                    "allocation_patch_id": row.get("allocation_patch_id"),
+                }
+                summary = {
+                    "status": row.get("status") or "failed",
+                    "error_type": row.get("error_type"),
+                    "error_message": row.get("error_message"),
+                    "seed": int(row.get("seed") or 0) if row.get("seed") else 0,
+                }
+                entries.setdefault(rid, []).append({
+                    "source": "live:failed_conditions.csv",
+                    "machine_id": machine_id,
+                    "spec": spec,
+                    "summary": summary,
+                    "status_payload": None,
+                })
+
+        # Load host_ledger.json
+        ledger_path = root / machine_id / "host_ledger.json"
+        if ledger_path.exists():
+            ledger = read_local_json(ledger_path)
+            if ledger and isinstance(ledger, dict):
+                states = ledger.get("condition_states", {})
+                for state in states.values():
+                    if state.get("status") == "running" and state.get("run_id"):
+                        rid = state["run_id"]
+                        entries.setdefault(rid, []).append({
+                            "source": "live:host_ledger.json",
+                            "machine_id": machine_id,
+                            "spec": None,
+                            "summary": None,
+                            "status_payload": {"present": True, "status": "running"},
+                        })
+
+    # Keep original runs/ scanning fallback (with de-duplication check)
     for machine_id in machine_ids:
         for run_id in run_ids:
             run_root = root / machine_id / "runs" / run_id
@@ -274,6 +487,8 @@ def live_entries_by_run(manifest: dict[str, Any], repo_root: Path) -> dict[str, 
             summary_path = run_root / "worker_summary.json"
             status_path = run_root / "worker_status.json"
             if not (spec_path.exists() or summary_path.exists() or status_path.exists()):
+                continue
+            if any(e["machine_id"] == machine_id and e["source"].startswith("live:") for e in entries.get(run_id, [])):
                 continue
             row: dict[str, Any] = {
                 "source": "live",
@@ -1206,11 +1421,24 @@ def rebuild_plan_outcomes(manifest: dict[str, Any], machine: base.Machine, items
     root = base.campaign_root(REPO_ROOT, manifest) / machine.machine_id
     run_items = [item for item in items if item["source_campaign_id"] == manifest["campaign_id"]]
     by_run = {run["run_id"]: run for run in manifest["runs"]}
+    outcomes_path = root / "run_outcomes.csv"
+    preserved: dict[str, dict[str, str]] = {}
+    if outcomes_path.exists():
+        try:
+            with outcomes_path.open(newline="", encoding="utf-8") as fh:
+                for existing in csv.DictReader(fh):
+                    rid = existing.get("run_id")
+                    if rid:
+                        preserved[rid] = existing
+        except Exception:
+            preserved = {}
     rows = []
     for item in sorted(run_items, key=item_sort_key):
         condition = by_run[item["run_id"]]
         summary_path = root / "runs" / item["run_id"] / "worker_summary.json"
         if not summary_path.exists():
+            if item["run_id"] in preserved:
+                rows.append(preserved[item["run_id"]])
             continue
         try:
             summary = base.read_json(summary_path)
@@ -1250,7 +1478,7 @@ def rebuild_plan_outcomes(manifest: dict[str, Any], machine: base.Machine, items
                 if value not in ("", None) or row.get(field, "") == "":
                     row[field] = value
         rows.append(row)
-    path = root / "run_outcomes.csv"
+    path = outcomes_path
     write_csv(path, rows, list(base.RUN_OUTCOME_FIELDS))
     return path
 

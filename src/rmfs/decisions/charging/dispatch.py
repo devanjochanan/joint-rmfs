@@ -6,6 +6,56 @@ from dataclasses import dataclass
 from typing import Any
 
 
+# Canonical charging-counter field names. The warehouse pre-initializes
+# ``charging_counters`` to 0 for every name here so that an *applicable* event
+# with zero occurrences serializes as ``0`` (not ``None``); a missing key then
+# unambiguously means "producer not wired". Every name below has a producer in
+# ``dispatch.py`` or ``model/robot.py``. ``robots_died_from_battery`` is
+# intentionally NOT listed here — it is pre-initialized alongside its own
+# producer (battery-death wiring) so a genuine death is never masked by a 0.
+CHARGING_COUNTER_FIELDS: tuple[str, ...] = (
+    # Episode / FIFO lifecycle
+    "charging_episodes_created",
+    "charging_requests",
+    "charging_fifo_entries",
+    "charging_fifo_reentries",
+    "charging_assignment_evaluations",
+    "charging_waiting_seconds",
+    # Claim / assignment outcomes
+    "charger_claims_created",
+    "charger_claims_released",
+    "charger_assignment_successes",
+    "charger_assignment_failures",
+    "charger_arrivals",
+    # Candidate-rejection diagnostics (instrument-only; no threshold change)
+    "charger_candidate_unroutable",
+    "charger_candidate_occupied",
+    "charger_candidate_insufficient_energy",
+    "charger_assignment_no_feasible_candidate",
+    # Legacy/compat rejection names (retained; charging-integrity tests use these)
+    "charger_route_failures",
+    "charger_candidate_route_rejections",
+    "charger_energy_infeasible_candidates",
+    "charger_unavailable_events",
+    "stale_charger_claims_detected",
+    # Physical charging sessions
+    "charging_sessions_started",
+    "charging_sessions_completed",
+    "charging_sessions_interrupted",
+    "robots_died_from_battery",
+    # Energy / drive-by
+    "charging_energy_added_j",
+    "drive_by_charging_events",
+    # Committed-next linkage (charging seam)
+    "committed_next_cancelled_for_charging",
+)
+
+
+def initial_charging_counters() -> dict[str, float]:
+    """Return a fresh charging-counter dict pre-initialized to 0."""
+    return {name: 0 for name in CHARGING_COUNTER_FIELDS}
+
+
 def stable_robot_id(robot: Any) -> tuple[int, str]:
     raw = getattr(robot, "_id", None)
     if raw is None:

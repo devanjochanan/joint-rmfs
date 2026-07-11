@@ -15,7 +15,12 @@ from .config import (
     save_charging_config,
 )
 from .policy import DEFAULT_POLICY
-from .dispatch import ChargingDispatcher, ChargingQueueEntry
+from .dispatch import (
+    ChargingDispatcher,
+    ChargingQueueEntry,
+    CHARGING_COUNTER_FIELDS,
+    initial_charging_counters,
+)
 
 __all__ = [
     "ChargingConfig",
@@ -28,4 +33,6 @@ __all__ = [
     "DEFAULT_POLICY",
     "ChargingDispatcher",
     "ChargingQueueEntry",
+    "CHARGING_COUNTER_FIELDS",
+    "initial_charging_counters",
 ]

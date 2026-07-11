@@ -219,11 +219,14 @@ _COMMITTED_NEXT_PRIMITIVE = (
     "committed_next_reservations_created",
     "committed_next_reservations_activated",
     "committed_next_reservations_cancelled_charging",
+    "committed_next_reservations_cancelled_death",
     "committed_next_reservations_cancelled_other",
     "committed_next_reservations_stale_end",
     "committed_next_jobs_restored",
+    "committed_next_jobs_already_present",
     "committed_next_jobs_lost",
     "committed_next_duplicate_restorations",
+    "committed_next_invariant_violations",
     "max_committed_next_reservation_age_s",
     "stale_rts_ownership_markers_end",
     "stale_replenishment_markers_end",
@@ -605,8 +608,8 @@ def derive_v3_fields(primitives: dict[str, object]) -> dict[str, object]:
     dead = _get("robot_seconds_dead")
 
     total_robot_seconds = None
-    if all(v is not None for v in (available, working, idle, going_charge, waiting_charge, phys_charge, dead)):
-        total_robot_seconds = available + working + idle + going_charge + waiting_charge + phys_charge + dead
+    if all(v is not None for v in (working, idle, going_charge, waiting_charge, phys_charge, dead)):
+        total_robot_seconds = working + idle + going_charge + waiting_charge + phys_charge + dead
 
     derived["fleet_available_fraction"] = _safe_div(available, total_robot_seconds)
     derived["fleet_working_fraction"] = _safe_div(working, total_robot_seconds)

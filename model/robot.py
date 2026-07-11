@@ -42,6 +42,16 @@ class Robot(Object):
     suspend_movement = 0
     route_stop_points = []
     total_idle = 0
+    # Mutually-exclusive per-tick state accumulators (ticks; the warehouse loop
+    # scales to seconds). Every current_state maps to exactly one of these so
+    # the fleet-time conservation identity holds. total_available is a secondary
+    # non-exclusive flag (work-eligible idle), excluded from the conservation sum.
+    total_working = 0
+    total_going_to_charge = 0
+    total_waiting_for_charger = 0
+    total_physically_charging = 0
+    total_dead = 0
+    total_available = 0
     # routing related
     latest_rotation = ''
 
@@ -260,7 +270,13 @@ class Robot(Object):
             c for c in charger_cells
             if c not in occupied and self._charger_physically_available(c)
         ]
+        # Diagnostic only: count candidates excluded because a charger cell is
+        # already claimed or physically occupied. Does not change selection.
+        occupied_count = len(charger_cells) - len(available)
+        if occupied_count > 0:
+            self._incr_charging_counter("charger_candidate_occupied", occupied_count)
         if not available:
+            self._incr_charging_counter("charger_assignment_no_feasible_candidate")
             self._enter_waiting_for_charger("no_available_charger")
             return False
         available.sort(key=lambda c: (
@@ -277,6 +293,7 @@ class Robot(Object):
                     raise ValueError(f"No route available to charger {nearest}")
                 if float(self.battery_level_j) < estimated_energy:
                     self._incr_charging_counter("charger_energy_infeasible_candidates")
+                    self._incr_charging_counter("charger_candidate_insufficient_energy")
                     continue
                 self.set_move(dest, graph=graph)
                 if not self.route_stop_points and not self.close_enough(dest):
@@ -286,6 +303,7 @@ class Robot(Object):
             except Exception:
                 self._incr_charging_counter("charger_route_failures")
                 self._incr_charging_counter("charger_candidate_route_rejections")
+                self._incr_charging_counter("charger_candidate_unroutable")
                 continue
             self.current_state = "going_to_charge"
             self._charging_lifecycle_state = "going_to_charge"
@@ -298,7 +316,8 @@ class Robot(Object):
             self._incr_charging_counter("charger_claims_created")
             self._incr_charging_counter("charger_assignment_successes")
             return True
-        # every candidate route failed
+        # every candidate route failed (unroutable or energy-infeasible)
+        self._incr_charging_counter("charger_assignment_no_feasible_candidate")
         self._enter_waiting_for_charger("all_routes_failed")
         return False
 
@@ -462,8 +481,38 @@ class Robot(Object):
         elif self.current_state == "station_processing": #inclue queue
             self.color = 94  # blue
         elif self.current_state == "idle":
-            self.total_idle += 1
             self.color = 0  # black
+
+    _WORKING_STATES = ("taking_pod", "delivering_pod", "station_processing", "returning_pod")
+
+    def _accumulate_state_seconds(self):
+        """Classify this tick into exactly one mutually-exclusive state bucket.
+
+        A robot waiting in the charging FIFO, travelling to a charger, or
+        physically charging is NOT counted as ordinary idle. ``total_idle`` keeps
+        its historical meaning (genuine idle ticks) so ``total_robot_idle`` is
+        unchanged for runs without charging.
+        """
+        state = self.current_state
+        if state == "idle":
+            self.total_idle += 1
+            # 'available' = idle and genuinely work-eligible (not charging-committed).
+            if not self.is_unavailable_for_work_due_to_charging():
+                self.total_available += 1
+        elif state in self._WORKING_STATES:
+            self.total_working += 1
+        elif state in ("going_to_charge", "leaving_charger"):
+            self.total_going_to_charge += 1
+        elif state == "waiting_for_charger":
+            self.total_waiting_for_charger += 1
+        elif state == "physically_charging":
+            self.total_physically_charging += 1
+        elif state == "dead":
+            self.total_dead += 1
+        else:
+            # Unknown/unmapped state: fall back to idle so the conservation
+            # identity (sum of buckets == fleet-seconds) still holds exactly.
+            self.total_idle += 1
 
     def advance_state(self):
         # print(f"current_state: {self.current_state}")
@@ -1127,6 +1176,7 @@ class Robot(Object):
 
     def move(self):
         self.changeColorByState()
+        self._accumulate_state_seconds()
 
         # ── PATCH A5: charging lifecycle — OPT-IN (universe.charging_enabled) ──
         # When charging is disabled (team default), none of this runs and the
@@ -1174,6 +1224,7 @@ class Robot(Object):
             self.velocity = 0; self.acceleration = 0
             self.route_stop_points = []
             self.current_state = "dead"
+            self._incr_charging_counter("robots_died_from_battery")
             self.universe.landscape.setObject(
                 self.robotName(), self.pos_x, self.pos_y,
                 self.velocity, self.acceleration, self.heading,

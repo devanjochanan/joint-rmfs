@@ -164,6 +164,34 @@ class CommittedNextRegistry:
     def _bump(self, name: str, n: int = 1) -> None:
         self.lifecycle_counters[name] = self.lifecycle_counters.get(name, 0) + n
 
+    def finalize_lifecycle_diagnostics(self, current_seconds: float) -> None:
+        """Aggregate end-of-run committed-next diagnostics (pure observation).
+
+        ``reservations_by_id`` retains every reservation for the whole run, so
+        this scans them once at finalization without changing any state. Records
+        ``committed_next_reservations_stale_end`` (still-committed at run end) and
+        ``max_committed_next_reservation_age_s``.
+        """
+        now = float(current_seconds)
+        stale = 0
+        max_age = 0.0
+        for res in self.reservations_by_id.values():
+            created = getattr(res, "created_time_seconds", None)
+            status = getattr(res, "status", None)
+            if status == STATUS_COMMITTED:
+                stale += 1
+                end_t = now
+            elif status == STATUS_ACTIVATED and getattr(res, "activation_time_seconds", None) is not None:
+                end_t = float(res.activation_time_seconds)
+            else:
+                end_t = now
+            if created is not None:
+                age = end_t - float(created)
+                if age > max_age:
+                    max_age = age
+        self.lifecycle_counters["committed_next_reservations_stale_end"] = stale
+        self.lifecycle_counters["max_committed_next_reservation_age_s"] = max_age
+
     def rebuild_indexes(self) -> None:
         self.robot_id_to_reservation = {}
         self.pod_id_to_reservation = {}

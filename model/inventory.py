@@ -47,7 +47,7 @@ from src.rmfs.rl.rts.outcome_tracker import NoopRTSRolloutRuntime
 from src.rmfs.rl.rts.runtime_install import install_rts_runtime
 from src.rmfs.rl.rts.runtime_registry import get_rts_runtime_config, get_rts_runtime_root
 from src.rmfs.runtime_io.logging import debug_print as _rmfs_debug_print
-from src.rmfs.decisions.charging import ChargingDispatcher
+from src.rmfs.decisions.charging import ChargingDispatcher, initial_charging_counters
 
 
 def print(*args, **kwargs):  # noqa: A001
@@ -101,7 +101,9 @@ class Inventory(Universe):
         self.active_charger_cells = set()     # active-dispatch targets (empty => global)
         self.occupied_chargers = {}           # cell -> robot id (one claim per cell)
         self.disable_active_charging = False  # True => opportunity-only (drive-by only)
-        self.charging_counters = {}
+        # Pre-initialized so an applicable-but-zero charging event serializes as
+        # 0, not None (a missing key means "producer not wired"). See Part H.
+        self.charging_counters = initial_charging_counters()
         self.charger_route_graph_by_cell = {}
         self.charger_exit_cell_by_cell = {}
         self.charger_station_by_cell = {}
@@ -114,6 +116,14 @@ class Inventory(Universe):
         self.total_pod = 0
         self.total_turning = 0
         self.total_robot_idle = 0
+        # full_kpi_v3 fleet-state seconds (applicable to every run => init 0.0).
+        self.robot_seconds_idle = 0.0
+        self.robot_seconds_working = 0.0
+        self.robot_seconds_going_to_charge = 0.0
+        self.robot_seconds_waiting_for_charger = 0.0
+        self.robot_seconds_physically_charging = 0.0
+        self.robot_seconds_dead = 0.0
+        self.robot_seconds_available = 0.0
         self.graph = None
         self.graph_pod = None
         self.landscape = Landscape(self.dimension)
@@ -189,6 +199,19 @@ class Inventory(Universe):
             os.environ.get("RMFS_REPLENISHMENT_PENDING_STALE_TICKS", "3000")
         )
         self.replenishment_counters: dict = {}   # nonsemantic Part E/G accounting
+        # Job-lifecycle accounting (full_kpi_v3 Part E). Only the unambiguous
+        # single-site transitions are instrumented (created/completed for the two
+        # job families with a clean creation + completion seam); pending_end is
+        # derived at finalization. Higher-risk transitions (assigned/started/
+        # cancelled/requeued/blocked/max_age) and the RTS phase family are left
+        # unwired (report None) rather than misclassified. Pre-initialized to 0
+        # so an applicable-but-zero count serializes as 0, not None.
+        self.job_lifecycle_counters: dict = {
+            "picking_jobs_created": 0,
+            "picking_jobs_completed": 0,
+            "replenishment_jobs_created": 0,
+            "replenishment_jobs_completed": 0,
+        }
 
         self.priority_order = False
         self.robot_task_allocator = DEFAULT_ROBOT_TASK_ALLOCATOR
@@ -1454,6 +1477,12 @@ class Inventory(Universe):
         total_energy = 0
         total_turning = 0
         total_idle = 0
+        total_working = 0
+        total_going_to_charge = 0
+        total_waiting_for_charger = 0
+        total_physically_charging = 0
+        total_dead = 0
+        total_available = 0
         for o in self.get_movable_objects():
             if isinstance(o, Robot):
                 initial_velocity = o.velocity
@@ -1461,6 +1490,12 @@ class Inventory(Universe):
                 total_energy += o.energy_consumption
                 total_turning += o.turning
                 total_idle += (o.total_idle * 0.15)
+                total_working += (o.total_working * 0.15)
+                total_going_to_charge += (o.total_going_to_charge * 0.15)
+                total_waiting_for_charger += (o.total_waiting_for_charger * 0.15)
+                total_physically_charging += (o.total_physically_charging * 0.15)
+                total_dead += (o.total_dead * 0.15)
+                total_available += (o.total_available * 0.15)
                 if o.velocity == 0 and initial_velocity > 0:
                     self.stop_and_go += 1
 
@@ -1497,6 +1532,16 @@ class Inventory(Universe):
                 
         # Update global metrics
         self.total_robot_idle = total_idle
+        # Mutually-exclusive fleet-state seconds (full_kpi_v3). Every robot-tick
+        # is classified into exactly one of these buckets; robot_seconds_available
+        # is a secondary non-exclusive flag (work-eligible idle).
+        self.robot_seconds_idle = total_idle
+        self.robot_seconds_working = total_working
+        self.robot_seconds_going_to_charge = total_going_to_charge
+        self.robot_seconds_waiting_for_charger = total_waiting_for_charger
+        self.robot_seconds_physically_charging = total_physically_charging
+        self.robot_seconds_dead = total_dead
+        self.robot_seconds_available = total_available
         self.total_energy = total_energy
         self.total_turning = total_turning
 

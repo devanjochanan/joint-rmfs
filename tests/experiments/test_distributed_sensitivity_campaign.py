@@ -601,3 +601,87 @@ def test_relaxed_completion_still_rejects_bad_condition_and_incomplete_kpi(tmp_p
 
     _write_complete_summary(spec, manifest, condition, finalization={"finalized": True}, status="failure")
     assert run_complete_for_campaign(condition, spec, manifest, relaxed=True) is False
+
+
+def test_completion_inventory_works_without_worker_summary_json(tmp_path, monkeypatch):
+    from scripts.experiments import append_distributed_sensitivity_campaign as append
+    manifest = {**build_manifest(), "campaign_root_relative": "campaign"}
+    machine = default_machines()[0]
+    condition = next(run for run in manifest["runs"] if run["machine_id"] == machine.machine_id)
+
+    outcomes_dir = tmp_path / "campaign" / machine.machine_id
+    outcomes_dir.mkdir(parents=True, exist_ok=True)
+    outcomes_path = outcomes_dir / "run_outcomes.csv"
+
+    with outcomes_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(append.base.RUN_OUTCOME_FIELDS))
+        writer.writeheader()
+        row = {field: "" for field in append.base.RUN_OUTCOME_FIELDS}
+        row.update({
+            "campaign_id": manifest["campaign_id"],
+            "allocation_patch_id": manifest["allocation_patch_id"],
+            "simulation_semantics_id": manifest["simulation_semantics_id"],
+            "run_id": condition["run_id"],
+            "condition_key": condition["condition_key"],
+            "policy_configuration": condition["policy_configuration"],
+            "robot_count": str(condition["robot_count"]),
+            "order_rate": str(condition["order_rate"]),
+            "replication": str(condition["replication"]),
+            "seed": str(condition["seed"]),
+            "status": "success",
+            "kpi_schema_version": manifest["kpi_schema_version"],
+            "simulated_seconds": "580.0",
+        })
+        writer.writerow(row)
+
+    inventory = append.completion_inventory(manifest, tmp_path, tmp_path / "snapshots")
+    assert inventory["counts"]["strict_completed"] == 1
+    assert condition["run_id"] in inventory["strict_records"]
+
+
+def test_rebuild_plan_outcomes_preserves_rows(tmp_path):
+    from scripts.experiments import append_distributed_sensitivity_campaign as append
+    manifest = {**build_manifest(), "campaign_root_relative": "campaign"}
+    machine = default_machines()[0]
+    condition = next(run for run in manifest["runs"] if run["machine_id"] == machine.machine_id)
+
+    outcomes_dir = tmp_path / "campaign" / machine.machine_id
+    outcomes_dir.mkdir(parents=True, exist_ok=True)
+    outcomes_path = outcomes_dir / "run_outcomes.csv"
+
+    with outcomes_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(append.base.RUN_OUTCOME_FIELDS))
+        writer.writeheader()
+        row = {field: "" for field in append.base.RUN_OUTCOME_FIELDS}
+        row.update({
+            "campaign_id": manifest["campaign_id"],
+            "allocation_patch_id": manifest["allocation_patch_id"],
+            "simulation_semantics_id": manifest["simulation_semantics_id"],
+            "run_id": condition["run_id"],
+            "condition_key": condition["condition_key"],
+            "policy_configuration": condition["policy_configuration"],
+            "robot_count": str(condition["robot_count"]),
+            "order_rate": str(condition["order_rate"]),
+            "replication": str(condition["replication"]),
+            "seed": str(condition["seed"]),
+            "status": "success",
+            "kpi_schema_version": manifest["kpi_schema_version"],
+        })
+        writer.writerow(row)
+
+    items = [{
+        "run_id": condition["run_id"],
+        "source_campaign_id": manifest["campaign_id"],
+        "allocation_patch_id": manifest["allocation_patch_id"],
+    }]
+    monkeypatch_repo_root = append.REPO_ROOT
+    try:
+        append.REPO_ROOT = tmp_path
+        path = append.rebuild_plan_outcomes(manifest, machine, items)
+        with path.open(newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+        assert len(rows) == 1
+        assert rows[0]["run_id"] == condition["run_id"]
+    finally:
+        append.REPO_ROOT = monkeypatch_repo_root
+
