@@ -617,7 +617,7 @@ def test_completion_inventory_works_without_worker_summary_json(tmp_path, monkey
         writer = csv.DictWriter(fh, fieldnames=list(append.base.RUN_OUTCOME_FIELDS))
         writer.writeheader()
         row = {field: "" for field in append.base.RUN_OUTCOME_FIELDS}
-        row.update({
+        payload = {
             "campaign_id": manifest["campaign_id"],
             "allocation_patch_id": manifest["allocation_patch_id"],
             "simulation_semantics_id": manifest["simulation_semantics_id"],
@@ -631,7 +631,11 @@ def test_completion_inventory_works_without_worker_summary_json(tmp_path, monkey
             "status": "success",
             "kpi_schema_version": manifest["kpi_schema_version"],
             "simulated_seconds": "580.0",
-        })
+            "snapshot_simulated_seconds": "580.0",
+        }
+        for k, v in payload.items():
+            if k in row:
+                row[k] = v
         writer.writerow(row)
 
     inventory = append.completion_inventory(manifest, tmp_path, tmp_path / "snapshots")
@@ -653,7 +657,7 @@ def test_rebuild_plan_outcomes_preserves_rows(tmp_path):
         writer = csv.DictWriter(fh, fieldnames=list(append.base.RUN_OUTCOME_FIELDS))
         writer.writeheader()
         row = {field: "" for field in append.base.RUN_OUTCOME_FIELDS}
-        row.update({
+        payload = {
             "campaign_id": manifest["campaign_id"],
             "allocation_patch_id": manifest["allocation_patch_id"],
             "simulation_semantics_id": manifest["simulation_semantics_id"],
@@ -666,13 +670,21 @@ def test_rebuild_plan_outcomes_preserves_rows(tmp_path):
             "seed": str(condition["seed"]),
             "status": "success",
             "kpi_schema_version": manifest["kpi_schema_version"],
-        })
+        }
+        for k, v in payload.items():
+            if k in row:
+                row[k] = v
         writer.writerow(row)
 
     items = [{
         "run_id": condition["run_id"],
         "source_campaign_id": manifest["campaign_id"],
         "allocation_patch_id": manifest["allocation_patch_id"],
+        "execution_priority": 1,
+        "policy_configuration": condition["policy_configuration"],
+        "robot_count": condition["robot_count"],
+        "order_rate": condition["order_rate"],
+        "replication": condition["replication"],
     }]
     monkeypatch_repo_root = append.REPO_ROOT
     try:
