@@ -229,9 +229,9 @@ def test_declared_reference_and_adaptive_p2_p3_chargers_validate(tmp_path, monke
     }
     assert adaptive_warehouse.active_charger_cells == adaptive_warehouse.charger_cells
     for cell, graph_name in adaptive_warehouse.charger_route_graph_by_cell.items():
+        assert adaptive_warehouse.charger_exit_cell_by_cell[cell] != cell
         if graph_name == "pod":
             assert cell in adaptive_warehouse.charger_station_by_cell
-            assert adaptive_warehouse.charger_exit_cell_by_cell[cell] != cell
 
     reference = build_reference(grid.tolist(), num_chargers=10, seed=1)
     reference_warehouse = _draw_generated_treatment(
@@ -239,6 +239,10 @@ def test_declared_reference_and_adaptive_p2_p3_chargers_validate(tmp_path, monke
     )
     assert reference_warehouse.charging_dispatch_validation["active_count"] == 10
     assert reference_warehouse.charging_dispatch_validation["p3_count"] == 0
+    assert all(
+        exit_cell != cell
+        for cell, exit_cell in reference_warehouse.charger_exit_cell_by_cell.items()
+    )
 
 
 class _RouteGraph:
@@ -290,8 +294,10 @@ def _charging_robot_at_claim(battery_pct):
     warehouse.tick_to_second = 0.15
     warehouse.charger_cells = {(7, 5)}
     warehouse.active_charger_cells = {(7, 5)}
-    warehouse.charger_exit_cell_by_cell = {(7, 5): (7, 5)}
+    warehouse.charger_exit_cell_by_cell = {(7, 5): (8, 5)}
     warehouse.charger_route_graph_by_cell = {(7, 5): "standard"}
+    warehouse.graph = object()
+    warehouse.graph_pod = object()
     warehouse.job_queue = []
     warehouse.zoning = False
     robot = Robot(warehouse)
@@ -312,6 +318,7 @@ def _charging_robot_at_claim(battery_pct):
     warehouse.occupied_chargers[(7, 5)] = 1
     warehouse.robots.append(robot)
     warehouse.charging_dispatcher = ChargingDispatcher(warehouse)
+    robot.set_move = lambda destination, graph: setattr(robot, "route_stop_points", [destination])
     return warehouse, robot
 
 
@@ -325,6 +332,12 @@ def test_physical_session_start_completion_interruption_and_release():
 
     robot.battery_level_j = robot.BATTERY_CAPACITY_J * robot.BATTERY_CHARGED_PCT / 100.0
     robot.movementPlan()
+    assert robot.current_state == "leaving_charger"
+    assert robot._claimed_charger == (7, 5)
+    assert warehouse.occupied_chargers == {(7, 5): 1}
+    robot.pos_x, robot.pos_y = 8, 5
+    robot.route_stop_points = []
+    robot.movementPlan()
     assert robot.current_state == "idle"
     assert robot._claimed_charger is None
     assert warehouse.occupied_chargers == {}
@@ -335,8 +348,21 @@ def test_physical_session_start_completion_interruption_and_release():
     robot._charging_lifecycle_state = "physically_charging"
     warehouse.job_queue.append(object())
     robot.movementPlan()
-    assert robot.current_state == "idle"
+    assert robot.current_state == "leaving_charger"
     assert warehouse.charging_counters["charging_sessions_interrupted"] == 1
+
+
+def test_leaving_charger_timeout_raises_instead_of_waiting_forever():
+    warehouse, robot = _charging_robot_at_claim(60.0)
+    robot.current_state = "leaving_charger"
+    robot._charging_lifecycle_state = "leaving_charger"
+    robot._leaving_started_at = 0.0
+    robot._leaving_progress_at = 0.0
+    robot._leaving_progress_pos = (robot.pos_x, robot.pos_y)
+    warehouse._tick = robot.LEAVING_CHARGER_MAX_SECONDS
+
+    with pytest.raises(RuntimeError, match="charging departure made no progress"):
+        robot._charging_pre_move()
 
 
 def test_busy_low_soc_defers_without_entering_fifo():

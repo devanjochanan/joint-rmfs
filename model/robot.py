@@ -25,6 +25,30 @@ if TYPE_CHECKING:
 
 ACTIVATE_NEAREST = True
 
+MOVEMENT_STATE_PRIORITY = {
+    'station_processing': 3,
+    'delivering_pod': 3,
+    'returning_pod': 2,
+    'taking_pod': 1,
+    # Charging lifecycle states.  A robot leaving a charger should be allowed
+    # to clear the charger cell, while waiting/plugged-in robots should not
+    # outrank production movement.
+    'leaving_charger': 1,
+    'going_to_charge': 0,
+    'waiting_for_charger': 0,
+    'physically_charging': 0,
+    # Defensive aliases for charging lifecycle internals that may leak into a
+    # neighbor state dictionary in future changes.
+    'waiting_fifo': 0,
+    'charger_claimed': 0,
+    'charging': 0,
+    'dead': 0,
+    'idle': 0,
+}
+
+DEFAULT_MOVEMENT_STATE_PRIORITY = 0
+
+
 class Robot(Object):
     # netlogo related
     shape = 'turtle-2'
@@ -94,6 +118,10 @@ class Robot(Object):
     # A robot holding a charger claim while not physically charging and making no
     # route progress for this many ticks releases the claim and re-enters waiting.
     STALE_CLAIM_MAX_TICKS = 600
+    # A charged robot must clear the charger exit within this many simulated
+    # seconds.  Normal departures are unchanged; this only turns an otherwise
+    # endless blockage into a clear failed run.
+    LEAVING_CHARGER_MAX_SECONDS = 600.0
     
     
     
@@ -129,6 +157,9 @@ class Robot(Object):
         self._waiting_for_charger = False       # unresolved: needs charge, none obtainable
         self._claim_created_tick = None         # tick a claim was created (for no-progress check)
         self._claim_progress_pos = None         # last position while holding a claim
+        self._leaving_started_at = None
+        self._leaving_progress_at = None
+        self._leaving_progress_pos = None
         self._drive_by_charged_last = False     # incidental drive-by transferred energy last tick
         self._charging_episode_id = None
         self._charging_queue_entered_at = None
@@ -377,12 +408,19 @@ class Robot(Object):
         self.charge_after_current_task = False
 
     def _complete_charging_departure(self):
+        # Keep the claim until the robot has physically cleared the charger
+        # exit.  Releasing it earlier can send another robot into the same
+        # one-lane entrance while this robot is still leaving.
+        self._release_charger(notify=False)
         self.current_state = "idle"
         self._charging_lifecycle_state = None
         self._charging_episode_id = None
         self._charging_queue_entered_at = None
         self._waiting_for_charger = False
         self._charging_unavailable_recorded = False
+        self._leaving_started_at = None
+        self._leaving_progress_at = None
+        self._leaving_progress_pos = None
         self.is_charging = False
         dispatcher = getattr(self.universe, "charging_dispatcher", None)
         if dispatcher is not None:
@@ -396,7 +434,6 @@ class Robot(Object):
             self._incr_charging_counter("charging_sessions_completed")
             self._charging_lifecycle_state = "completed"
         cell = self._claimed_charger
-        self._release_charger(notify=False)
         self.is_charging = False
         exit_cell = getattr(self.universe, "charger_exit_cell_by_cell", {}).get(cell)
         if exit_cell is None or exit_cell == (round(self.pos_x), round(self.pos_y)):
@@ -409,9 +446,10 @@ class Robot(Object):
             self.route_stop_points = [NetLogoCoordinate(*exit_cell)]
         self.current_state = "leaving_charger"
         self._charging_lifecycle_state = "leaving_charger"
-        dispatcher = getattr(self.universe, "charging_dispatcher", None)
-        if dispatcher is not None:
-            dispatcher.notify_availability_changed("charging_session_released")
+        now = float(getattr(self.universe, "_tick", 0.0))
+        self._leaving_started_at = now
+        self._leaving_progress_at = now
+        self._leaving_progress_pos = (self.pos_x, self.pos_y)
 
     @staticmethod
     def _checkMovementDirection(p1, p2):
@@ -584,6 +622,10 @@ class Robot(Object):
             )
             charging_queued = (getattr(self, "charge_after_current_task", False) or self.battery_pct <= self.BATTERY_LOW_PCT) and not getattr(self.universe, "disable_active_charging", False)
             if getattr(self.universe, "charging_enabled", False) and charging_queued:
+                # The return is already fully finalized above.  Do not carry its
+                # finished job record into the charging lifecycle: the pod is
+                # available again and may legitimately receive a new job.
+                self.job = None
                 self.current_state = "idle"
                 self._queue_for_charging()
             else:
@@ -633,25 +675,22 @@ class Robot(Object):
         return neighbor_candidates
 
     def get_priority_diff(self, object):
-        state_priority = {
-            'station_processing': 3,
-            'delivering_pod': 3,
-            'returning_pod': 2,
-            'taking_pod': 1,
-            'going_to_charge': 0,
-            'dead': 0,
-            'idle': 0
-        }
         is_replenish = False
         if self.job is not None:
             station: Station = self.universe.station_manager.get_station_by_id(self.job.station_id)
             is_replenish = station.is_replenishment_station()
 
-        self_priority = state_priority[self.current_state]
+        self_priority = MOVEMENT_STATE_PRIORITY.get(
+            self.current_state,
+            DEFAULT_MOVEMENT_STATE_PRIORITY,
+        )
         if self.job is not None and is_replenish:
-            self_priority = state_priority['returning_pod']
+            self_priority = MOVEMENT_STATE_PRIORITY['returning_pod']
 
-        other_priority = state_priority[object['state']] 
+        other_priority = MOVEMENT_STATE_PRIORITY.get(
+            object.get('state'),
+            DEFAULT_MOVEMENT_STATE_PRIORITY,
+        )
         
         return self_priority - other_priority 
 
@@ -1248,6 +1287,20 @@ class Robot(Object):
                 self._release_stale_charger_claim_and_route()
                 self._enter_waiting_for_charger("stale_claim_no_progress")
                 self._queue_for_charging(preserve_timestamp=True)
+        if self.current_state == "leaving_charger":
+            pos = (self.pos_x, self.pos_y)
+            now = float(getattr(self.universe, "_tick", 0.0))
+            if self._leaving_progress_pos is None or pos != self._leaving_progress_pos:
+                self._leaving_progress_pos = pos
+                self._leaving_progress_at = now
+            elif self._leaving_progress_at is None:
+                self._leaving_progress_at = now
+            elif now - float(self._leaving_progress_at) >= self.LEAVING_CHARGER_MAX_SECONDS:
+                raise RuntimeError(
+                    "charging departure made no progress: "
+                    f"robot={self.id} charger={self._claimed_charger} "
+                    f"blocked_seconds={now - float(self._leaving_progress_at):.1f}"
+                )
         # Base operational drain (skipped while plugged in / charging).
         if not self.is_charging:
             fixed_load_energy = self.BASE_DRAIN_RATE_PER_S * self.universe.tick_to_second

@@ -1356,8 +1356,30 @@ def _validate_active_charger_dispatch(universe: Inventory, data: DataFrame) -> N
         if key in ordinary_nodes:
             graph_name = "standard"
             graph = universe.graph.graph
-            exit_cell = cell
             charger_type = "p2_depot"
+            # A depot charger is itself an ordinary graph node, but a charged
+            # robot must still move off that node before the charger is free.
+            # Choose one deterministic legal outgoing neighbour as its exit.
+            exit_nodes = [node for node in graph.successors(key) if node != key]
+            non_charger_exits = [
+                node
+                for node in exit_nodes
+                if tuple(map(int, str(node).split(","))) not in active
+            ]
+            if non_charger_exits:
+                exit_nodes = non_charger_exits
+            if not exit_nodes:
+                raise ValueError(
+                    f"invalid active charger {cell} type={charger_type}: no separate legal exit cell"
+                )
+            exit_node = min(
+                exit_nodes,
+                key=lambda node: (
+                    float(graph.get_edge_data(key, node, {}).get("weight", 1.0)),
+                    tuple(map(int, str(node).split(","))),
+                ),
+            )
+            exit_cell = tuple(map(int, str(exit_node).split(",")))
         elif value == 14 and key in universe.graph_pod.graph and station is not None:
             graph_name = "pod"
             graph = universe.graph_pod.graph

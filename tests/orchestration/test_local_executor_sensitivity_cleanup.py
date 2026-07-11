@@ -8,16 +8,19 @@ from pathlib import Path
 from src.rmfs.app import netlogo_api
 from src.rmfs.orchestration.local_executor import (
     FAILED_RECLAIMABLE_RUN_ARTIFACTS,
+    FULL_KPI_V3_SCHEMA_VERSION,
     SENSITIVITY_KPI_SCHEMA_VERSION,
     SUCCESS_RECLAIMABLE_RUN_ARTIFACTS,
     _canonical_json_sha256,
     derive_sensitivity_kpi_payload,
+    derive_sensitivity_kpi_v3_payload,
     expected_worker_files,
     reclaim_completed_run_artifacts_with_stats,
     reclaim_failed_run_artifacts_with_stats,
     reclaim_interrupted_run_artifacts_with_stats,
     run_worker,
     run_specs,
+    worker_environment_overrides,
 )
 from src.rmfs.orchestration.run_spec import RunSpec
 
@@ -241,6 +244,32 @@ def test_all_off_sensitivity_kpi_is_complete_without_rts_checkpoint(tmp_path: Pa
 
     assert payload["rts_checkpoint_id"] == "not_applicable"
     assert payload["kpi_complete"] is True
+
+
+def test_scientific_workers_fail_on_hard_runtime_invariants(tmp_path: Path):
+    spec = replace(_spec(tmp_path), kpi_schema_version=FULL_KPI_V3_SCHEMA_VERSION)
+
+    assert worker_environment_overrides(spec)["RMFS_RTS_FAIL_ON_INVARIANTS"] == "1"
+
+
+def test_full_horizon_uses_warehouse_seconds_and_maximum_horizon_reason(tmp_path: Path):
+    spec = replace(
+        _spec(tmp_path),
+        ticks=10,
+        run_horizon_ticks=10,
+        kpi_schema_version=FULL_KPI_V3_SCHEMA_VERSION,
+    )
+    warehouse = _Warehouse()
+    warehouse._tick = spec.simulated_horizon_seconds
+
+    payload = derive_sensitivity_kpi_v3_payload(
+        spec,
+        warehouse,
+        finalization={"reason": "maximum_horizon", "runtime_invariants": {}},
+        generated_order_contract={"generated_unique_orders": 0},
+    )
+
+    assert payload["simulation_completed_full_horizon"] is True
 
 
 def test_success_cleanup_preserves_summary_spec_and_embeds_rollout_summary(tmp_path: Path):

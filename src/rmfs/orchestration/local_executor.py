@@ -339,6 +339,10 @@ def worker_environment_overrides(spec: RunSpec) -> dict[str, str]:
         "RMFS_COMMITTED_NEXT_RESERVATIONS": "1" if spec.committed_next_reservations_enabled else "0",
         "RMFS_POD_LOCATION_MODE": spec.pod_location_mode,
     }
+    # Scientific sensitivity runs must never be accepted when the final
+    # ownership checks find duplicate jobs, pods, or charger claims.
+    if spec.kpi_schema_version in {SENSITIVITY_KPI_SCHEMA_VERSION, FULL_KPI_V3_SCHEMA_VERSION}:
+        env["RMFS_RTS_FAIL_ON_INVARIANTS"] = "1"
     if spec.pps_model_path:
         env["PPS_RL_MODEL_PATH"] = spec.pps_model_path
     if spec.charging_enabled is not None:
@@ -859,8 +863,13 @@ def derive_sensitivity_kpi_v3_payload(
     runtime_invariants = finalization.get("runtime_invariants", {}) or {}
     payload["congestion_detected"] = bool(reason == "congestion" or runtime_invariants.get("hard_violation_count", 0))
     payload["simulation_termination_reason"] = reason
-    elapsed_sim_seconds = _safe_float(getattr(warehouse, "_tick", 0.0)) * _safe_float(getattr(warehouse, "tick_to_second", spec.tick_to_second))
-    payload["simulation_completed_full_horizon"] = bool(reason == "completed" or (reason is None and elapsed_sim_seconds >= sim_time))
+    # Inventory._tick is already measured in simulated seconds.  Multiplying it
+    # by tick_to_second again under-reported the elapsed horizon by 0.15.
+    elapsed_sim_seconds = _safe_float(getattr(warehouse, "_tick", 0.0))
+    payload["simulation_completed_full_horizon"] = bool(
+        reason == "maximum_horizon"
+        or (reason is None and elapsed_sim_seconds >= sim_time)
+    )
 
     payload["robot_count"] = len(robots)
     payload["simulated_seconds"] = sim_time

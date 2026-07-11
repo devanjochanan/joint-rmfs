@@ -195,6 +195,7 @@ def test_scenario_a_low_battery_while_idle():
     robot.battery_level_j = robot.BATTERY_CAPACITY_J * 0.1
     inv.tick()
     assert robot.current_state == "going_to_charge"
+    assert robot.job is None
     assert robot._claimed_charger == (12, 12)
     assert_ownership_invariants(inv)
     print("Scenario A passed")
@@ -271,6 +272,7 @@ def test_scenario_e_rts_committed_next_plus_queued_charging():
     assert len(inv.job_queue) == initial_queue_len
     assert job2 in inv.job_queue
     assert robot.current_state == "going_to_charge"
+    assert robot.job is None
     assert robot._claimed_charger == (12, 12)
     assert robot.charge_after_current_task is False
 
@@ -292,7 +294,7 @@ def test_scenario_f_charger_unavailable():
 
     inv.tick()
 
-    assert robot.current_state == "idle"
+    assert robot.current_state == "waiting_for_charger"
     assert robot.charge_after_current_task is True
     assert robot._claimed_charger is None
     assert job2 in inv.job_queue
