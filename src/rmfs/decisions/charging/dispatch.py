@@ -38,6 +38,7 @@ CHARGING_COUNTER_FIELDS: tuple[str, ...] = (
     "charger_energy_infeasible_candidates",
     "charger_unavailable_events",
     "stale_charger_claims_detected",
+    "charging_departure_no_progress_retries",
     # Physical charging sessions
     "charging_sessions_started",
     "charging_sessions_completed",

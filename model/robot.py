@@ -451,6 +451,29 @@ class Robot(Object):
         self._leaving_progress_at = now
         self._leaving_progress_pos = (self.pos_x, self.pos_y)
 
+    def _retry_charging_departure_after_no_progress(self, *, now):
+        """Keep the run alive when a charger exit is blocked for a long time."""
+        self._incr_charging_counter("charging_departure_no_progress_retries")
+        cell = getattr(self, "_claimed_charger", None)
+        exit_cell = getattr(self.universe, "charger_exit_cell_by_cell", {}).get(cell)
+        here = (round(self.pos_x), round(self.pos_y))
+        if exit_cell is None or here == exit_cell:
+            self._complete_charging_departure()
+            return
+
+        graph_name = getattr(self.universe, "charger_route_graph_by_cell", {}).get(cell, "standard")
+        graph = self.universe.graph_pod if graph_name == "pod" else self.universe.graph
+        try:
+            self.set_move(NetLogoCoordinate(*exit_cell), graph=graph)
+        except Exception:
+            self.route_stop_points = [NetLogoCoordinate(*exit_cell)]
+        if not self.route_stop_points:
+            self.route_stop_points = [NetLogoCoordinate(*exit_cell)]
+        self.current_state = "leaving_charger"
+        self._charging_lifecycle_state = "leaving_charger"
+        self._leaving_progress_at = now
+        self._leaving_progress_pos = (self.pos_x, self.pos_y)
+
     @staticmethod
     def _checkMovementDirection(p1, p2):
         if p1.y == p2.y:
@@ -1296,11 +1319,7 @@ class Robot(Object):
             elif self._leaving_progress_at is None:
                 self._leaving_progress_at = now
             elif now - float(self._leaving_progress_at) >= self.LEAVING_CHARGER_MAX_SECONDS:
-                raise RuntimeError(
-                    "charging departure made no progress: "
-                    f"robot={self.id} charger={self._claimed_charger} "
-                    f"blocked_seconds={now - float(self._leaving_progress_at):.1f}"
-                )
+                self._retry_charging_departure_after_no_progress(now=now)
         # Base operational drain (skipped while plugged in / charging).
         if not self.is_charging:
             fixed_load_energy = self.BASE_DRAIN_RATE_PER_S * self.universe.tick_to_second

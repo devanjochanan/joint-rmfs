@@ -352,7 +352,7 @@ def test_physical_session_start_completion_interruption_and_release():
     assert warehouse.charging_counters["charging_sessions_interrupted"] == 1
 
 
-def test_leaving_charger_timeout_raises_instead_of_waiting_forever():
+def test_leaving_charger_timeout_retries_instead_of_failing_run():
     warehouse, robot = _charging_robot_at_claim(60.0)
     robot.current_state = "leaving_charger"
     robot._charging_lifecycle_state = "leaving_charger"
@@ -361,8 +361,11 @@ def test_leaving_charger_timeout_raises_instead_of_waiting_forever():
     robot._leaving_progress_pos = (robot.pos_x, robot.pos_y)
     warehouse._tick = robot.LEAVING_CHARGER_MAX_SECONDS
 
-    with pytest.raises(RuntimeError, match="charging departure made no progress"):
-        robot._charging_pre_move()
+    robot._charging_pre_move()
+    assert robot.current_state == "leaving_charger"
+    assert robot._claimed_charger == (7, 5)
+    assert robot.route_stop_points
+    assert warehouse.charging_counters["charging_departure_no_progress_retries"] == 1
 
 
 def test_busy_low_soc_defers_without_entering_fifo():
