@@ -24,7 +24,7 @@ def test_generated_reference_registers_only_generated_coordinates(tmp_path):
     _configure_charging_treatment(warehouse, placement_source="generated_reference", config_path=str(_config(tmp_path)))
     assert warehouse.charging_enabled is True
     assert warehouse.charger_cells == {(2, 1), (4, 3)}
-    assert warehouse.active_charger_cells == set()
+    assert warehouse.active_charger_cells == {(2, 1), (4, 3)}
     assert _uses_grid_charger_cells("generated_reference") is False
 
 
@@ -35,6 +35,7 @@ def test_salsa_registers_only_generated_coordinates(tmp_path):
     assert warehouse.charger_cells == {(2, 1), (4, 3)}
     assert warehouse.charging_enabled is True
     assert warehouse.charging_declared_count == 2
+    assert warehouse.active_charger_cells == {(2, 1), (4, 3)}
     assert _uses_grid_charger_cells("generated_salsa_adaptive") is False
 
 

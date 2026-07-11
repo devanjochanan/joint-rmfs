@@ -9,6 +9,7 @@ from .regret_k import (
     select_active_job_queue_assignment,
 )
 from .committed_next import (
+    CommittedNextInvariantError,
     CommittedNextProposal,
     CommittedNextRegistry,
     CommittedNextReservation,
@@ -28,6 +29,7 @@ __all__ = [
     "TASK_ALLOCATOR_SCOPE",
     "AllocationResult",
     "CommittedNextProposal",
+    "CommittedNextInvariantError",
     "CommittedNextRegistry",
     "CommittedNextReservation",
     "get_committed_next_action_proposal",

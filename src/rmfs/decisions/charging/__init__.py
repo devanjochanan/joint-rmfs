@@ -15,6 +15,7 @@ from .config import (
     save_charging_config,
 )
 from .policy import DEFAULT_POLICY
+from .dispatch import ChargingDispatcher, ChargingQueueEntry
 
 __all__ = [
     "ChargingConfig",
@@ -25,4 +26,6 @@ __all__ = [
     "validate_charging_config",
     "save_charging_config",
     "DEFAULT_POLICY",
+    "ChargingDispatcher",
+    "ChargingQueueEntry",
 ]

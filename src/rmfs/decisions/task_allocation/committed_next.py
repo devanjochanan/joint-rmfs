@@ -19,6 +19,20 @@ STATUS_COMPLETED = "completed"
 TERMINAL_STATUSES = {STATUS_CANCELLED, STATUS_COMPLETED}
 
 
+class CommittedNextInvariantError(RuntimeError):
+    """A normal operational path attempted to disrupt a reservation."""
+
+
+def _allowed_cancellation_reason(reason: str) -> bool:
+    value = str(reason)
+    return (
+        value == "reservation_cancelled_charging"
+        or value == "reservation_cancelled_robot_death"
+        or value == "run_end"
+        or value.startswith("run_end_")
+    )
+
+
 @dataclass
 class CommittedNextReservation:
     reservation_id: str
@@ -750,6 +764,12 @@ class CommittedNextRegistry:
             return None
         if reservation.status in TERMINAL_STATUSES:
             return reservation
+        if not _allowed_cancellation_reason(reason):
+            self._bump("committed_next_invariant_violations")
+            raise CommittedNextInvariantError(
+                "charging is the only normal committed-next cancellation cause; "
+                f"reservation={reservation.reservation_id} reason={reason}"
+            )
         # A reservation may be cancelled while its future job is represented in
         # zero, one, or multiple queue entries.  Repair that representation
         # exactly once before clearing ownership markers.
@@ -761,19 +781,17 @@ class CommittedNextRegistry:
                 queue.insert(insert_at, reservation.job)
                 self._bump("committed_next_jobs_restored")
             elif len(indices) == 1:
-                self._bump("committed_next_jobs_restored")
+                self._bump("committed_next_jobs_already_present")
             else:
                 # Keep the earliest existing representation and remove later
                 # copies from right to left so the queue order is stable.
                 for idx in reversed(indices[1:]):
                     del queue[idx]
                 self._bump("committed_next_duplicate_restorations", len(indices) - 1)
-                self._bump("committed_next_jobs_restored")
-        else:
-            # Legacy direct callers have no queue to inspect.  Preserve their
-            # cancellation accounting; all active runtime paths provide the
-            # inventory and therefore take the exact-once branch above.
-            self._bump("committed_next_jobs_restored")
+        elif not str(reason).startswith("run_end"):
+            raise CommittedNextInvariantError(
+                f"cannot restore committed-next job without inventory: reason={reason}"
+            )
         self._clear_markers(reservation)
         reservation.status = STATUS_CANCELLED
         reservation.cancellation_reason = str(reason)
@@ -789,37 +807,46 @@ class CommittedNextRegistry:
         if reservation is None:
             return None
         if reservation.status != STATUS_COMMITTED:
-            self.cancel_reservation(reservation, "reservation_not_committed", inventory=inventory)
-            return None
+            raise CommittedNextInvariantError(
+                f"reservation {reservation.reservation_id} activated from status {reservation.status}"
+            )
         valid, reason = self._validate_activation(inventory, reservation)
         if not valid:
-            self.cancel_reservation(reservation, reason, inventory=inventory)
-            return None
+            self._bump("committed_next_invariant_violations")
+            raise CommittedNextInvariantError(
+                f"reservation {reservation.reservation_id} activation identity changed: {reason}"
+            )
 
         job = reservation.job
         queue_index = _identity_index(inventory.job_queue, job)
         del inventory.job_queue[queue_index]
         previous_job = getattr(robot, "job", None)
         previous_state = getattr(robot, "current_state", None)
-        self._clear_markers(reservation)
+        previous_route = getattr(robot, "route_stop_points", None)
+        previous_destination = getattr(robot, "destination", None)
+        previous_movement_plan = getattr(robot, "movement_plan", None)
         try:
-            reservation.status = STATUS_ACTIVATED
-            reservation.activation_time_seconds = float(getattr(inventory, "_tick", 0.0))
-            setattr(job, "committed_next_activated_by_robot_id", reservation.owner_robot_id)
-            setattr(job, "committed_next_reservation_id", None)
-            setattr(job, "committed_next_owner_robot_id", None)
             robot.assign_job_and_set_move_to_take_pod(job)
-            self._bump("committed_next_reservations_activated")
-        except Exception:
+        except Exception as exc:
             insert_at = max(0, min(int(reservation.original_queue_index), len(inventory.job_queue)))
             if job not in inventory.job_queue:
                 inventory.job_queue.insert(insert_at, job)
             robot.job = previous_job
             robot.current_state = previous_state
-            reservation.status = STATUS_CANCELLED
-            reservation.cancellation_reason = "activation_failed_after_queue_removal"
-            self._drop_indexes(reservation)
-            return None
+            robot.route_stop_points = previous_route
+            robot.destination = previous_destination
+            robot.movement_plan = previous_movement_plan
+            self._bump("committed_next_invariant_violations")
+            raise CommittedNextInvariantError(
+                f"reservation {reservation.reservation_id} activation failed without cancellation: {exc}"
+            ) from exc
+        self._clear_markers(reservation)
+        reservation.status = STATUS_ACTIVATED
+        reservation.activation_time_seconds = float(getattr(inventory, "_tick", 0.0))
+        setattr(job, "committed_next_activated_by_robot_id", reservation.owner_robot_id)
+        setattr(job, "committed_next_reservation_id", None)
+        setattr(job, "committed_next_owner_robot_id", None)
+        self._bump("committed_next_reservations_activated")
         self._drop_indexes(reservation)
         return reservation
 

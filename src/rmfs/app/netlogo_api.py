@@ -1175,16 +1175,25 @@ def _configure_charging_treatment(universe: Inventory, *, placement_source: str,
     if "corrected_energy_model" in _cfg:
         _Robot.CORRECTED_ENERGY_MODEL = bool(_cfg["corrected_energy_model"])
     # Register charger overlay positions ([row, col] in config -> (x=col, y=row)).
-    for _pos in _cfg.get("charger_positions", []):
-        universe.charger_cells.add((int(_pos[1]), int(_pos[0])))
+    _declared_positions = [(int(_pos[1]), int(_pos[0])) for _pos in _cfg.get("charger_positions", [])]
+    if len(set(_declared_positions)) != len(_declared_positions):
+        raise ValueError(f"charging config contains duplicate coordinates: {_declared_positions}")
+    _declared_count = int(_cfg.get("num_chargers", len(_declared_positions)))
+    if _declared_count != len(_declared_positions):
+        raise ValueError(
+            f"charging config count mismatch: declared={_declared_count} coordinates={len(_declared_positions)}"
+        )
+    universe.charger_cells.update(_declared_positions)
     for _pos in _cfg.get("active_charger_positions", []):
         universe.active_charger_cells.add((int(_pos[1]), int(_pos[0])))
     universe.disable_active_charging = bool(_cfg.get("disable_active_charging", False))
     universe.charging_config_hash = hashlib.sha256(
         _json.dumps(_cfg, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    universe.charging_declared_count = int(_cfg.get("num_chargers", len(_cfg.get("charger_positions", []))))
+    universe.charging_declared_count = _declared_count
     universe.charging_enabled = bool(universe.charger_cells)
+    if source in {"generated_reference", "generated_salsa_adaptive"} and not universe.disable_active_charging:
+        universe.active_charger_cells = set(universe.charger_cells)
     effective = sorted((int(x), int(y)) for x, y in universe.charger_cells)
     return {"source": source, "config_path": _cfg_path,
             "effective_coordinate_hash": hashlib.sha256(_json.dumps(effective).encode("utf-8")).hexdigest()}
@@ -1199,6 +1208,83 @@ def _refresh_effective_charger_metadata(universe: Inventory) -> None:
     cells = sorted((int(x), int(y)) for x, y in getattr(universe, "charger_cells", set()))
     universe.effective_charger_count = len(cells)
     universe.effective_charger_coordinate_hash = hashlib.sha256(repr(cells).encode("utf-8")).hexdigest()
+
+
+def _validate_active_charger_dispatch(universe: Inventory, data: DataFrame) -> None:
+    """Classify and validate every active charger against existing graphs."""
+    active = set(getattr(universe, "active_charger_cells", None) or ())
+    if not active:
+        active = set(getattr(universe, "charger_cells", ()) or ())
+    route_graphs = {}
+    exits = {}
+    station_by_cell = {}
+    ordinary_nodes = set(universe.graph.graph.nodes)
+    rows, cols = data.shape
+
+    for cell in sorted(active):
+        x, y = map(int, cell)
+        if not (0 <= y < rows and 0 <= x < cols):
+            raise ValueError(f"invalid active charger {cell}: coordinate out of bounds")
+        key = f"{x},{y}"
+        value = int(data.iloc[y, x])
+        station = next(
+            (
+                candidate
+                for candidate in universe.station_manager.picking_stations
+                if any((int(point.x), int(point.y)) == cell for point in candidate.get_path())
+            ),
+            None,
+        )
+        if key in ordinary_nodes:
+            graph_name = "standard"
+            graph = universe.graph.graph
+            exit_cell = cell
+            charger_type = "p2_depot"
+        elif value == 14 and key in universe.graph_pod.graph and station is not None:
+            graph_name = "pod"
+            graph = universe.graph_pod.graph
+            charger_type = "p3_picker"
+            reachable = nx.single_source_dijkstra_path_length(graph, key, weight="weight")
+            candidates = [node for node in ordinary_nodes if node in reachable]
+            if not candidates:
+                raise ValueError(
+                    f"invalid active charger {cell} type={charger_type}: no legal exit to ordinary graph"
+                )
+            exit_node = min(
+                candidates,
+                key=lambda node: (reachable[node], tuple(map(int, str(node).split(",")))),
+            )
+            exit_cell = tuple(map(int, str(exit_node).split(",")))
+        else:
+            raise ValueError(
+                f"invalid active charger {cell}: value={value} has no supported graph/occupancy mechanism"
+            )
+
+        if graph.in_degree(key) < 1:
+            raise ValueError(f"invalid active charger {cell} type={charger_type}: no legal approach edge")
+        if graph.out_degree(key) < 1:
+            raise ValueError(f"invalid active charger {cell} type={charger_type}: no legal exit edge")
+        approach_nodes = nx.single_source_shortest_path_length(graph.reverse(copy=False), key)
+        if not any(node in ordinary_nodes for node in approach_nodes):
+            raise ValueError(f"invalid active charger {cell} type={charger_type}: unreachable from ordinary graph")
+        route_graphs[cell] = graph_name
+        exits[cell] = exit_cell
+        if station is not None:
+            station_by_cell[cell] = station
+
+    if len(active) != int(getattr(universe, "charging_declared_count", len(active))):
+        raise ValueError(
+            "active charger count mismatch: "
+            f"declared={getattr(universe, 'charging_declared_count', None)} active={len(active)}"
+        )
+    universe.charger_route_graph_by_cell = route_graphs
+    universe.charger_exit_cell_by_cell = exits
+    universe.charger_station_by_cell = station_by_cell
+    universe.charging_dispatch_validation = {
+        "active_count": len(active),
+        "p2_count": sum(name == "standard" for name in route_graphs.values()),
+        "p3_count": sum(name == "pod" for name in route_graphs.values()),
+    }
 
 
 def draw_storage_from_generated_file(universe: Inventory):
@@ -1496,6 +1582,13 @@ def draw_storage_from_generated_file(universe: Inventory):
             total_cols += 1
             universe.addObject(obj)
 
+    if (
+        universe.charging_enabled
+        and not universe.disable_active_charging
+        and getattr(universe, "charging_placement_source", None)
+        in {"generated_reference", "generated_salsa_adaptive"}
+    ):
+        _validate_active_charger_dispatch(universe, data)
     _refresh_effective_charger_metadata(universe)
     universe.set_warehouse_size([total_rows, total_cols])
 
@@ -1855,9 +1948,12 @@ def finalize_headless_run(
     for robot in getattr(warehouse, "_objects", []) or []:
         if getattr(robot, "object_type", None) != "robot":
             continue
+        dispatcher = getattr(warehouse, "charging_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.terminal_remove(robot)
         claimed = getattr(robot, "_claimed_charger", None)
         if claimed is not None:
-            robot._release_charger()
+            robot._release_charger(notify=False)
             diagnostics["released_charger_claims"] += 1
     if runtime is not None:
         runtime.close(censor_status=_censor_status_for_termination(reason_enum), reason=reason_enum.value)

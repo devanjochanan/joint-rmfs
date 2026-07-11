@@ -47,6 +47,7 @@ from src.rmfs.rl.rts.outcome_tracker import NoopRTSRolloutRuntime
 from src.rmfs.rl.rts.runtime_install import install_rts_runtime
 from src.rmfs.rl.rts.runtime_registry import get_rts_runtime_config, get_rts_runtime_root
 from src.rmfs.runtime_io.logging import debug_print as _rmfs_debug_print
+from src.rmfs.decisions.charging import ChargingDispatcher
 
 
 def print(*args, **kwargs):  # noqa: A001
@@ -100,6 +101,11 @@ class Inventory(Universe):
         self.active_charger_cells = set()     # active-dispatch targets (empty => global)
         self.occupied_chargers = {}           # cell -> robot id (one claim per cell)
         self.disable_active_charging = False  # True => opportunity-only (drive-by only)
+        self.charging_counters = {}
+        self.charger_route_graph_by_cell = {}
+        self.charger_exit_cell_by_cell = {}
+        self.charger_station_by_cell = {}
+        self.charging_dispatcher = ChargingDispatcher(self)
         # Instance-level mutable state (prevents cross-instance contamination)
         self.map = []
         self.movement_channel = {}
@@ -1483,6 +1489,11 @@ class Inventory(Universe):
                     # self.pod_manager.mark_pod_available(o.job.pod_coordinate)
                     self.pod_manager.mark_pod_available(o.job.pod)
                     o.job = None
+
+        # Physical occupancy of a charger cell is a meaningful dispatch event.
+        # The dispatcher compares charger-only state, so ordinary movement does
+        # not cause assignment retries.
+        self.charging_dispatcher.reconsider_if_occupancy_changed()
                 
         # Update global metrics
         self.total_robot_idle = total_idle
