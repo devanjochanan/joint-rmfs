@@ -183,7 +183,7 @@ class Robot(Object):
             return False
         return bool(
             getattr(self, "charge_after_current_task", False)
-            or self.battery_pct <= self.BATTERY_LOW_PCT
+            or self._battery_requires_work_safety_charging()
             or getattr(self, "_charging_lifecycle_state", None) in {
                 "waiting_fifo", "charger_claimed", "going_to_charge",
                 "physically_charging", "leaving_charger",
@@ -195,6 +195,8 @@ class Robot(Object):
             return False
         if getattr(self.universe, "disable_active_charging", False):
             return False
+        if self._battery_requires_work_safety_charging():
+            return True
         if self.battery_pct >= self.BATTERY_CHARGED_PCT and not getattr(self, "_charging_lifecycle_state", None):
             return False
         # Task 3 Part C5: unavailability requires a *deliberate* charging commitment
@@ -207,6 +209,23 @@ class Robot(Object):
             or getattr(self, "is_charging_pending", False)
             or getattr(self, "_claimed_charger", None) is not None
         )
+
+    def _battery_work_safety_pct(self):
+        """Battery percentage below which a robot must not accept new work."""
+        return max(float(self.BATTERY_LOW_PCT), float(self.BATTERY_INTERRUPT_PCT))
+
+    def _battery_requires_work_safety_charging(self):
+        """True when active charging should take priority over new work."""
+        if not getattr(self.universe, "charging_enabled", False):
+            return False
+        if getattr(self.universe, "disable_active_charging", False):
+            return False
+        if self.current_state in {
+            "waiting_for_charger", "going_to_charge", "physically_charging",
+            "leaving_charger", "dead",
+        }:
+            return False
+        return self.battery_pct <= self._battery_work_safety_pct()
 
     def _incr_charging_counter(self, name, n=1):
         """Nonsemantic integration telemetry (Task 3 Part C/G). Aggregated by KPI wiring."""
@@ -1264,6 +1283,8 @@ class Robot(Object):
         the movement step."""
         # Dead-robot handling: battery fully drained -> park in place.
         if self.battery_level_j <= 0.0 and self.current_state != "dead":
+            if getattr(self, "_charging_episode_id", None) is None:
+                self._incr_charging_counter("robots_died_without_charge_request")
             dispatcher = getattr(self.universe, "charging_dispatcher", None)
             if dispatcher is not None:
                 dispatcher.terminal_remove(self)
@@ -1325,19 +1346,27 @@ class Robot(Object):
             fixed_load_energy = self.BASE_DRAIN_RATE_PER_S * self.universe.tick_to_second
             self.fixed_load_energy_consumption += fixed_load_energy
             self.battery_level_j = max(0.0, self.battery_level_j - fixed_load_energy)
-        # Deferred charging check: if busy and low battery, queue the charging request.
+        # Deferred charging check: if busy and battery is unsafe for new work,
+        # queue the charging request as soon as the current physical task ends.
+        # This uses the existing interrupt threshold as a safety threshold so a
+        # robot cannot keep accepting work until it silently drains to zero.
         is_busy = (self.current_state in {"taking_pod", "delivering_pod", "station_processing", "returning_pod"}) or (self.job is not None and not getattr(self.job, "is_finished", False))
-        if is_busy and self.battery_pct <= self.BATTERY_LOW_PCT and not getattr(self.universe, "disable_active_charging", False):
+        if is_busy and self._battery_requires_work_safety_charging():
+            if not getattr(self, "charge_after_current_task", False):
+                self._incr_charging_counter("forced_charging_requests")
             self.charge_after_current_task = True
 
         # Task 3 Part C6: a recovered robot must not stay hidden in waiting.
-        if self._waiting_for_charger and self.battery_pct >= self.BATTERY_LOW_PCT \
+        if self._waiting_for_charger and self.battery_pct >= self._battery_work_safety_pct() \
                 and not getattr(self, "charge_after_current_task", False):
             self._waiting_for_charger = False
-        # Trigger: idle + (low battery or deferred charging queued) -> go to a charger.
+        # Trigger: idle + (unsafe battery or deferred charging queued) -> go to a charger.
         is_idle = (self.current_state == "idle") and (self.job is None or getattr(self.job, "is_finished", True))
-        if is_idle and (self.battery_pct <= self.BATTERY_LOW_PCT or getattr(self, "charge_after_current_task", False)) and not getattr(self.universe, "disable_active_charging", False):
+        if is_idle and (self._battery_requires_work_safety_charging() or getattr(self, "charge_after_current_task", False)) and not getattr(self.universe, "disable_active_charging", False):
             if self._charging_episode_id is None:
+                if self.battery_pct > self.BATTERY_LOW_PCT:
+                    self._incr_charging_counter("forced_charging_requests")
+                self._incr_charging_counter("robots_sent_to_charge_before_job")
                 self._queue_for_charging()
             return self.current_state in {
                 "waiting_for_charger", "going_to_charge", "physically_charging", "leaving_charger"

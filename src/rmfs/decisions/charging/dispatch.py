@@ -19,6 +19,8 @@ CHARGING_COUNTER_FIELDS: tuple[str, ...] = (
     "charging_requests",
     "charging_fifo_entries",
     "charging_fifo_reentries",
+    "forced_charging_requests",
+    "robots_sent_to_charge_before_job",
     "charging_assignment_evaluations",
     "charging_waiting_seconds",
     # Claim / assignment outcomes
@@ -44,6 +46,7 @@ CHARGING_COUNTER_FIELDS: tuple[str, ...] = (
     "charging_sessions_completed",
     "charging_sessions_interrupted",
     "robots_died_from_battery",
+    "robots_died_without_charge_request",
     # Energy / drive-by
     "charging_energy_added_j",
     "drive_by_charging_events",

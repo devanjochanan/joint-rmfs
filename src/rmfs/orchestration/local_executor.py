@@ -759,7 +759,7 @@ def derive_sensitivity_kpi_v3_payload(
 
     # 6. Charging primitives
     charging_counters = getattr(warehouse, "charging_counters", {}) or {}
-    for chg_field in ("charging_requests", "charging_sessions_started", "charging_sessions_completed", "charging_sessions_interrupted", "drive_by_charging_events", "charger_route_failures", "charger_unavailable_events", "charger_claims_created", "charger_claims_released", "stale_charger_claims_detected", "robots_died_from_battery", "first_low_soc_time_s", "first_robot_death_time_s"):
+    for chg_field in ("charging_requests", "forced_charging_requests", "robots_sent_to_charge_before_job", "charging_sessions_started", "charging_sessions_completed", "charging_sessions_interrupted", "drive_by_charging_events", "charger_route_failures", "charger_unavailable_events", "charger_claims_created", "charger_claims_released", "stale_charger_claims_detected", "robots_died_from_battery", "robots_died_without_charge_request", "first_low_soc_time_s", "first_robot_death_time_s"):
         payload[chg_field] = charging_counters.get(chg_field, getattr(warehouse, chg_field, None))
 
     payload["initial_battery_energy_j"] = getattr(warehouse, "initial_battery_energy_j", None)

@@ -386,3 +386,85 @@ def test_busy_low_soc_defers_without_entering_fifo():
     assert robot.charge_after_current_task is True
     assert warehouse.charging_dispatcher.ordered_entries() == ()
     assert robot._charging_queue_entered_at is None
+
+
+def test_idle_interrupt_soc_queues_charging_before_low_soc():
+    warehouse = _dispatch_warehouse()
+    warehouse.tick_to_second = 0.15
+    warehouse.disable_active_charging = False
+    warehouse.charging_enabled = True
+    warehouse.charging_dispatcher = ChargingDispatcher(warehouse)
+    robot = Robot(warehouse)
+    robot.setUniverse(warehouse)
+    robot.id = 1
+    robot._id = 1
+    robot.current_state = "idle"
+    robot.job = None
+    robot.BATTERY_LOW_PCT = 18.0
+    robot.BATTERY_INTERRUPT_PCT = 50.0
+    robot.battery_level_j = robot.BATTERY_CAPACITY_J * 0.49
+    warehouse.robots.append(robot)
+
+    assert robot.is_unavailable_for_work_due_to_charging() is True
+    parked = robot._charging_pre_move()
+
+    assert parked is True
+    assert robot.current_state == "waiting_for_charger"
+    assert warehouse.charging_counters["charging_requests"] == 1
+    assert warehouse.charging_counters["forced_charging_requests"] == 1
+    assert warehouse.charging_counters["robots_sent_to_charge_before_job"] == 1
+
+
+def test_busy_interrupt_soc_defers_charging_before_low_soc():
+    warehouse = _dispatch_warehouse()
+    warehouse.tick_to_second = 0.15
+    warehouse.disable_active_charging = False
+    warehouse.charging_enabled = True
+    warehouse.charging_dispatcher = ChargingDispatcher(warehouse)
+    robot = Robot(warehouse)
+    robot.setUniverse(warehouse)
+    robot.id = 1
+    robot._id = 1
+    robot.current_state = "returning_pod"
+    robot.job = SimpleNamespace(is_finished=False)
+    robot.BATTERY_LOW_PCT = 18.0
+    robot.BATTERY_INTERRUPT_PCT = 50.0
+    robot.battery_level_j = robot.BATTERY_CAPACITY_J * 0.49
+    warehouse.robots.append(robot)
+
+    parked = robot._charging_pre_move()
+
+    assert parked is False
+    assert robot.charge_after_current_task is True
+    assert warehouse.charging_counters["forced_charging_requests"] == 1
+    assert warehouse.charging_dispatcher.ordered_entries() == ()
+
+
+def test_battery_death_without_charge_request_is_counted():
+    warehouse = _dispatch_warehouse()
+    warehouse.tick_to_second = 0.15
+    warehouse.disable_active_charging = False
+    warehouse.charging_enabled = True
+    warehouse.charging_dispatcher = ChargingDispatcher(warehouse)
+    warehouse.landscape = SimpleNamespace(setObject=lambda *args, **kwargs: None)
+    warehouse.committed_next_registry = None
+    warehouse.rts_rollout_runtime = None
+    robot = Robot(warehouse)
+    robot.setUniverse(warehouse)
+    robot.id = 1
+    robot._id = 1
+    robot.current_state = "idle"
+    robot.job = None
+    robot.battery_level_j = 0.0
+    robot.velocity = 0
+    robot.acceleration = 0
+    robot.heading = 0
+    robot.load_mass = 0
+    warehouse.robots.append(robot)
+
+    parked = robot._charging_pre_move()
+
+    assert parked is True
+    assert robot.current_state == "dead"
+    assert warehouse.charging_counters["robots_died_from_battery"] == 1
+    assert warehouse.charging_counters["robots_died_without_charge_request"] == 1

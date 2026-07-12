@@ -170,6 +170,8 @@ _ROBOT_UTILIZATION_DERIVED = (
 
 _CHARGING_PRIMITIVE = (
     "charging_requests",
+    "forced_charging_requests",
+    "robots_sent_to_charge_before_job",
     "charging_sessions_started",
     "charging_sessions_completed",
     "charging_sessions_interrupted",
@@ -180,6 +182,7 @@ _CHARGING_PRIMITIVE = (
     "charger_claims_released",
     "stale_charger_claims_detected",
     "robots_died_from_battery",
+    "robots_died_without_charge_request",
     "first_low_soc_time_s",
     "first_robot_death_time_s",
     "initial_battery_energy_j",
