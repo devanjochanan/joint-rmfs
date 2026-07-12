@@ -3,7 +3,7 @@ eval/build_baseline_random.py
 ─────────────────────────────
 GENERALIZABLE baseline (straw-man comparator) config generator:
   Placement : N chargers chosen uniformly at random from empty cells (value 0).
-  Policy    : 20 / 90 thresholds, interrupt DISABLED (battery_interrupt_pct=100).
+  Policy    : 20 / 90 thresholds, interrupt threshold 50.
   Count     : 10 chargers (default).
 
 Adapts to ANY grid (reads generated_pod.csv) — parallel to
@@ -21,9 +21,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]   # scripts/data/<file> -> repo root
 sys.path.insert(0, str(ROOT))
 
-# Baseline policy (Monch et al. 2018; Zou et al. 2018): 20% low / 90% upper;
-# interrupt at 100% => should_interrupt never fires => heuristic disabled.
-T_LOW, T_UP, T_INT = 20.0, 90.0, 100.0
+# Baseline policy (Monch et al. 2018; Zou et al. 2018): 20% low / 90% upper.
+# Keep interrupt at 50%, matching the adaptive charging safety threshold, so
+# the work-safety layer does not treat every robot below 100% as unavailable.
+T_LOW, T_UP, T_INT = 20.0, 90.0, 50.0
 
 
 def load_grid(path) -> list[list[int]]:

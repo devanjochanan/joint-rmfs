@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -395,13 +395,21 @@ def local_python_executable() -> str:
     return sys.executable
 
 
-def run_win_admin_on_local_host() -> bool:
-    return os.environ.get("RMFS_RUN_WIN_ADMIN_ON_CODEX_LOCAL", "").strip().lower() in {
+def env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
+
+
+def run_win_admin_on_local_host() -> bool:
+    return env_flag("RMFS_RUN_WIN_ADMIN_ON_CODEX_LOCAL")
+
+
+def reference_center_gojira_rerun_only() -> bool:
+    return env_flag("RMFS_REFERENCE_CENTER_RERUN_ONLY")
 
 
 def local_max_workers() -> int:
@@ -425,7 +433,7 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
         if win_admin_on_local_host
         else r"C:\Users\admin\Documents\Dewa's Sandbox\torch-gpu\Scripts\python.exe"
     )
-    return [
+    machines = [
         Machine(
             machine_id="win_lukman",
             anydesk_id="1903438276",
@@ -502,6 +510,19 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
             max_rl_workers=24,
         ),
     ]
+    if not reference_center_gojira_rerun_only():
+        return machines
+    return [
+        replace(
+            machine,
+            allowed_treatments=("all_off",) if machine.machine_id == "citi_gojira" else (),
+            eligible_stages=(2,) if machine.machine_id == "citi_gojira" else (),
+            rl_effective_steps_per_second=None,
+            max_rl_workers=0,
+            rl_rate_source="reference_center_gojira_rerun_only",
+        )
+        for machine in machines
+    ]
 
 
 def stable_json_hash(payload: Any, length: int = 12) -> str:
@@ -537,6 +558,7 @@ def allocation_config_rows(machines: list[Machine]) -> list[dict[str, Any]]:
 def generate_allocation_patch_id(machines: list[Machine], rl_overhead_multiplier: float) -> str:
     payload = {
         "allocation_patch_label": ALLOCATION_PATCH_LABEL,
+        "rerun_mode": "reference_center_gojira_only" if reference_center_gojira_rerun_only() else "full_campaign",
         "allocation_algorithm": "treatment_aware_constrained_lpt.v1",
         "machine_allocation_config": allocation_config_rows(machines),
         "target_machine_run_counts": TARGET_MACHINE_RUN_COUNTS,
@@ -886,6 +908,13 @@ def paired_group_id(robot_count: int, order_rate: int, replication: int) -> str:
 
 def _stage_candidate_tuples(stage: int) -> list[tuple[str, int, int, int]]:
     """Full candidate set targeted by a stage (before cumulative subtraction)."""
+    if reference_center_gojira_rerun_only():
+        if stage == 2:
+            return [
+                ("all_off", CENTRAL_ROBOT_COUNT, CENTRAL_ORDER_RATE, rep)
+                for rep in MAIN_CENTER_REPLICATIONS
+            ]
+        return []
     if stage == 1:
         return [
             (t, rc, orr, 1)
@@ -923,7 +952,7 @@ def condition_charging_identity(
 ) -> dict[str, Any]:
     """Deterministic treatment-local charging metadata (both treatments enabled).
 
-    all_off  -> reference package (build_baseline_random, 10 chargers, 20/90/100).
+    all_off  -> reference package (build_baseline_random, 10 chargers, 20/90/50).
     all_on_rl -> Salsa adaptive package (build_adaptive_hybrid, rho=0.6, 18/60/50).
     Config is computed in-memory here only for identity/hashing; the actual
     JSON is generated into the temporary run workspace at execution time and
@@ -1152,29 +1181,44 @@ def build_scientific_identity(
     scenario_input_identities = scenario_input_identities or build_scenario_input_identities()
     input_identity = input_identity or scenario_input_identities["cindy_s3"]
     rts_dir = REPO_ROOT / assets.rts_checkpoint_relative_dir
+    rerun_mode = reference_center_gojira_rerun_only()
+    design = {
+        "main_center_repetitions": len(list(MAIN_CENTER_REPLICATIONS)),
+        "main_edge_repetitions": len(list(MAIN_EDGE_REPLICATIONS)),
+        "mixed_repetitions": len(list(MIXED_REPLICATIONS)),
+        "main_run_count": 88,
+        "mixed_run_count": 42,
+        "total_run_count": 130,
+        "macbook_excluded": True,
+    }
+    if rerun_mode:
+        design = {
+            "rerun_mode": "reference_center_gojira_only",
+            "description": "Rerun only all_off 20-robot / 500-order-rate center replications on CITI Gojira.",
+            "main_center_repetitions": len(list(MAIN_CENTER_REPLICATIONS)),
+            "main_edge_repetitions": 0,
+            "mixed_repetitions": 0,
+            "main_run_count": len(list(MAIN_CENTER_REPLICATIONS)),
+            "mixed_run_count": 0,
+            "total_run_count": len(list(MAIN_CENTER_REPLICATIONS)),
+            "macbook_excluded": True,
+        }
     return {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
         "simulation_semantics_id": SIMULATION_SEMANTICS_ID,
         "kpi_schema_version": FULL_KPI_V3_SCHEMA_VERSION,
-        "policy_configurations": list(POLICY_CONFIGURATIONS),
-        "main_treatments": list(MAIN_TREATMENTS),
-        "design": {
-            "main_center_repetitions": len(list(MAIN_CENTER_REPLICATIONS)),
-            "main_edge_repetitions": len(list(MAIN_EDGE_REPLICATIONS)),
-            "mixed_repetitions": len(list(MIXED_REPLICATIONS)),
-            "main_run_count": 88,
-            "mixed_run_count": 42,
-            "total_run_count": 130,
-            "macbook_excluded": True,
-        },
+        "rerun_mode": "reference_center_gojira_only" if rerun_mode else "full_campaign",
+        "policy_configurations": ["all_off"] if rerun_mode else list(POLICY_CONFIGURATIONS),
+        "main_treatments": ["all_off"] if rerun_mode else list(MAIN_TREATMENTS),
+        "design": design,
         "robot_counts": list(ROBOT_COUNTS),
         "order_rates": list(ORDER_RATES),
         "picking_stations": PICKER_COUNT,
         "replenishment_stations": REPLENISHMENT_COUNT,
         "replication_plan": {
             "center_main": {"first": 1, "last": max(MAIN_CENTER_REPLICATIONS)},
-            "edge_main": {"first": 1, "last": max(MAIN_EDGE_REPLICATIONS)},
-            "mixed": {"first": 1, "last": max(MIXED_REPLICATIONS)},
+            "edge_main": None if rerun_mode else {"first": 1, "last": max(MAIN_EDGE_REPLICATIONS)},
+            "mixed": None if rerun_mode else {"first": 1, "last": max(MIXED_REPLICATIONS)},
         },
         "seed_formula": "seed = 41 + replication",
         "seed_base_minus_one": SEED_BASE_MINUS_ONE,
@@ -1532,7 +1576,17 @@ def build_campaign_plan(
         runs.extend(stage_runs)
         stage_summaries[str(stage)] = summary
         already_requested.update(row["condition_key"] for row in rows)
-    runs, stage_summaries = apply_machine_run_targets(runs, machines)
+    if reference_center_gojira_rerun_only():
+        stage_summaries["reference_center_gojira_rerun_only"] = {
+            "enabled": True,
+            "target_machine": "citi_gojira",
+            "target_policy_configuration": "all_off",
+            "target_robot_count": CENTRAL_ROBOT_COUNT,
+            "target_order_rate": CENTRAL_ORDER_RATE,
+            "target_run_count": len(list(MAIN_CENTER_REPLICATIONS)),
+        }
+    else:
+        runs, stage_summaries = apply_machine_run_targets(runs, machines)
     assertions = dry_run_assertions(runs, machines, stage_summaries)
     return {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
@@ -1665,6 +1719,28 @@ def dry_run_assertions(
         "critical_wave_runs": sum(1 for run in runs if run.get("allocation_wave") == "critical"),
         "best_effort_wave_runs": sum(1 for run in runs if run.get("allocation_wave") == "best_effort"),
     }
+    if reference_center_gojira_rerun_only():
+        expected_stage_counts = {"1": 0, "2": 20, "3": 0, "4": 0}
+        if assertions["stage_new_runs"] != expected_stage_counts:
+            raise AssertionError(f"rerun stage counts: {assertions['stage_new_runs']}")
+        if assertions["total_unique_fresh_runs"] != 20:
+            raise AssertionError(f"rerun must contain 20 unique conditions, got {assertions['total_unique_fresh_runs']}")
+        if assertions["main_run_count"] != 20 or assertions["mixed_run_count"] != 0:
+            raise AssertionError(
+                f"rerun expected 20 main / 0 mixed, got {assertions['main_run_count']} / {assertions['mixed_run_count']}"
+            )
+        if assertions["policy_configurations"] != ["all_off"]:
+            raise AssertionError(assertions["policy_configurations"])
+        if assertions["total_fresh_runs_by_machine"].get("citi_gojira") != 20:
+            raise AssertionError(assertions["total_fresh_runs_by_machine"])
+        if sum(
+            count for machine_id, count in assertions["total_fresh_runs_by_machine"].items()
+            if machine_id != "citi_gojira"
+        ) != 0:
+            raise AssertionError(assertions["total_fresh_runs_by_machine"])
+        if assertions["duplicate_run_ids"] or assertions["duplicate_condition_keys"]:
+            raise AssertionError("duplicate rerun identities detected")
+        return assertions
     # ── Hard assertions (Sections 3, 4, 5) ──
     if assertions["stage_new_runs"] != {"1": 18, "2": 19, "3": 19, "4": 74}:
         raise AssertionError(f"stage counts: {assertions['stage_new_runs']}")
@@ -3069,25 +3145,28 @@ def main(argv: Iterable[str] | None = None) -> int:
         # 1. strictly load canonical assets
         validate_local_assets(manifest, REPO_ROOT)
         
-        # 2. Check the 130-run main + interaction design.
+        # 2. Check the full campaign or the explicit CITI-only reference rerun.
         runs = manifest["runs"]
-        if len(runs) != 130:
-            raise AssertionError(f"Expected 130 runs, got {len(runs)}")
-
+        rerun_mode = manifest.get("scientific_identity", {}).get("rerun_mode") == "reference_center_gojira_only"
+        expected_total = 20 if rerun_mode else 130
+        if len(runs) != expected_total:
+            raise AssertionError(f"Expected {expected_total} runs, got {len(runs)}")
         run_ids = [run["run_id"] for run in runs]
         condition_keys = [run["condition_key"] for run in runs]
-        if len(set(run_ids)) != 130:
+        if len(set(run_ids)) != expected_total:
             raise AssertionError(f"Duplicate run IDs found, unique count: {len(set(run_ids))}")
-        if len(set(condition_keys)) != 130:
+        if len(set(condition_keys)) != expected_total:
             raise AssertionError(f"Duplicate condition keys found, unique count: {len(set(condition_keys))}")
 
         # 3. Check cumulative stage counts and seeds
-        expected_stage_counts = {"1": 18, "2": 19, "3": 19, "4": 74}
+        expected_stage_counts = {"1": 0, "2": 20, "3": 0, "4": 0} if rerun_mode else {"1": 18, "2": 19, "3": 19, "4": 74}
         actual_stage_counts = manifest["assertions"]["stage_new_runs"]
         if actual_stage_counts != expected_stage_counts:
             raise AssertionError(f"Stage new runs count mismatch: expected {expected_stage_counts}, got {actual_stage_counts}")
-        if manifest["assertions"].get("main_run_count") != 88 or manifest["assertions"].get("mixed_run_count") != 42:
-            raise AssertionError(f"Expected 88 main + 42 mixed runs, got {manifest['assertions']}")
+        expected_main = 20 if rerun_mode else 88
+        expected_mixed = 0 if rerun_mode else 42
+        if manifest["assertions"].get("main_run_count") != expected_main or manifest["assertions"].get("mixed_run_count") != expected_mixed:
+            raise AssertionError(f"Expected {expected_main} main + {expected_mixed} mixed runs, got {manifest['assertions']}")
 
         # Verify seeds
         for replication in (1, 3, 20):
