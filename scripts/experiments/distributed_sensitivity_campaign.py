@@ -395,6 +395,15 @@ def local_python_executable() -> str:
     return sys.executable
 
 
+def run_win_admin_on_local_host() -> bool:
+    return os.environ.get("RMFS_RUN_WIN_ADMIN_ON_CODEX_LOCAL", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def local_max_workers() -> int:
     physical = linux_physical_core_count()
     logical = os.cpu_count() or 1
@@ -404,6 +413,18 @@ def local_max_workers() -> int:
 
 def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
     all_stages = (1, 2, 3, 4)
+    win_admin_on_local_host = run_win_admin_on_local_host()
+    win_admin_os = platform.system().lower() if win_admin_on_local_host else "windows"
+    win_admin_repository = (
+        str(repo_root)
+        if win_admin_on_local_host
+        else r"C:\Users\admin\Documents\Dewa's Sandbox\netlogo-rmfs"
+    )
+    win_admin_python = (
+        local_python_executable()
+        if win_admin_on_local_host
+        else r"C:\Users\admin\Documents\Dewa's Sandbox\torch-gpu\Scripts\python.exe"
+    )
     return [
         Machine(
             machine_id="win_lukman",
@@ -421,9 +442,9 @@ def default_machines(repo_root: Path = REPO_ROOT) -> list[Machine]:
         Machine(
             machine_id="win_admin",
             anydesk_id="1052269911",
-            os="windows",
-            repository=r"C:\Users\admin\Documents\Dewa's Sandbox\netlogo-rmfs",
-            python=r"C:\Users\admin\Documents\Dewa's Sandbox\torch-gpu\Scripts\python.exe",
+            os=win_admin_os,
+            repository=win_admin_repository,
+            python=win_admin_python,
             max_workers=8,
             effective_steps_per_second=395.66,
             eligible_stages=all_stages,
