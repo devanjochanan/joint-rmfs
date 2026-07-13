@@ -11,7 +11,11 @@ import sys
 from typing import Any
 
 from src.rmfs.experiments.identity import short_hash
-from src.rmfs.orchestration.kpi_schema import FULL_KPI_V3_FIELDS, FULL_KPI_V3_SCHEMA_VERSION
+from src.rmfs.orchestration.kpi_schema import (
+    FULL_KPI_V3_FIELDS,
+    FULL_KPI_V3_SCHEMA_VERSION,
+    FULL_KPI_V3_SIDECAR_FIELDS,
+)
 from src.rmfs.orchestration.local_executor import git_value, load_worker_summary, run_specs
 from src.rmfs.orchestration.run_spec import RunSpec
 from src.rmfs.rl.rts.ablation import resolve_ablation
@@ -55,7 +59,6 @@ def run_paired_rts_rl_vs_nearest_evaluation(
     pairs_per_wave: int | None = None,
     machine_id: str = "local",
     resume_campaign_id: str | None = None,
-    allow_resume_repo_commit_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Run both policy arms through one queue with terminal-wave barriers.
 
@@ -150,11 +153,7 @@ def run_paired_rts_rl_vs_nearest_evaluation(
             raise FileNotFoundError(f"cannot resume missing paired campaign: {config_path}")
         with config_path.open(encoding="utf-8") as fh:
             existing_config = json.load(fh)
-        _validate_resume_scientific_identity(
-            existing_config,
-            config,
-            allow_repo_commit_mismatch=allow_resume_repo_commit_mismatch,
-        )
+        _validate_resume_scientific_identity(existing_config, config)
     run_root.mkdir(parents=True, exist_ok=True)
     outcomes_path = run_root / "run_outcomes.jsonl"
     scenario_id = f"paired_eval_scenario_{short_hash(config)}"
@@ -254,7 +253,9 @@ def run_paired_rts_rl_vs_nearest_evaluation(
                 "current_machine_id": str(machine_id),
                 "previous_repo_commit": existing_config.get("repo_commit") if existing_config else None,
                 "current_repo_commit": config["repo_commit"],
-                "repo_commit_mismatch_allowed": bool(allow_resume_repo_commit_mismatch),
+                "repo_commit_changed": (
+                    existing_config.get("repo_commit") != config["repo_commit"] if existing_config else False
+                ),
             },
         )
     atomic_write_json(run_root / worker_specs_name, [spec.to_json_dict() for spec in all_specs])
@@ -307,6 +308,7 @@ def run_paired_rts_rl_vs_nearest_evaluation(
             "error_type": worker_summary.get("error_type"),
             "error_message": worker_summary.get("error_message"),
             "kpi_row": _full_kpi_row(worker_summary),
+            "kpi_sidecar_row": _full_kpi_sidecar_row(worker_summary),
             "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         append_jsonl(outcomes_path, outcome)
@@ -338,6 +340,12 @@ def run_paired_rts_rl_vs_nearest_evaluation(
         if spec.run_id in successful_outcomes
     ]
     full_kpi_rows = _write_kpi_rows(run_root, full_kpi_rows)
+    full_kpi_sidecar_rows = [
+        _sidecar_row_from_outcome(successful_outcomes[spec.run_id])
+        for spec in all_specs
+        if spec.run_id in successful_outcomes
+    ]
+    full_kpi_sidecar_rows = _write_kpi_sidecar_rows(run_root, full_kpi_sidecar_rows)
     completed_per_policy = {
         policy: sum(1 for row in full_kpi_rows if row.get("policy_configuration") == policy)
         for policy in ("current", "rts_rl_explicit")
@@ -372,6 +380,12 @@ def run_paired_rts_rl_vs_nearest_evaluation(
             "csv_path": str(run_root / "full_kpi_summary.csv"),
             "fields": [*KPI_ID_FIELDS, *KPI_STATUS_FIELDS, *FULL_KPI_V3_FIELDS],
         },
+        "full_kpi_sidecars": {
+            "row_count": len(full_kpi_sidecar_rows),
+            "expected_row_count": len(all_specs),
+            "json_path": str(run_root / "full_kpi_sidecars.json"),
+            "fields": [*KPI_ID_FIELDS, *FULL_KPI_V3_SIDECAR_FIELDS],
+        },
     }
     atomic_write_json(run_root / "campaign_summary.json", summary)
     return summary
@@ -398,6 +412,40 @@ def _write_kpi_rows(run_root: Path, rows: list[dict[str, Any]]) -> list[dict[str
         writer = csv.DictWriter(fh, fieldnames=list(output_fields), extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+    return rows
+
+
+def _full_kpi_sidecar_row(summary: dict[str, Any]) -> dict[str, Any] | None:
+    if summary.get("status") != "success":
+        return None
+    payload = summary.get("kpi")
+    if not isinstance(payload, dict):
+        return None
+    row = {field: summary.get(field, payload.get(field)) for field in KPI_ID_FIELDS}
+    row.update({field: payload.get(field) for field in FULL_KPI_V3_SIDECAR_FIELDS})
+    return row
+
+
+def _sidecar_row_from_outcome(outcome: dict[str, Any]) -> dict[str, Any] | None:
+    row = outcome.get("kpi_sidecar_row")
+    if isinstance(row, dict):
+        return row
+    # Outcomes recorded before sidecar persistence retain the flat KPI identity,
+    # but their structured station detail cannot be reconstructed after worker
+    # cleanup. Keep an explicit null placeholder rather than silently dropping
+    # the paired observation from the sidecar file.
+    flat_row = outcome.get("kpi_row")
+    if not isinstance(flat_row, dict):
+        return None
+    row = {field: flat_row.get(field) for field in KPI_ID_FIELDS}
+    row.update({field: None for field in FULL_KPI_V3_SIDECAR_FIELDS})
+    return row
+
+
+def _write_kpi_sidecar_rows(run_root: Path, rows: list[dict[str, Any] | None]) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in rows if isinstance(row, dict)]
+    rows.sort(key=lambda row: (int(row.get("replication") or 0), str(row.get("run_id") or "")))
+    atomic_write_json(run_root / "full_kpi_sidecars.json", rows)
     return rows
 
 
@@ -431,21 +479,15 @@ def _outcome_is_success(outcome: dict[str, Any]) -> bool:
     )
 
 
-def _validate_resume_scientific_identity(
-    existing: dict[str, Any],
-    requested: dict[str, Any],
-    *,
-    allow_repo_commit_mismatch: bool = False,
-) -> None:
+def _validate_resume_scientific_identity(existing: dict[str, Any], requested: dict[str, Any]) -> None:
     """Permit operational retuning while rejecting a scientific identity change.
 
-    A repository revision remains strict by default.  The explicit override is
-    reserved for a reviewed orchestration-only migration and is recorded in the
-    compact resume ledger; all simulation-semantic identifiers remain strict.
+    Repository revision is retained as execution provenance, not as a resume
+    identity constraint.  Semantic identifiers and all experimental inputs
+    below remain strict.
     """
     keys = (
         "campaign_kind",
-        "repo_commit",
         "checkpoint_dir",
         "policy_checkpoint_id",
         "policies",
@@ -469,12 +511,7 @@ def _validate_resume_scientific_identity(
         "order_rate_per_hour",
         "tick_to_second",
     )
-    differences = [
-        key
-        for key in keys
-        if existing.get(key) != requested.get(key)
-        and not (key == "repo_commit" and allow_repo_commit_mismatch)
-    ]
+    differences = [key for key in keys if existing.get(key) != requested.get(key)]
     existing_action_mode = existing.get("rts_rl_policy_action_mode", existing.get("policy_action_mode"))
     if existing_action_mode != requested.get("rts_rl_policy_action_mode"):
         differences.append("rts_rl_policy_action_mode")

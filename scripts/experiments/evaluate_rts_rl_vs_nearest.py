@@ -32,12 +32,6 @@ def main(argv=None) -> int:
         help="Resume this exact paired campaign after checking its scientific identity; worker/thread limits may change.",
     )
     parser.add_argument(
-        "--allow-resume-repo-commit-mismatch",
-        action="store_true",
-        default=False,
-        help="Allow only an explicitly reviewed repository-commit mismatch while retaining all simulation-semantic checks.",
-    )
-    parser.add_argument(
         "--pairs-per-wave",
         type=int,
         default=None,
@@ -71,7 +65,6 @@ def main(argv=None) -> int:
         pairs_per_wave=args.pairs_per_wave,
         machine_id=args.machine_id,
         resume_campaign_id=args.resume_campaign_id,
-        allow_resume_repo_commit_mismatch=args.allow_resume_repo_commit_mismatch,
     )
     print(summary["campaign_id"])
     return 0 if summary.get("valid") or summary.get("status") == "dry_run" else 1

@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from src.rmfs.experiments.evaluation import paired_campaign as campaign
 
 
@@ -27,6 +25,7 @@ def _worker_summary(spec):
             "kpi_complete_strict": True,
             "kpi_completion_status": "completed_strict",
             "orders_completed": 1,
+            "station_detail": {"P1": {"assignments": 1}},
         },
     }
 
@@ -110,6 +109,9 @@ def test_paired_campaign_runs_equal_terminal_waves_and_retains_only_compact_outp
     assert nearest["machine_id"] == rts_rl["machine_id"] == "dewan_wsl"
     rows = json.loads((campaign_root / "full_kpi_summary.json").read_text(encoding="utf-8"))
     assert len(rows) == 8
+    sidecars = json.loads((campaign_root / "full_kpi_sidecars.json").read_text(encoding="utf-8"))
+    assert len(sidecars) == 8
+    assert sidecars[0]["station_detail"] == {"P1": {"assignments": 1}}
 
 
 def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_path, monkeypatch):
@@ -145,21 +147,6 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
         dry_run=True,
     )
     monkeypatch.setattr(campaign, "git_value", lambda *_args: "updated-test-value")
-    with pytest.raises(ValueError, match="repo_commit"):
-        campaign.run_paired_rts_rl_vs_nearest_evaluation(
-            repo_root=tmp_path,
-            checkpoint_dir=checkpoint,
-            zone_ids=("auto",),
-            seed_pack_path=pack_path,
-            output_root=tmp_path / "output",
-            max_workers=2,
-            rts_torch_threads=1,
-            rts_torch_interop_threads=1,
-            charging_mode="enabled",
-            machine_id="dewan_wsl",
-            resume_campaign_id=initial["campaign_id"],
-            dry_run=True,
-        )
     resumed = campaign.run_paired_rts_rl_vs_nearest_evaluation(
         repo_root=tmp_path,
         checkpoint_dir=checkpoint,
@@ -172,7 +159,6 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
         charging_mode="enabled",
         machine_id="dewan_wsl",
         resume_campaign_id=initial["campaign_id"],
-        allow_resume_repo_commit_mismatch=True,
         dry_run=True,
     )
 
@@ -186,4 +172,4 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
     assert resume_operations[-1]["current_rts_torch_threads"] == 1
     assert resume_operations[-1]["previous_repo_commit"] == "test-value"
     assert resume_operations[-1]["current_repo_commit"] == "updated-test-value"
-    assert resume_operations[-1]["repo_commit_mismatch_allowed"] is True
+    assert resume_operations[-1]["repo_commit_changed"] is True
