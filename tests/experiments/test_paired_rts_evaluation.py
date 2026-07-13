@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from src.rmfs.experiments.evaluation import paired_campaign as campaign
 
 
@@ -142,6 +144,22 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
         charging_mode="enabled",
         dry_run=True,
     )
+    monkeypatch.setattr(campaign, "git_value", lambda *_args: "updated-test-value")
+    with pytest.raises(ValueError, match="repo_commit"):
+        campaign.run_paired_rts_rl_vs_nearest_evaluation(
+            repo_root=tmp_path,
+            checkpoint_dir=checkpoint,
+            zone_ids=("auto",),
+            seed_pack_path=pack_path,
+            output_root=tmp_path / "output",
+            max_workers=2,
+            rts_torch_threads=1,
+            rts_torch_interop_threads=1,
+            charging_mode="enabled",
+            machine_id="dewan_wsl",
+            resume_campaign_id=initial["campaign_id"],
+            dry_run=True,
+        )
     resumed = campaign.run_paired_rts_rl_vs_nearest_evaluation(
         repo_root=tmp_path,
         checkpoint_dir=checkpoint,
@@ -154,6 +172,7 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
         charging_mode="enabled",
         machine_id="dewan_wsl",
         resume_campaign_id=initial["campaign_id"],
+        allow_resume_repo_commit_mismatch=True,
         dry_run=True,
     )
 
@@ -165,3 +184,6 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
     assert original_config["max_workers"] == 4
     assert resume_operations[-1]["current_max_workers"] == 2
     assert resume_operations[-1]["current_rts_torch_threads"] == 1
+    assert resume_operations[-1]["previous_repo_commit"] == "test-value"
+    assert resume_operations[-1]["current_repo_commit"] == "updated-test-value"
+    assert resume_operations[-1]["repo_commit_mismatch_allowed"] is True

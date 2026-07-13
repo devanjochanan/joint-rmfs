@@ -55,6 +55,7 @@ def run_paired_rts_rl_vs_nearest_evaluation(
     pairs_per_wave: int | None = None,
     machine_id: str = "local",
     resume_campaign_id: str | None = None,
+    allow_resume_repo_commit_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Run both policy arms through one queue with terminal-wave barriers.
 
@@ -149,7 +150,11 @@ def run_paired_rts_rl_vs_nearest_evaluation(
             raise FileNotFoundError(f"cannot resume missing paired campaign: {config_path}")
         with config_path.open(encoding="utf-8") as fh:
             existing_config = json.load(fh)
-        _validate_resume_scientific_identity(existing_config, config)
+        _validate_resume_scientific_identity(
+            existing_config,
+            config,
+            allow_repo_commit_mismatch=allow_resume_repo_commit_mismatch,
+        )
     run_root.mkdir(parents=True, exist_ok=True)
     outcomes_path = run_root / "run_outcomes.jsonl"
     scenario_id = f"paired_eval_scenario_{short_hash(config)}"
@@ -247,6 +252,9 @@ def run_paired_rts_rl_vs_nearest_evaluation(
                 "current_rts_torch_threads": rts_torch_threads,
                 "current_rts_torch_interop_threads": rts_torch_interop_threads,
                 "current_machine_id": str(machine_id),
+                "previous_repo_commit": existing_config.get("repo_commit") if existing_config else None,
+                "current_repo_commit": config["repo_commit"],
+                "repo_commit_mismatch_allowed": bool(allow_resume_repo_commit_mismatch),
             },
         )
     atomic_write_json(run_root / worker_specs_name, [spec.to_json_dict() for spec in all_specs])
@@ -423,8 +431,18 @@ def _outcome_is_success(outcome: dict[str, Any]) -> bool:
     )
 
 
-def _validate_resume_scientific_identity(existing: dict[str, Any], requested: dict[str, Any]) -> None:
-    """Permit operational retuning while rejecting a scientific identity change."""
+def _validate_resume_scientific_identity(
+    existing: dict[str, Any],
+    requested: dict[str, Any],
+    *,
+    allow_repo_commit_mismatch: bool = False,
+) -> None:
+    """Permit operational retuning while rejecting a scientific identity change.
+
+    A repository revision remains strict by default.  The explicit override is
+    reserved for a reviewed orchestration-only migration and is recorded in the
+    compact resume ledger; all simulation-semantic identifiers remain strict.
+    """
     keys = (
         "campaign_kind",
         "repo_commit",
@@ -452,8 +470,10 @@ def _validate_resume_scientific_identity(existing: dict[str, Any], requested: di
         "tick_to_second",
     )
     differences = [
-        key for key in keys
+        key
+        for key in keys
         if existing.get(key) != requested.get(key)
+        and not (key == "repo_commit" and allow_repo_commit_mismatch)
     ]
     existing_action_mode = existing.get("rts_rl_policy_action_mode", existing.get("policy_action_mode"))
     if existing_action_mode != requested.get("rts_rl_policy_action_mode"):
