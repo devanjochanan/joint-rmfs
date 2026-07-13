@@ -476,6 +476,10 @@ def _sensitivity_rts_checkpoint_id(spec: RunSpec) -> str | None:
         return spec.rts_policy_checkpoint_id
     if str(spec.policy_configuration or "").strip() == "all_off":
         return "not_applicable"
+    if spec.rts_policy_mode == "vrsla_teacher":
+        return "vrsla_teacher"
+    if spec.rts_policy_mode in {"current", "current_probe", "random_valid"}:
+        return "none"
     return None
 
 
@@ -1264,6 +1268,7 @@ def run_worker(spec: RunSpec):
                 feature_ablation=spec.rts_feature_ablation,
                 feature_ablation_hash=spec.rts_feature_ablation_hash,
                 state_capture_mode=spec.rts_state_capture_mode,
+                vrsla_always_post_pick_replenish=spec.rts_vrsla_always_post_pick_replenish,
                 committed_next_reservations_enabled=spec.committed_next_reservations_enabled,
                 run_id=spec.run_id,
                 batch_id=spec.batch_id,
@@ -1604,6 +1609,7 @@ def run_worker(spec: RunSpec):
             "rts_policy_mode": spec.rts_policy_mode,
             "rts_rollout_enabled": spec.rts_rollout_enabled,
             "rts_state_capture_mode": spec.rts_state_capture_mode,
+            "rts_vrsla_always_post_pick_replenish": spec.rts_vrsla_always_post_pick_replenish,
             "detail_db": spec.detail_db,
             "timing": spec.timing,
             "worker_status_cadence": spec.worker_status_cadence,
@@ -1846,6 +1852,10 @@ def run_specs(
                     "error_category": worker_summary.get("error_type") if isinstance(worker_summary, dict) else "worker_summary_missing",
                     "error_message": worker_summary.get("error_message") if isinstance(worker_summary, dict) else "worker_summary.json missing",
                 })
+                # A completion callback may reclaim the entire worker root.
+                # Read its terminal progress before that callback so the
+                # controller reaches 100% even for cleanup-on-completion runs.
+                terminal_steps = _terminal_worker_steps(item["spec"])
                 counts_changed = True
                 if on_run_complete is not None:
                     try:
@@ -1858,7 +1868,7 @@ def run_specs(
                                 f"error={type(exc).__name__}: {exc}"
                             )
                             callback_error.__cause__ = exc
-                terminal_completed_steps += _terminal_worker_steps(item["spec"])
+                terminal_completed_steps += terminal_steps
             processes = still_running
 
             if progress_bar is not None:
