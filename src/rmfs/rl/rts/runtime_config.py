@@ -40,6 +40,7 @@ class RTSRuntimeConfig:
     cycle_estimate_semantics: str = SEMANTICS_HOST_STRUCTURAL
     cycle_estimate_allow_metric_fallback: bool = True
     state_capture_mode: str = "auto"
+    vrsla_always_post_pick_replenish: bool = False
     run_id: str | None = None
     batch_id: int | None = None
     worker_id: int | None = None

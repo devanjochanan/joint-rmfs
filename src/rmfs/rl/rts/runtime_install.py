@@ -47,6 +47,7 @@ def install_rts_runtime(inventory, config: RTSRuntimeConfig, runtime_root: Path 
         inventory.rts_policy = RTSVRSLATeacherPolicy(
             zone_ids=resolved_zone_ids,
             random_seed=config.random_seed,
+            always_post_pick_replenish=config.vrsla_always_post_pick_replenish,
         )
         inventory.rts_controls_post_pick_replenishment = True
         inventory.rts_rollout_runtime = RTSRolloutRuntime(config=config, runtime_root=runtime_root)

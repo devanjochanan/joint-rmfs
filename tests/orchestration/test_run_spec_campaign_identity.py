@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from src.rmfs.orchestration.run_spec import RunSpec
+from src.rmfs.rl.rts.runtime_config import RTSRuntimeConfig
 
 
 def test_run_spec_round_trips_campaign_identity(tmp_path: Path):
@@ -38,3 +39,32 @@ def test_run_spec_round_trips_campaign_identity(tmp_path: Path):
 
     restored = RunSpec.from_json_dict(payload)
     assert restored == spec
+
+
+def test_vrsla_post_pick_flag_round_trips_worker_and_runtime_configs(tmp_path: Path):
+    spec = RunSpec(
+        run_id="vrsla_rep001",
+        ticks=10,
+        runtime_root=tmp_path / "run",
+        repo_root=tmp_path,
+        run_profile="gui",
+        rts_policy_mode="vrsla_teacher",
+        rts_rollout_enabled=True,
+        rts_state_capture_mode="full",
+        rts_vrsla_always_post_pick_replenish=True,
+    )
+
+    restored_spec = RunSpec.from_json_dict(spec.to_json_dict())
+    assert restored_spec.rts_vrsla_always_post_pick_replenish is True
+
+    runtime_config = RTSRuntimeConfig.from_dict(
+        {
+            "policy_mode": "vrsla_teacher",
+            "rollout_enabled": True,
+            "state_capture_mode": "full",
+            "committed_next_reservations_enabled": True,
+            "vrsla_always_post_pick_replenish": True,
+        }
+    )
+    assert runtime_config.vrsla_always_post_pick_replenish is True
+    assert runtime_config.to_json_dict()["vrsla_always_post_pick_replenish"] is True

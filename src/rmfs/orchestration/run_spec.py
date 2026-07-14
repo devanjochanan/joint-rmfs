@@ -35,6 +35,7 @@ class RunSpec:
     rts_feature_ablation: str = "full"
     rts_feature_ablation_hash: str | None = None
     rts_state_capture_mode: str = "auto"
+    rts_vrsla_always_post_pick_replenish: bool = False
     rts_charging_mode: str = "inherit"
     robot_count: int = 20
     expected_picking_station_count: int | None = None
