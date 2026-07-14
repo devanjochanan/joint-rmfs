@@ -1,14 +1,17 @@
-"""Balanced, resumable local campaign for RTS--RL versus Nearest evaluation."""
+"""Queued, resumable local campaign for RTS--RL versus Nearest evaluation."""
 
 from __future__ import annotations
 
 import csv
 import datetime
 import json
+import os
 from pathlib import Path
 import shutil
+import socket
 import sys
 from typing import Any
+import uuid
 
 from src.rmfs.experiments.identity import short_hash
 from src.rmfs.orchestration.kpi_schema import (
@@ -56,18 +59,14 @@ def run_paired_rts_rl_vs_nearest_evaluation(
     rts_torch_interop_threads: int | None = None,
     state_capture_mode: str = "auto",
     max_workers: int = 8,
-    pairs_per_wave: int | None = None,
     machine_id: str = "local",
     resume_campaign_id: str | None = None,
 ) -> dict[str, Any]:
-    """Run both policy arms through one queue with terminal-wave barriers.
+    """Run both policy arms through one continuously filled local queue.
 
-    The campaign owns a single local-executor queue.  With the requested
-    eight-worker machine budget, every wave launches four Nearest and four
-    RTS--RL workers.  It will not admit the next wave until all eight terminal
-    records from the active wave have arrived.  This keeps the arms balanced,
-    gives the controller one progress bar, and avoids the two independent
-    queues that otherwise drift apart.
+    Specs are interleaved Nearest, RTS--RL for every seed.  The local executor
+    fills every available slot from that queue, so launch counts between arms
+    differ by at most one while workers remain pending.
 
     A compact outcome JSONL is appended before every worker root is removed.
     It permits resume after interruption without retaining rollout, log, or
@@ -75,12 +74,8 @@ def run_paired_rts_rl_vs_nearest_evaluation(
     """
     repo_root = Path(repo_root)
     checkpoint = Path(checkpoint_dir)
-    if int(max_workers) < 2 or int(max_workers) % 2 != 0:
-        raise ValueError("max_workers must be an even integer >= 2")
-    if pairs_per_wave is None:
-        pairs_per_wave = int(max_workers) // 2
-    if int(pairs_per_wave) < 1 or 2 * int(pairs_per_wave) > int(max_workers):
-        raise ValueError("pairs_per_wave must be >= 1 and use no more than max_workers slots")
+    if int(max_workers) < 1:
+        raise ValueError("max_workers must be >= 1")
     if charging_mode not in {"inherit", "enabled", "disabled"}:
         raise ValueError("charging_mode must be inherit, enabled, or disabled")
     if not str(machine_id).strip():
@@ -137,8 +132,7 @@ def run_paired_rts_rl_vs_nearest_evaluation(
         "order_rate_per_hour": DEFAULT_RTS_ORDER_RATE_PER_HOUR,
         "tick_to_second": 0.15,
         "max_workers": int(max_workers),
-        "pairs_per_wave": int(pairs_per_wave),
-        "schedule": "balanced_terminal_wave_barrier.v1",
+        "schedule": "rolling_interleaved_queue.v1",
     }
     computed_campaign_id = f"paired_eval_{short_hash(config)}"
     campaign_id = str(resume_campaign_id).strip() if resume_campaign_id is not None else computed_campaign_id
@@ -159,81 +153,75 @@ def run_paired_rts_rl_vs_nearest_evaluation(
     scenario_id = f"paired_eval_scenario_{short_hash(config)}"
 
     all_specs: list[RunSpec] = []
-    wave_by_run_id: dict[str, int] = {}
-    wave_totals: dict[int, int] = {}
     created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    for wave_index, start in enumerate(range(0, len(seeds), int(pairs_per_wave))):
-        wave_seeds = seeds[start:start + int(pairs_per_wave)]
-        wave_totals[wave_index] = 2 * len(wave_seeds)
-        for seed in wave_seeds:
-            replication = int(seed["replication"])
-            random_seed = int(seed["seed"])
-            for arm_index, (arm_label, policy_mode, arm_checkpoint, checkpoint_id, action_mode, rollout_enabled) in enumerate((
-                # These arm settings reproduce the original 60-pair comparison:
-                # Nearest has no RTS rollout; the explicit policy is greedy and
-                # records only in-memory state needed for its policy actor.
-                ("nearest", "current", None, None, "sample", False),
-                ("rts_rl", "rts_rl_explicit", checkpoint, loaded.policy_checkpoint_id, policy_action_mode, True),
-            )):
-                run_id = f"{arm_label}_{replication:03d}"
-                all_specs.append(
-                    RunSpec(
-                        run_id=run_id,
-                        ticks=int(seed_pack["netlogo_steps_per_run"]),
-                        runtime_root=run_root / "workers" / run_id,
-                        repo_root=repo_root,
-                        branch=branch,
-                        commit=commit,
-                        python_executable=sys.executable,
-                        timestamp=created_at,
-                        rts_policy_mode=policy_mode,
-                        rts_rollout_enabled=rollout_enabled,
-                        rts_rollout_write_disk=False,
-                        rts_zone_ids=list(zone_ids) if zone_ids else ["auto"],
-                        rts_seed_base=int(seed_pack["seed_base"]),
-                        rts_random_seed=random_seed,
-                        rts_policy_checkpoint_dir=str(arm_checkpoint) if arm_checkpoint is not None else None,
-                        rts_policy_checkpoint_id=checkpoint_id,
-                        rts_policy_action_mode=action_mode,
-                        rts_policy_device="cpu",
-                        rts_feature_ablation=ablation.name,
-                        rts_feature_ablation_hash=ablation.hash,
-                        rts_state_capture_mode=state_capture_mode,
-                        rts_charging_mode=charging_mode,
-                        charging_enabled=charging_enabled,
-                        charging_config_path=str(charging_config_path),
-                        charging_placement_source="legacy_union",
-                        committed_next_reservations_enabled=True,
-                        robot_count=20,
-                        pps_mode="heuristic",
-                        experiment_id=campaign_id,
-                        scenario_id=scenario_id,
-                        artifact_label=campaign_id,
-                        worker_id=(2 * replication) + arm_index,
-                        campaign_id=campaign_id,
-                        allocation_patch_id=allocation_patch_id,
-                        simulation_semantics_id=simulation_semantics_id,
-                        machine_id=str(machine_id),
-                        stage_first_requested=wave_index + 1,
-                        kpi_schema_version=FULL_KPI_V3_SCHEMA_VERSION,
-                        policy_configuration=policy_mode,
-                        replication=replication,
-                        campaign_seed=random_seed,
-                        pps_model_sha256="none",
-                        rts_torch_threads=rts_torch_threads,
-                        rts_torch_interop_threads=rts_torch_interop_threads,
-                        run_profile="training",
-                        run_horizon_ticks=int(seed_pack["netlogo_steps_per_run"]),
-                        demand_horizon_ticks=int(seed_pack["netlogo_steps_per_run"]) + 1000,
-                        demand_buffer_ticks=1000,
-                        order_generation_mode="shuffled_historical_cycle",
-                        full_raw_order_replay=False,
-                        order_rate_per_hour=DEFAULT_RTS_ORDER_RATE_PER_HOUR,
-                        pod_location_mode="randomize_slots",
-                        pod_location_seed=random_seed,
-                    )
+    for seed in seeds:
+        replication = int(seed["replication"])
+        random_seed = int(seed["seed"])
+        for arm_index, (arm_label, policy_mode, arm_checkpoint, checkpoint_id, action_mode, rollout_enabled) in enumerate((
+            # These arm settings reproduce the original 60-pair comparison:
+            # Nearest has no RTS rollout; the explicit policy is greedy and
+            # records only in-memory state needed for its policy actor.
+            ("nearest", "current", None, None, "sample", False),
+            ("rts_rl", "rts_rl_explicit", checkpoint, loaded.policy_checkpoint_id, policy_action_mode, True),
+        )):
+            run_id = f"{arm_label}_{replication:03d}"
+            all_specs.append(
+                RunSpec(
+                    run_id=run_id,
+                    ticks=int(seed_pack["netlogo_steps_per_run"]),
+                    runtime_root=run_root / "workers" / run_id,
+                    repo_root=repo_root,
+                    branch=branch,
+                    commit=commit,
+                    python_executable=sys.executable,
+                    timestamp=created_at,
+                    rts_policy_mode=policy_mode,
+                    rts_rollout_enabled=rollout_enabled,
+                    rts_rollout_write_disk=False,
+                    rts_zone_ids=list(zone_ids) if zone_ids else ["auto"],
+                    rts_seed_base=int(seed_pack["seed_base"]),
+                    rts_random_seed=random_seed,
+                    rts_policy_checkpoint_dir=str(arm_checkpoint) if arm_checkpoint is not None else None,
+                    rts_policy_checkpoint_id=checkpoint_id,
+                    rts_policy_action_mode=action_mode,
+                    rts_policy_device="cpu",
+                    rts_feature_ablation=ablation.name,
+                    rts_feature_ablation_hash=ablation.hash,
+                    rts_state_capture_mode=state_capture_mode,
+                    rts_charging_mode=charging_mode,
+                    charging_enabled=charging_enabled,
+                    charging_config_path=str(charging_config_path),
+                    charging_placement_source="legacy_union",
+                    committed_next_reservations_enabled=True,
+                    robot_count=20,
+                    pps_mode="heuristic",
+                    experiment_id=campaign_id,
+                    scenario_id=scenario_id,
+                    artifact_label=campaign_id,
+                    worker_id=(2 * replication) + arm_index,
+                    campaign_id=campaign_id,
+                    allocation_patch_id=allocation_patch_id,
+                    simulation_semantics_id=simulation_semantics_id,
+                    machine_id=str(machine_id),
+                    stage_first_requested=1,
+                    kpi_schema_version=FULL_KPI_V3_SCHEMA_VERSION,
+                    policy_configuration=policy_mode,
+                    replication=replication,
+                    campaign_seed=random_seed,
+                    pps_model_sha256="none",
+                    rts_torch_threads=rts_torch_threads,
+                    rts_torch_interop_threads=rts_torch_interop_threads,
+                    run_profile="training",
+                    run_horizon_ticks=int(seed_pack["netlogo_steps_per_run"]),
+                    demand_horizon_ticks=int(seed_pack["netlogo_steps_per_run"]) + 1000,
+                    demand_buffer_ticks=1000,
+                    order_generation_mode="shuffled_historical_cycle",
+                    full_raw_order_replay=False,
+                    order_rate_per_hour=DEFAULT_RTS_ORDER_RATE_PER_HOUR,
+                    pod_location_mode="randomize_slots",
+                    pod_location_seed=random_seed,
                 )
-                wave_by_run_id[run_id] = wave_index
+            )
 
     worker_specs_name = "worker_specs_resume_latest.json" if resumed else "worker_specs.json"
     if not resumed:
@@ -245,9 +233,7 @@ def run_paired_rts_rl_vs_nearest_evaluation(
                 "resumed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "campaign_id": campaign_id,
                 "previous_max_workers": existing_config.get("max_workers") if existing_config else None,
-                "previous_pairs_per_wave": existing_config.get("pairs_per_wave") if existing_config else None,
                 "current_max_workers": int(max_workers),
-                "current_pairs_per_wave": int(pairs_per_wave),
                 "current_rts_torch_threads": rts_torch_threads,
                 "current_rts_torch_interop_threads": rts_torch_interop_threads,
                 "current_machine_id": str(machine_id),
@@ -268,32 +254,20 @@ def run_paired_rts_rl_vs_nearest_evaluation(
             "created_at": created_at,
             **config,
             "worker_count": len(all_specs),
-            "wave_count": len(wave_totals),
             "worker_artifacts_persisted": False,
             "resumed": resumed,
             "worker_specs_path": str(run_root / worker_specs_name),
         }
         atomic_write_json(run_root / "campaign_summary.json", summary)
-        shutil.rmtree(run_root / "workers", ignore_errors=True)
         return summary
 
     latest_outcomes = _read_latest_outcomes(outcomes_path)
     previous_successes = {
         run_id: outcome for run_id, outcome in latest_outcomes.items() if _outcome_is_success(outcome)
     }
-    terminal_by_wave = {wave_index: 0 for wave_index in wave_totals}
-    for run_id in previous_successes:
-        terminal_by_wave[wave_by_run_id[run_id]] += 1
     specs_to_run = [spec for spec in all_specs if spec.run_id not in previous_successes]
     skipped_completed_workers = len(previous_successes)
     executor_error: dict[str, str] | None = None
-
-    def before_launch(spec: RunSpec, _active_count: int) -> bool:
-        wave_index = wave_by_run_id[spec.run_id]
-        return all(
-            terminal_by_wave[previous_wave] >= wave_totals[previous_wave]
-            for previous_wave in range(wave_index)
-        )
 
     def record_and_cleanup(spec: RunSpec, return_code: int) -> None:
         worker_summary = load_worker_summary(spec.runtime_root)
@@ -302,7 +276,6 @@ def run_paired_rts_rl_vs_nearest_evaluation(
             "replication": spec.replication,
             "seed": spec.campaign_seed,
             "policy_configuration": spec.policy_configuration,
-            "wave_index": wave_by_run_id[spec.run_id],
             "return_code": int(return_code),
             "status": worker_summary.get("status", "failure"),
             "error_type": worker_summary.get("error_type"),
@@ -313,22 +286,30 @@ def run_paired_rts_rl_vs_nearest_evaluation(
         }
         append_jsonl(outcomes_path, outcome)
         latest_outcomes[spec.run_id] = outcome
-        terminal_by_wave[wave_by_run_id[spec.run_id]] += 1
         shutil.rmtree(spec.runtime_root, ignore_errors=True)
 
+    execution_lease = _acquire_campaign_execution_lease(run_root)
     try:
         run_specs(
             specs_to_run,
             max_workers=int(max_workers),
             progress=True,
-            before_launch=before_launch,
             on_run_complete=record_and_cleanup,
         )
     except Exception as exc:
         executor_error = {"error_type": type(exc).__name__, "error_message": str(exc)}
     finally:
-        # Covers failures before a completion callback, as well as normal runs.
-        shutil.rmtree(run_root / "workers", ignore_errors=True)
+        # Reclaim only this invocation's worker roots. Never delete the shared
+        # workers directory wholesale: another controller may still own roots
+        # created by an older runner that predates the execution lease.
+        for spec in specs_to_run:
+            shutil.rmtree(spec.runtime_root, ignore_errors=True)
+        workers_root = run_root / "workers"
+        try:
+            workers_root.rmdir()
+        except OSError:
+            pass
+        _release_campaign_execution_lease(execution_lease)
 
     latest_outcomes = _read_latest_outcomes(outcomes_path)
     successful_outcomes = {
@@ -366,8 +347,6 @@ def run_paired_rts_rl_vs_nearest_evaluation(
         "skipped_completed_workers": skipped_completed_workers,
         "completed_per_policy": completed_per_policy,
         "failed_or_incomplete_workers": len(all_specs) - len(full_kpi_rows),
-        "wave_count": len(wave_totals),
-        "wave_pair_counts": [wave_totals[index] // 2 for index in sorted(wave_totals)],
         "worker_artifacts_persisted": False,
         "resume_ledger_path": str(outcomes_path),
         "worker_specs_path": str(run_root / worker_specs_name),
@@ -467,6 +446,80 @@ def _read_latest_outcomes(path: Path) -> dict[str, dict[str, Any]]:
     return latest
 
 
+def _process_is_alive(pid: int) -> bool:
+    if int(pid) <= 0:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _acquire_campaign_execution_lease(run_root: Path) -> dict[str, Any]:
+    """Atomically prevent two executing controllers from sharing worker roots."""
+    run_root = Path(run_root)
+    run_root.mkdir(parents=True, exist_ok=True)
+    lock_path = run_root / "controller_execution.lock"
+    host = socket.gethostname()
+    payload = {
+        "pid": os.getpid(),
+        "host": host,
+        "token": uuid.uuid4().hex,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    for _attempt in range(2):
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                existing = json.loads(lock_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                existing = {}
+            existing_host = str(existing.get("host") or "")
+            try:
+                existing_pid = int(existing.get("pid") or 0)
+            except (TypeError, ValueError):
+                existing_pid = 0
+            if existing_host and existing_host != host:
+                raise RuntimeError(
+                    f"paired campaign already has an execution lease on host {existing_host}: {lock_path}"
+                )
+            if existing_host == host and _process_is_alive(existing_pid):
+                raise RuntimeError(
+                    f"paired campaign is already executing in PID {existing_pid}: {lock_path}"
+                )
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(descriptor, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        return {"path": lock_path, **payload}
+    raise RuntimeError(f"could not acquire paired campaign execution lease: {lock_path}")
+
+
+def _release_campaign_execution_lease(lease: dict[str, Any]) -> None:
+    lock_path = Path(lease["path"])
+    try:
+        existing = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, TypeError):
+        return
+    if existing.get("token") != lease.get("token"):
+        return
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _outcome_is_success(outcome: dict[str, Any]) -> bool:
     try:
         return_code = int(outcome.get("return_code", -1))
@@ -488,7 +541,6 @@ def _validate_resume_scientific_identity(existing: dict[str, Any], requested: di
     """
     keys = (
         "campaign_kind",
-        "checkpoint_dir",
         "policy_checkpoint_id",
         "policies",
         "zone_ids",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a balanced local RTS--RL versus Nearest evaluation campaign."""
+"""Run a queued local RTS--RL versus Nearest evaluation campaign."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from src.rmfs.experiments.evaluation.paired_campaign import run_paired_rts_rl_vs
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run seed-matched RTS--RL versus Nearest in balanced local waves."
+        description="Run seed-matched RTS--RL versus Nearest through one interleaved local queue."
     )
     parser.add_argument("--checkpoint-dir", required=True)
     parser.add_argument("--zone-ids", required=True)
@@ -30,12 +30,6 @@ def main(argv=None) -> int:
         "--resume-campaign-id",
         default=None,
         help="Resume this exact paired campaign after checking its scientific identity; worker/thread limits may change.",
-    )
-    parser.add_argument(
-        "--pairs-per-wave",
-        type=int,
-        default=None,
-        help="Matched pairs admitted together before the next wave; default is max-workers / 2.",
     )
     parser.add_argument("--rts-torch-threads", type=int, default=None)
     parser.add_argument("--rts-torch-interop-threads", type=int, default=None)
@@ -62,7 +56,6 @@ def main(argv=None) -> int:
         rts_torch_interop_threads=args.rts_torch_interop_threads,
         state_capture_mode=args.state_capture_mode,
         max_workers=args.max_workers,
-        pairs_per_wave=args.pairs_per_wave,
         machine_id=args.machine_id,
         resume_campaign_id=args.resume_campaign_id,
     )

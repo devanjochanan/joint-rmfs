@@ -1,10 +1,12 @@
-"""Regression coverage for the balanced local RTS comparison campaign."""
+"""Regression coverage for the queued local RTS comparison campaign."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from src.rmfs.experiments.evaluation import paired_campaign as campaign
 
@@ -30,7 +32,7 @@ def _worker_summary(spec):
     }
 
 
-def test_paired_campaign_runs_equal_terminal_waves_and_retains_only_compact_outputs(tmp_path, monkeypatch):
+def test_paired_campaign_uses_one_interleaved_queue_and_retains_only_compact_outputs(tmp_path, monkeypatch):
     seed_pack = {
         "seed_pack_id": "paired-test-pack",
         "seed_base": 91,
@@ -56,26 +58,19 @@ def test_paired_campaign_runs_equal_terminal_waves_and_retains_only_compact_outp
     monkeypatch.setattr(campaign, "resolve_ablation", lambda _name: SimpleNamespace(name="full", hash="full-hash"))
     monkeypatch.setattr(campaign, "git_value", lambda *_args: "test-value")
 
-    launched_waves = []
+    launched_policies = []
 
-    def fake_run_specs(specs, *, max_workers, before_launch, on_run_complete, **_kwargs):
-        pending = list(specs)
+    def fake_run_specs(specs, *, max_workers, on_run_complete, before_launch=None, **_kwargs):
+        assert before_launch is None
+        assert max_workers == 4
         completed = []
-        while pending:
-            active = []
-            while pending and len(active) < max_workers:
-                spec = pending[0]
-                if not before_launch(spec, len(active)):
-                    break
-                active.append(pending.pop(0))
-            assert len(active) == max_workers
-            launched_waves.append([spec.policy_configuration for spec in active])
-            for spec in active:
-                spec.runtime_root.mkdir(parents=True, exist_ok=True)
-                summary = _worker_summary(spec)
-                (spec.runtime_root / "worker_summary.json").write_text(json.dumps(summary), encoding="utf-8")
-                on_run_complete(spec, 0)
-                completed.append({"spec": spec, "return_code": 0, "worker_summary": summary})
+        for spec in specs:
+            launched_policies.append(spec.policy_configuration)
+            spec.runtime_root.mkdir(parents=True, exist_ok=True)
+            summary = _worker_summary(spec)
+            (spec.runtime_root / "worker_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+            on_run_complete(spec, 0)
+            completed.append({"spec": spec, "return_code": 0, "worker_summary": summary})
         return completed
 
     monkeypatch.setattr(campaign, "run_specs", fake_run_specs)
@@ -93,10 +88,7 @@ def test_paired_campaign_runs_equal_terminal_waves_and_retains_only_compact_outp
     campaign_root = tmp_path / "output" / result["campaign_id"]
     assert result["valid"] is True
     assert result["completed_per_policy"] == {"current": 4, "rts_rl_explicit": 4}
-    assert launched_waves == [
-        ["current", "rts_rl_explicit", "current", "rts_rl_explicit"],
-        ["current", "rts_rl_explicit", "current", "rts_rl_explicit"],
-    ]
+    assert launched_policies == ["current", "rts_rl_explicit"] * 4
     assert not (campaign_root / "workers").exists()
     assert (campaign_root / "run_outcomes.jsonl").exists()
     specs = json.loads((campaign_root / "worker_specs.json").read_text(encoding="utf-8"))
@@ -126,6 +118,8 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
     pack_path.write_text(json.dumps(seed_pack), encoding="utf-8")
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
+    relocated_checkpoint = tmp_path / "canonical_checkpoint"
+    relocated_checkpoint.mkdir()
     monkeypatch.setattr(
         campaign,
         "load_policy_from_checkpoint",
@@ -146,10 +140,14 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
         charging_mode="enabled",
         dry_run=True,
     )
+    campaign_root = tmp_path / "output" / initial["campaign_id"]
+    active_sentinel = campaign_root / "workers" / "active_worker" / "sentinel.txt"
+    active_sentinel.parent.mkdir(parents=True)
+    active_sentinel.write_text("owned by another invocation", encoding="utf-8")
     monkeypatch.setattr(campaign, "git_value", lambda *_args: "updated-test-value")
     resumed = campaign.run_paired_rts_rl_vs_nearest_evaluation(
         repo_root=tmp_path,
-        checkpoint_dir=checkpoint,
+        checkpoint_dir=relocated_checkpoint,
         zone_ids=("auto",),
         seed_pack_path=pack_path,
         output_root=tmp_path / "output",
@@ -162,7 +160,6 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
         dry_run=True,
     )
 
-    campaign_root = tmp_path / "output" / initial["campaign_id"]
     original_config = json.loads((campaign_root / "campaign_config.json").read_text(encoding="utf-8"))
     resume_operations = [json.loads(line) for line in (campaign_root / "resume_operations.jsonl").read_text(encoding="utf-8").splitlines()]
     assert resumed["campaign_id"] == initial["campaign_id"]
@@ -173,3 +170,19 @@ def test_paired_campaign_resume_allows_worker_and_thread_reconfiguration(tmp_pat
     assert resume_operations[-1]["previous_repo_commit"] == "test-value"
     assert resume_operations[-1]["current_repo_commit"] == "updated-test-value"
     assert resume_operations[-1]["repo_commit_changed"] is True
+    assert active_sentinel.read_text(encoding="utf-8") == "owned by another invocation"
+
+
+def test_paired_campaign_execution_lease_rejects_concurrent_controller_and_recovers_stale_lock(tmp_path):
+    lease = campaign._acquire_campaign_execution_lease(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match="already executing"):
+            campaign._acquire_campaign_execution_lease(tmp_path)
+    finally:
+        campaign._release_campaign_execution_lease(lease)
+
+    stale_path = tmp_path / "controller_execution.lock"
+    stale_path.write_text(json.dumps({"pid": -1, "host": campaign.socket.gethostname()}), encoding="utf-8")
+    replacement = campaign._acquire_campaign_execution_lease(tmp_path)
+    campaign._release_campaign_execution_lease(replacement)
+    assert not stale_path.exists()
